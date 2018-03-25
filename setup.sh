@@ -11,3 +11,11 @@ ln -s ~/.config/nvim/init.vim ~/.vimrc
 
 # ln -s ./.nvim ~/.config/nvim
 ln -s ~/.config/nvim ~/.vim
+
+curl --create-dirs -o ~/.vim/colors/distinguished.vim https://cdn.rawgit.com/Lokaltog/vim-distinguished/develop/colors/distinguished.vim
+
+vim +PlugInstall +qall
+
+# Requires cmake
+cd ~/.vim/plugged/YouCompleteMe
+./install.py
