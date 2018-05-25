@@ -6,6 +6,7 @@
 curl -fLo ~/.local/share/nvim/site/autoload/plug.vim --create-dirs \
     https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 
+mkdir -p ~/.config/nvim
 ln -s "$(pwd)/init.vim" ~/.config/nvim/init.vim
 ln -s ~/.config/nvim/init.vim ~/.vimrc
 
@@ -19,3 +20,6 @@ vim +PlugInstall +qall
 # Requires cmake
 cd ~/.vim/plugged/YouCompleteMe
 ./install.py
+
+# Make a place for vim to put swap files
+mkdir -p ~/.vim/tmp
