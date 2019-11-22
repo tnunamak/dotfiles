@@ -54,6 +54,9 @@ Plug 'nathanaelkane/vim-indent-guides'
 Plug 'Raimondi/delimitMate'
 
 " The Silver Searcher plugin, Ag for searching
+" Consider replacing this with ack.vim
+" https://github.com/rking/ag.vim/issues/124#issuecomment-227038003
+" https://github.com/osandov/dotfiles/commit/256d69e134551a9684555077449f0b8c883682ba
 Plug 'rking/ag.vim'
 " Search from the project root instead of the current directory
 let g:ag_working_path_mode="r"
