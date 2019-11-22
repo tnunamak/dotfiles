@@ -11,9 +11,13 @@ ln -s "$(pwd)/init.vim" ~/.config/nvim/init.vim
 ln -s ~/.config/nvim/init.vim ~/.vimrc
 
 # ln -s ./.nvim ~/.config/nvim
+
+# Map ~/.vim/autoload (vim is linked to ~/.config/nvim)
+ln -s ~/.local/share/nvim/site/autoload ~/.config/nvim/autoload
+# Create ~/.vim as a link to nvim
 ln -s ~/.config/nvim ~/.vim
 
-curl --create-dirs -o ~/.vim/colors/distinguished.vim https://cdn.rawgit.com/Lokaltog/vim-distinguished/develop/colors/distinguished.vim
+curl --create-dirs -o ~/.vim/colors/distinguished.vim https://cdn.jsdelivr.net/gh/Lokaltog/vim-distinguished@develop/colors/distinguished.vim
 
 vim +PlugInstall +qall
 
