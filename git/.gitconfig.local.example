@@ -1,0 +1,7 @@
+# ~/.gitconfig.local — machine-specific git config (not tracked)
+# Copy to ~/.gitconfig.local and fill in.
+
+[user]
+	name = Tim Nunamaker
+	email = tnunamak@gmail.com
+	signingkey = ~/.ssh/id_rsa.pub

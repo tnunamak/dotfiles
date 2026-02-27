@@ -7,4 +7,4 @@ Usage:
 ---
 
 #!/bin/bash
-python3 ~/.local/bin/claude_conversation_export.py "$@"
+claude-export "$@"

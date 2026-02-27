@@ -5,12 +5,8 @@
 	required = true
 [init]
 	defaultBranch = main
-[user]
-	email = tnunamak@gmail.com
-	name = Tim Nunamaker
-	signingkey = /home/tnunamak/.ssh/id_rsa.pub
 [core]
-	editor = vi
+	editor = nvim
 [push]
 	autoSetupRemote = true
 [url "git@github.com:"]
@@ -19,3 +15,5 @@
 	format = ssh
 [commit]
 	gpgsign = true
+[include]
+	path = ~/.gitconfig.local

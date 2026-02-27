@@ -1,0 +1,29 @@
+# ~/.shell_local — machine-specific config (not tracked in dotfiles)
+# Copy to ~/.shell_local and customize for this machine.
+
+# NVM
+# export NVM_DIR="$HOME/.nvm"
+# [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+# [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+# Bun
+# export BUN_INSTALL="$HOME/.bun"
+# export PATH="$BUN_INSTALL/bin:$PATH"
+
+# Conda
+# eval "$("$HOME/miniconda3/bin/conda" "shell.$(basename $SHELL)" hook 2>/dev/null)"
+
+# Android SDK
+# export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+# export ANDROID_HOME=$HOME/Android/Sdk
+# export PATH="$PATH:$ANDROID_HOME/platform-tools"
+
+# GPU aliases (Linux desktop with NVIDIA)
+# alias gpuinfo="sudo nvidia-smi -q -d POWER; nvidia-smi -q -d CLOCK; nvidia-smi"
+# alias gpureload="sudo rmmod nvidia_uvm; sudo modprobe nvidia_uvm"
+
+# GCP
+# alias gssh='gcloud compute ssh --project=my-project --zone=us-central1-a'
+
+# Cursor (if installed outside PATH)
+# export PATH="$PATH:$HOME/applications/cursor/squashfs-root"
