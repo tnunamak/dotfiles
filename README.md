@@ -42,7 +42,7 @@ Create machine-local configs as needed:
 | Terminal | [kitty](https://sw.kovidgoyal.net/kitty/) | `kitty/.config/kitty/` |
 | Git | git | `git/.gitconfig` |
 | AI | [claude code](https://docs.anthropic.com/en/docs/claude-code) | `claude/.claude/` |
-| Devcontainer | docker | `devcontainer/` (subtree from anthropics/claude-code) |
+| Devcontainer | docker | `devcontainer/` (synced from anthropics/claude-code) |
 | Scripts | devc, cursorc, claude-export | `bin/.local/bin/` |
 
 ### Key tools
@@ -60,8 +60,8 @@ Configs are symlinked into `~` via GNU Stow. Each top-level directory is a "pack
 To update the devcontainer config from upstream:
 
 ```bash
-git subtree pull --prefix devcontainer \
-  https://github.com/anthropics/claude-code.git main --squash
+./sync-devcontainer.sh
+# Review the diff, then commit if happy
 ```
 
 ## Design decisions
