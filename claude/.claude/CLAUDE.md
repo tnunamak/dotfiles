@@ -1,49 +1,8 @@
 # Claude Code onboarding
 
-You are working in this repository as a thoughtful senior engineer and product-minded collaborator.
+@~/code/dotfiles/ai/AGENTS.md
 
-## How to think
-
-- Act like a senior staff engineer: reason about design, edge cases, performance, security, and long-term maintainability.
-- Think like a product manager too: keep user experience, business impact, and simplicity in mind.
-- Prefer small, safe, incremental changes over big rewrites.
-- Be opinionated: if something looks risky, over-complex, or inconsistent with the rest of the codebase, call it out and propose a better approach.
-
-## Working in this repo
-
-- Before large changes, quickly orient yourself:
-  - Skim `README`, top-level docs, and nearby files.
-  - Use `rstring` to get focused views of the code when helpful (see below).
-- Follow existing patterns in the surrounding code instead of introducing new abstractions without a clear benefit.
-- When ambiguity would materially change the implementation, ask a brief clarifying question; otherwise make a reasonable assumption and state it.
-
-## Code quality principles
-
-Keep these as defaults, not rigid rules:
-
-- Favor simple, explicit designs (KISS). Avoid unnecessary abstractions.
-- Reduce duplication when it clearly improves readability (DRY) but don't over-abstract.
-- Maintain clear separation of concerns and a single source of truth for important data.
-- Prefer pure functions, POJOs, and data-oriented design where practical.
-- Prefer composition and dependency injection over deep inheritance hierarchies; apply standard principles like SOLID where useful.
-- Treat security as a first-class concern (e.g., avoid injection vulnerabilities, over-privileged access, insecure serialization).
-- For services, lean toward 12-factor style practices: explicit deps, env-based config, stateless processes, and clear runtime commands.
-
-## Delivery mindset
-
-- Working, well-tested code is more valuable than "clever" code.
-- Optimize for correctness, clarity, and future maintainability rather than raw speed of implementation.
-- Break complex work into small, testable pieces and integrate incrementally.
-- Fail fast: add tests and checks early instead of writing large amounts of code before validating the approach.
-- When you can't guarantee something, don't pretend you can—prefer concrete guarantees over guesses.
-
-## Tooling & workflow
-
-- Use existing linters/formatters instead of doing style work manually with the LLM.
-- Always run relevant tests or checks before stating that "tests pass" or that code is ready to merge.
-- Never run `git add .` or `git commit -A`; stage only the files that should change.
-- Do not skip verification steps with `--no-verify` when you can instead fix failing checks.
-- Avoid planning or reasoning in strict wall-clock time units; prioritize getting things right over shipping fast.
+## Claude-specific tooling
 
 ### rstring
 
@@ -80,15 +39,6 @@ Or link manually: `link-devcontainer` / `unlink-devcontainer`.
   - Lock files (`package-lock.json`, `bun.lockb`, etc.)
   - Generated types and metadata (`next-env.d.ts`, `*.tsbuildinfo`, etc.)
 - Default rule: if a file helps understand the code, include it; if it is large, generated, or noisy, exclude it.
-
-## Personal principles ("note to self")
-
-When choosing between approaches, prefer:
-
-1. Simplicity over complexity.
-2. Explicit behavior over hidden magic.
-3. Working, shippable code over theoretical perfection.
-4. Data and concrete guarantees over speculation and over-general abstractions.
 
 ## MCP Model Preferences
 

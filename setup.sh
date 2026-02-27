@@ -19,7 +19,7 @@ prompt() {
 
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex)
 
 if ! command -v stow &>/dev/null; then
   echo "Error: GNU Stow not found. Run the platform setup script first."
