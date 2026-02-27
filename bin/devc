@@ -1,0 +1,98 @@
+#!/bin/bash
+set -euo pipefail
+
+# Launch devcontainer for any project
+# - Auto-links .devcontainer if missing
+# - Creates required host directories
+# - Runs Claude Code inside the container
+
+DEVCONTAINER_SOURCE="/mnt/devcontainer-ro"
+REBUILD=false
+
+# Parse flags
+while [[ "${1:-}" == -* ]]; do
+    case "$1" in
+        --rebuild) REBUILD=true; shift ;;
+        *) echo "Unknown flag: $1"; exit 1 ;;
+    esac
+done
+
+WORKSPACE="${1:-$(pwd)}"
+
+# Resolve to absolute path first
+WORKSPACE=$(cd "$WORKSPACE" && pwd)
+WORKSPACE_NAME=$(basename "$WORKSPACE")
+
+# Check for devcontainer CLI
+if ! command -v devcontainer &> /dev/null; then
+    echo "Error: devcontainer CLI not found."
+    echo "Install with: npm install -g @devcontainers/cli"
+    exit 1
+fi
+
+# Check if shared devcontainer config is available
+if [[ ! -d "$DEVCONTAINER_SOURCE" ]]; then
+    echo "Error: Shared devcontainer config not found at $DEVCONTAINER_SOURCE"
+    echo "Ensure the bind mount is active (check /etc/fstab)"
+    exit 1
+fi
+
+# Auto-link .devcontainer if missing
+if [[ ! -e "$WORKSPACE/.devcontainer" ]]; then
+    echo "Creating .devcontainer symlink -> $DEVCONTAINER_SOURCE"
+    ln -s "$DEVCONTAINER_SOURCE" "$WORKSPACE/.devcontainer"
+elif [[ -L "$WORKSPACE/.devcontainer" ]]; then
+    # It's a symlink - verify it points to the right place
+    target=$(readlink "$WORKSPACE/.devcontainer")
+    if [[ "$target" != "$DEVCONTAINER_SOURCE" ]]; then
+        echo "Warning: .devcontainer points to $target (expected $DEVCONTAINER_SOURCE)"
+    fi
+elif [[ -d "$WORKSPACE/.devcontainer" ]]; then
+    echo "Note: Using project-specific .devcontainer (not shared config)"
+fi
+
+# Run initializeCommand from devcontainer.json (create required dirs)
+mkdir -p ~/.devcontainer-homes/"${WORKSPACE_NAME}"/.config \
+         ~/.claude \
+         ~/.config/{git,gh,gcloud,posthog}
+touch ~/.claude/.credentials.json ~/.sentryclirc 2>/dev/null || true
+
+echo "Starting devcontainer for: $WORKSPACE_NAME"
+
+# Remove existing container if --rebuild was passed
+if $REBUILD; then
+    echo "Rebuilding: removing existing container..."
+    docker rm -f "${WORKSPACE_NAME}-dev" 2>/dev/null || true
+fi
+
+# Start the devcontainer
+devcontainer up --workspace-folder "$WORKSPACE"
+
+# Port forwarding from .devport (one port per line, format: preferred_port or preferred_port:container_port)
+CONTAINER="${WORKSPACE_NAME}-dev"
+if [[ -f "$WORKSPACE/.devport" ]]; then
+    CONTAINER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CONTAINER")
+    pkill -f "socat.*TCP:${CONTAINER_IP}:" 2>/dev/null || true
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+        if [[ "$line" =~ : ]]; then
+            PREFERRED="${line%%:*}"
+            CONTAINER_PORT="${line##*:}"
+        else
+            PREFERRED="$line"
+            CONTAINER_PORT="$line"
+        fi
+
+        PORT=$PREFERRED
+        while lsof -i:"$PORT" &>/dev/null; do ((PORT++)); done
+
+        socat TCP-LISTEN:"${PORT}",fork,reuseaddr TCP:"${CONTAINER_IP}":"${CONTAINER_PORT}" &
+        echo "→ localhost:${PORT} → ${CONTAINER}:${CONTAINER_PORT}"
+    done < "$WORKSPACE/.devport"
+fi
+
+# Run Claude Code
+exec devcontainer exec --workspace-folder "$WORKSPACE" \
+  bash -lc 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --dangerously-skip-permissions'
