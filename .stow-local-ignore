@@ -1,0 +1,12 @@
+README.md
+LICENSE
+SESSION-NOTES.md
+setup.sh
+ubuntu-setup.sh
+macos-setup.sh
+\.git
+\.gitignore
+\.stow-local-ignore
+\.nvimlog
+\.devcontainer
+devcontainer
