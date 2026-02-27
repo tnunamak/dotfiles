@@ -1,52 +1,58 @@
+# Shared shell config — sourced by both .zshrc and .bashrc
+
+# Platform detection
+case "$(uname)" in
+  Darwin) IS_MACOS=1 ;;
+  Linux)  IS_LINUX=1 ;;
+esac
+
+# Editor
+export EDITOR=nvim
+export VISUAL=nvim
+
+# PATH
+export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# GPG
+export GPG_TTY=$(tty)
+
+# Privacy
+export DO_NOT_TRACK=1
+
 # Aliases
-alias rstring-dev="PYTHONPATH=/home/tnunamak/code/rstring python -m rstring"
-alias ll='ls -alF'
+alias ll='ls -lah'
 alias la='ls -A'
-alias l='ls -CF'
-alias pbcopy='xclip -selection clipboard'
-alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history|tail -n1|sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
-#alias lsports=sudo lsof -iTCP -sTCP:LISTEN -n -P | awk 'NR>1 {print $9, $1, $2}' | sed 's/.*://' | while read port process pid; do echo "Port $port: $(ps -p $pid -o command= | sed 's/^-//') (PID: $pid)"; done | sort -n
+alias gs='git status'
+alias gd='git diff'
+alias gl='git log --oneline -20'
+
+if [[ -n "$IS_LINUX" ]]; then
+  alias pbcopy='xclip -selection clipboard'
+fi
+
+# Systemd (Linux only)
+if [[ -n "$IS_LINUX" ]]; then
+  alias sbase='systemctl --user'
+  alias slist='systemctl --user list-units --type=service --all'
+  alias son='systemctl --user start'
+  alias soff='systemctl --user stop'
+  alias slog='journalctl --user -f -u'
+fi
+
 alias lsports="sudo lsof -iTCP -sTCP:LISTEN -n -P | awk 'NR>1 {print \$9, \$1, \$2}' | sed 's/.*://' | while read -r port process pid; do echo \"Port \$port: \$(ps -p \$pid -o command= | sed 's/^-//') (PID: \$pid)\"; done | sort -n"
 
-# Systemd user service aliases
-alias sbase='systemctl --user'
-alias slist='systemctl --user list-units --type=service --all'
-alias son='systemctl --user start'
-alias soff='systemctl --user stop'
-alias slog='journalctl --user -f -u'
+# Devcontainer helpers
+if [[ -n "$IS_MACOS" ]]; then
+  alias link-devcontainer='ln -sf "$HOME/code/dotfiles/devcontainer" .devcontainer'
+else
+  alias link-devcontainer='ln -sf /mnt/devcontainer-ro .devcontainer'
+fi
+alias unlink-devcontainer='rm .devcontainer'
 
-# GPU-related aliases
-alias gpuinfo="sudo nvidia-smi -q -d POWER; nvidia-smi -q -d CLOCK; nvidia-smi -q -d VOLTAGE; nvidia-smi"
-alias gpureload="sudo rmmod nvidia_uvm; sudo modprobe nvidia_uvm"
-
-# Sunshine/Moonlight - wake display for remote connection
-alias moonwake='WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 kscreen-doctor --dpms on && sleep 0.3 && WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 kscreen-doctor output.HDMI-A-2.enable'
-
-# Alias for stringify script
-alias gssh='function _gssh(){ gcloud compute ssh --project=corsali-development --zone=us-central1-a $1; }; _gssh'
-
-# Alias for finding file descriptor offendors
-#alias offenders="lsof -n | awk '{print \$2}' | sort | uniq -c | sort -rn | head -10 | xargs -I {} ps -p {} -o pid,ppid,cmd"
-alias offenders='(echo "FDs     PID     PPID    CMD"; echo "---     ---     ----    ---"; lsof -n | awk '"'"'{print $2}'"'"' | sort | uniq -c | sort -rn | head -10 | awk '"'"'{print $2, $1}'"'"' | while read pid count; do printf "%-8s" "$count"; ps -p $pid -o pid=,ppid=,cmd= --no-headers | awk '"'"'{printf "%-8s %-8s %s\n", $1, $2, $3}'"'"'; done) | column -t'
-
-#alias gcp-run='f(){ for i in $(seq $1 $2); do gcloud compute ssh --project=corsali-development --zone=us-central1-a root@$3-$i --command="$4"; done }; f'
-alias gcp-run='f(){ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then echo "Usage: gcp-run START_NUM END_NUM VM_PREFIX \"COMMAND\"\nRuns COMMAND on VMs named VM_PREFIX-N where N ranges from START_NUM to END_NUM\nExample: gcp-run 1 3 validator \"docker ps\""; return; fi; for i in $(seq $1 $2); do gcloud compute ssh --project=corsali-development --zone=us-central1-a root@$3-$i --command="$4"; done }; f'
-
-alias link-devcontainer="ln -sf /mnt/devcontainer-ro .devcontainer"
-alias unlink-devcontainer="rm .devcontainer"
-
-# alias link-devcontainer="mkdir -p .devcontainer && sudo mount --bind -o ro /home/tnunamak/code/claude-code/.devcontainer .devcontainer"
-# alias unlink-devcontainer="sudo umount .devcontainer"
-
-#alias link-devcontainer="ln -sf /home/tnunamak/code/claude-code/.devcontainer .devcontainer"
-#alias unlink-devcontainer="rm .devcontainer"
-# Run command as root in a devcontainer
-# Usage: droot <container-name> <command...>
-# Example: droot anka-redactor-dev apt update
 droot() {
-  if [ -z "$1" ] || [ -z "$2" ]; then
+  if [[ -z "$1" ]] || [[ -z "$2" ]]; then
     echo "Usage: droot <container-name> <command...>"
-    echo "Example: droot anka-redactor-dev apt update"
     return 1
   fi
   local container="$1"
@@ -55,142 +61,32 @@ droot() {
 }
 
 firewall-on() {
-  if [ -z "$1" ]; then
-    echo "Usage: firewall-on <container-name>"
-    return 1
-  fi
+  [[ -z "$1" ]] && { echo "Usage: firewall-on <container-name>"; return 1; }
   docker exec "$1" /workspace/.devcontainer/research-mode-toggle.sh on
 }
 
 firewall-off() {
-  if [ -z "$1" ]; then
-    echo "Usage: firewall-off <container-name>"
-    return 1
-  fi
+  [[ -z "$1" ]] && { echo "Usage: firewall-off <container-name>"; return 1; }
   docker exec "$1" /workspace/.devcontainer/research-mode-toggle.sh off
 }
 
 firewall-status() {
-  if [ -z "$1" ]; then
-    echo "Usage: firewall-status <container-name>"
-    return 1
-  fi
+  [[ -z "$1" ]] && { echo "Usage: firewall-status <container-name>"; return 1; }
   docker exec "$1" /workspace/.devcontainer/research-mode-toggle.sh status
 }
 
-
-# Environment Variables
-export PATH=$PATH:$HOME/.local/bin
-export NVM_DIR="$HOME/.nvm"
-export BUN_INSTALL="$HOME/.bun"
-#export PATH=$BUN_INSTALL/bin:$PATH
-export GPG_TTY=$(tty)
-#export PATH=$(npm root -g)/../../bin:$PATH
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # Load nvm first
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-export PATH="$PATH:$(npm config get prefix --workspaces=false)/bin"  # Add npm global bin, ignore workspaces
-#export PNPM_HOME="/home/tnunamak/.local/share/pnpm"
-#export PATH="$PNPM_HOME:$PATH"
-export PATH=$PATH:$HOME/applications/cursor/squashfs-root
-
-if [ ! -S ~/.ssh/ssh_auth_sock ]; then
-    echo "'ssh-agent' has not been started since the last reboot." \
-         "Starting 'ssh-agent' now."
-    eval "$(ssh-agent -s)"
+# SSH agent (persistent across terminals)
+if [[ -n "$IS_LINUX" ]]; then
+  if [[ ! -S ~/.ssh/ssh_auth_sock ]]; then
+    eval "$(ssh-agent -s)" > /dev/null
     ln -sf "$SSH_AUTH_SOCK" ~/.ssh/ssh_auth_sock
-fi
-export SSH_AUTH_SOCK=~/.ssh/ssh_auth_sock
-# see if any key files are already added to the ssh-agent, and if not, add them
-ssh-add -l > /dev/null
-if [ "$?" -ne "0" ]; then
-    echo "No ssh keys have been added to your 'ssh-agent' since the last" \
-         "reboot. Adding default keys now."
-    ssh-add
-fi
-
-# NVM
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
-
-# Conda
-# >>> conda initialize >>>
-# !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/home/tnunamak/miniconda3/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "/home/tnunamak/miniconda3/etc/profile.d/conda.sh" ]; then
-        . "/home/tnunamak/miniconda3/etc/profile.d/conda.sh"
-    else
-        export PATH="/home/tnunamak/miniconda3/bin:$PATH"
-    fi
-fi
-unset __conda_setup
-# <<< conda initialize <<<
-
-
-# Cargo (Rust)
-. "$HOME/.cargo/env"
-
-# Notify updates
-#if [ -x "$(command -v apt)" ]; then
-#  updates=$(apt list --upgradable 2>/dev/null | grep -v "Listing" | wc -l)
-#  if [ "$updates" -gt 0 ]; then
-#    echo "🔔 $updates package(s) can be upgraded. Run: sudo apt upgrade"
-#  fi
-#fi
-if [ -x "$(command -v apt)" ]; then
-  # Count packages that would actually be upgraded (not just listed as upgradable)
-  upgrades=$(apt-get -s upgrade 2>/dev/null | grep "^Inst" | wc -l)
-  if [ "$upgrades" -gt 0 ]; then
-    echo "🔔 $upgrades package(s) can be upgraded. Run: sudo apt upgrade or sudo nala upgrade"
   fi
+  export SSH_AUTH_SOCK=~/.ssh/ssh_auth_sock
+  ssh-add -l > /dev/null 2>&1 || ssh-add -q
 fi
 
-# Disk cleanup suggestions (shows only if disk >75% or >5GB cleanable)
-# Only run on interactive shells, not subshells or scripts
-if [ -x "$HOME/.local/bin/cleanup-check" ] && [[ $- == *i* ]] && [ -z "$CLEANUP_CHECK_RAN" ]; then
-  export CLEANUP_CHECK_RAN=1
-  cleanup-check 2>/dev/null
-fi
+# Secrets
+[[ -f ~/.shell_secrets ]] && . ~/.shell_secrets
 
-# Workstation issues tracker (background check, shows cached results)
-if [ -x "$HOME/.local/bin/workstation-issues" ] && [[ $- == *i* ]] && [ -z "$WORKSTATION_ISSUES_RAN" ]; then
-  export WORKSTATION_ISSUES_RAN=1
-  workstation-issues 2>/dev/null
-  # Refresh cache in background for next shell (no blocking)
-  (workstation-issues --check-upstream --quiet &>/dev/null &)
-fi
-
-# Android
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-export PATH=$PATH:$JAVA_HOME/bin
-
-export ANDROID_HOME=$HOME/Android/Sdk
-export PATH=$PATH:$ANDROID_HOME/emulator
-export PATH=$PATH:$ANDROID_HOME/tools
-export PATH=$PATH:$ANDROID_HOME/tools/bin
-export PATH=$PATH:$ANDROID_HOME/platform-tools
-
-#export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.1.8937393
-
-export ANDROID_ROOT=$HOME/Android
-# Android cross-compilation OpenSSL — conflicts with system OpenSSL 3.x for
-# desktop builds (e.g. Tauri). Source these manually or move to a target-specific
-# Cargo config when doing Android builds. See ~/.cargo/config.toml.
-#export OPENSSL_DIR=$ANDROID_ROOT/openssl-1.1.1w
-#export PKG_CONFIG_ALLOW_CROSS=1
-#export PKG_CONFIG_PATH=$OPENSSL_DIR/lib/pkgconfig
-#export OPENSSL_INCLUDE_DIR=$OPENSSL_DIR/include
-#export OPENSSL_LIB_DIR=$OPENSSL_DIR/lib
-
-export EDITOR=vim
-export VISUAL=vim
-
-# Load secrets if they exist
-if [ -f ~/.shell_secrets ]; then
-    . ~/.shell_secrets
-fi
-
-export DO_NOT_TRACK=1
-export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
+# Machine-specific config (nvm, conda, android, etc.)
+[[ -f ~/.shell_local ]] && . ~/.shell_local

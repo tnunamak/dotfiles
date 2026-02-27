@@ -6,7 +6,13 @@ set -euo pipefail
 # - Creates required host directories
 # - Runs Claude Code inside the container
 
-DEVCONTAINER_SOURCE="/mnt/devcontainer-ro"
+# Resolve devcontainer config location
+DOTFILES_DIR="$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)"
+if [[ "$(uname)" == "Darwin" ]]; then
+    DEVCONTAINER_SOURCE="$DOTFILES_DIR/devcontainer"
+else
+    DEVCONTAINER_SOURCE="/mnt/devcontainer-ro"
+fi
 REBUILD=false
 
 # Parse flags
@@ -33,7 +39,7 @@ fi
 # Check if shared devcontainer config is available
 if [[ ! -d "$DEVCONTAINER_SOURCE" ]]; then
     echo "Error: Shared devcontainer config not found at $DEVCONTAINER_SOURCE"
-    echo "Ensure the bind mount is active (check /etc/fstab)"
+    echo "Run setup.sh from your dotfiles repo to configure it."
     exit 1
 fi
 
