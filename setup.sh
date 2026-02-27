@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-#
-# Assumes https://github.com/neovim/neovim is installed
-#
+set -euo pipefail
 
-curl -fLo ~/.local/share/nvim/site/autoload/plug.vim --create-dirs \
-    https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
+DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Neovim
 mkdir -p ~/.config/nvim
-ln -s "$(pwd)/init.vim" ~/.config/nvim/init.vim
-ln -s ~/.config/nvim/init.vim ~/.vimrc
+ln -sf "$DOTFILES_DIR/nvim/init.lua" ~/.config/nvim/init.lua
 
-# ln -s ./.nvim ~/.config/nvim
+# Zsh
+ln -sf "$DOTFILES_DIR/zsh/.zshrc" ~/.zshrc
 
-# Map ~/.vim/autoload (vim is linked to ~/.config/nvim)
-ln -s ~/.local/share/nvim/site/autoload ~/.config/nvim/autoload
-# Create ~/.vim as a link to nvim
-ln -s ~/.config/nvim ~/.vim
+# Starship
+mkdir -p ~/.config
+ln -sf "$DOTFILES_DIR/starship.toml" ~/.config/starship.toml
 
-curl --create-dirs -o ~/.vim/colors/distinguished.vim https://cdn.jsdelivr.net/gh/Lokaltog/vim-distinguished@develop/colors/distinguished.vim
+# Zsh plugins
+ZSH_PLUGINS=~/.zsh/plugins
+mkdir -p "$ZSH_PLUGINS"
+clone_if_missing() {
+  local repo=$1 dest=$2
+  if [[ ! -d "$dest" ]]; then
+    git clone --depth 1 "$repo" "$dest"
+  fi
+}
+clone_if_missing https://github.com/zsh-users/zsh-autosuggestions "$ZSH_PLUGINS/zsh-autosuggestions"
+clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_PLUGINS/zsh-syntax-highlighting"
 
-vim +PlugInstall +qall
-
-# Requires cmake
-cd ~/.vim/plugged/YouCompleteMe
-./install.py
-
-# Make a place for vim to put swap files
-mkdir -p ~/.vim/tmp
+echo "Done. Open nvim to install plugins, restart your shell to pick up zsh config."

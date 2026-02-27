@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+# Launch Cursor in a devcontainer for any project
+# Uses the same shared devcontainer config as devc
+
+DEVCONTAINER_SOURCE="/mnt/devcontainer-ro"
+
+WORKSPACE="${1:-$(pwd)}"
+WORKSPACE=$(cd "$WORKSPACE" && pwd)
+WORKSPACE_NAME=$(basename "$WORKSPACE")
+
+# Auto-link .devcontainer if missing
+if [[ ! -e "$WORKSPACE/.devcontainer" ]]; then
+    echo "Creating .devcontainer symlink -> $DEVCONTAINER_SOURCE"
+    ln -s "$DEVCONTAINER_SOURCE" "$WORKSPACE/.devcontainer"
+fi
+
+# Ensure container is running
+devcontainer up --workspace-folder "$WORKSPACE" > /dev/null 2>&1 &
+
+# Open Cursor in devcontainer mode
+HEX_PATH=$(printf '%s' "$WORKSPACE" | xxd -p -c 256)
+exec cursor --folder-uri "vscode-remote://dev-container+${HEX_PATH}/workspaces/${WORKSPACE_NAME}"

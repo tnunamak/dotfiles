@@ -1,0 +1,38 @@
+# Minimal starship config — shows what matters, hides what doesn't
+# Full reference: https://starship.rs/config/
+
+format = """$directory$git_branch$git_status$python$nodejs$rust$golang$cmd_duration$line_break$character"""
+
+[directory]
+truncation_length = 3
+
+[git_branch]
+format = "[$branch]($style) "
+style = "bold blue"
+
+[git_status]
+format = '[$all_status$ahead_behind]($style) '
+
+[cmd_duration]
+min_time = 2000
+format = "[$duration]($style) "
+
+[character]
+success_symbol = "[>](bold green)"
+error_symbol = "[>](bold red)"
+
+[python]
+format = '[${version}]($style) '
+detect_extensions = []
+
+[nodejs]
+format = '[${version}]($style) '
+detect_extensions = []
+
+[rust]
+format = '[${version}]($style) '
+detect_extensions = []
+
+[golang]
+format = '[${version}]($style) '
+detect_extensions = []
