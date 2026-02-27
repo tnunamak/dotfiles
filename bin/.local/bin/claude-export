@@ -1,0 +1,670 @@
+#!/usr/bin/env python3
+"""
+Reliable Claude Code conversation exporter.
+Handles compaction chains, multiple sessions, and mixed conversation files.
+"""
+
+import json
+import sys
+import re
+from pathlib import Path
+from datetime import datetime
+from collections import defaultdict, OrderedDict
+from typing import List, Dict, Any, Optional, Set
+
+
+class ConversationExporter:
+    def __init__(self, claude_dir: Path = None, simple_mode: bool = False):
+        if claude_dir is None:
+            claude_dir = Path.home() / ".claude" / "projects" / "-workspace"
+        self.claude_dir = claude_dir
+        self.simple_mode = simple_mode
+
+    @staticmethod
+    def clean_system_reminders(text) -> str:
+        """Remove <system-reminder>...</system-reminder> tags from text."""
+        if not text:
+            return text
+        # Handle non-string types (lists, dicts, etc.)
+        if not isinstance(text, str):
+            return text
+        # Remove system reminder blocks (including newlines around them)
+        text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL)
+        # Clean up multiple consecutive newlines left behind
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    def load_file(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Load a JSONL file and return entries with line numbers."""
+        entries = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    entry['_line_num'] = line_num
+                    entry['_file'] = file_path.name
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    pass
+        return entries
+
+    def identify_conversations(self, entries: List[Dict[str, Any]]) -> Dict[str, Dict]:
+        """
+        Identify separate conversations in a session file based on sessionId.
+        Returns: {sessionId: {info about that conversation}}
+        """
+        conversations = defaultdict(lambda: {
+            'entries': [],
+            'first_line': None,
+            'last_line': None,
+            'summaries': []
+        })
+
+        for entry in entries:
+            session_id = entry.get('sessionId')
+            entry_type = entry.get('type')
+
+            # Track summaries separately (they often have sessionId=null)
+            if entry_type == 'summary':
+                # Summaries with null sessionId - could belong to any conversation
+                if session_id is None or session_id == 'null':
+                    # We'll figure out which conversation they belong to later
+                    conversations['_orphan_summaries']['entries'].append(entry)
+                else:
+                    conversations[session_id]['summaries'].append(entry)
+            elif session_id:
+                conv = conversations[session_id]
+                conv['entries'].append(entry)
+                if conv['first_line'] is None:
+                    conv['first_line'] = entry['_line_num']
+                conv['last_line'] = entry['_line_num']
+
+        # Assign orphan summaries to the conversation they precede
+        if '_orphan_summaries' in conversations:
+            orphan_summaries = conversations['_orphan_summaries']['entries']
+            del conversations['_orphan_summaries']
+
+            # If summaries appear BEFORE the first content line of a conversation,
+            # they likely belong to a DIFFERENT conversation
+            # If they appear DURING a conversation, they're compaction markers for THAT conversation
+            for conv_id, conv_data in conversations.items():
+                if conv_data['first_line']:
+                    # Check for summaries that appear within this conversation's range
+                    for summary in orphan_summaries:
+                        if conv_data['first_line'] <= summary['_line_num'] <= conv_data['last_line']:
+                            conv_data['summaries'].append(summary)
+
+        return dict(conversations)
+
+    def find_file_with_uuid(self, uuid: str, exclude_files: Set[Path] = None) -> Optional[Path]:
+        """Find which file contains an entry with this UUID."""
+        if exclude_files is None:
+            exclude_files = set()
+
+        for file_path in self.claude_dir.glob("*.jsonl"):
+            if file_path.name.startswith("agent-") or file_path in exclude_files:
+                continue
+
+            try:
+                with open(file_path, 'r') as f:
+                    for line in f:
+                        if f'"uuid":"{uuid}"' in line:
+                            return file_path
+            except Exception:
+                pass
+
+        return None
+
+    def trace_conversation_chain(self, start_file: Path, session_id: str) -> List[Dict]:
+        """
+        Trace a conversation backwards through compaction chain.
+        Returns list of segments in chronological order (oldest first).
+        """
+        segments = []
+        processed_files = set()
+        to_process = [(start_file, session_id, "start")]
+
+        while to_process:
+            file_path, sess_id, label = to_process.pop(0)
+
+            if file_path in processed_files:
+                continue
+
+            processed_files.add(file_path)
+            print(f"  Tracing: {file_path.name} (session: {sess_id[:16]}...) [{label}]")
+
+            entries = self.load_file(file_path)
+            conversations = self.identify_conversations(entries)
+
+            # Get the relevant conversation
+            if sess_id not in conversations:
+                print(f"    Warning: sessionId {sess_id[:16]}... not found in this file")
+                continue
+
+            conv_data = conversations[sess_id]
+            summaries = conv_data['summaries']
+
+            # Store this segment
+            segment = {
+                'file': file_path,
+                'session_id': sess_id,
+                'entries': conv_data['entries'],
+                'summaries': summaries,
+                'first_line': conv_data['first_line'],
+                'last_line': conv_data['last_line']
+            }
+            segments.append(segment)
+
+            # Follow summary references to previous segments
+            if summaries:
+                refs_found = 0
+                for summary in summaries:
+                    leaf_uuid = summary.get('leafUuid')
+                    if leaf_uuid:
+                        ref_file = self.find_file_with_uuid(leaf_uuid, processed_files)
+                        if ref_file:
+                            refs_found += 1
+                            # Need to determine the sessionId of the referenced segment
+                            # For now, assume it might be in a file with a different sessionId
+                            to_process.append((ref_file, sess_id, f"referenced by summary"))
+                        # Silently skip missing references - they may have been compacted/deleted
+                if refs_found > 0:
+                    print(f"    Found {refs_found} earlier segments to trace")
+
+        # Return in chronological order (oldest first)
+        return segments[::-1]
+
+    def export_conversation(self, session_file: Path, output_file: str, session_id: str = None):
+        """
+        Export a complete conversation including all compaction history.
+
+        Args:
+            session_file: The session file to start from
+            output_file: Where to write the export
+            session_id: Specific session ID to export (if None, use the most recent)
+        """
+        print(f"\n{'='*80}")
+        print(f"EXPORTING CONVERSATION")
+        print(f"{'='*80}\n")
+        print(f"Source file: {session_file.name}")
+
+        # Load and identify conversations
+        entries = self.load_file(session_file)
+        conversations = self.identify_conversations(entries)
+
+        if not conversations:
+            print("ERROR: No conversations found in file")
+            return
+
+        # Choose which conversation to export
+        if session_id is None:
+            # Use the conversation with the most recent content
+            session_id = max(conversations.keys(),
+                           key=lambda k: conversations[k]['last_line'] or 0)
+
+        if session_id not in conversations:
+            print(f"ERROR: Session ID {session_id} not found")
+            print(f"Available: {list(conversations.keys())}")
+            return
+
+        print(f"Target session: {session_id}")
+        conv_data = conversations[session_id]
+        print(f"Lines: {conv_data['first_line']}-{conv_data['last_line']}")
+        print(f"Entries: {len(conv_data['entries'])}")
+        print(f"Summaries: {len(conv_data['summaries'])}")
+
+        # Trace the full conversation chain
+        print(f"\nTracing conversation chain...")
+        segments = self.trace_conversation_chain(session_file, session_id)
+
+        print(f"\n{'='*80}")
+        print(f"CONVERSATION CHAIN: {len(segments)} segments")
+        print(f"{'='*80}")
+        for i, seg in enumerate(segments, 1):
+            print(f"{i}. {seg['file'].name} (lines {seg['first_line']}-{seg['last_line']}, {len(seg['entries'])} entries)")
+
+        # Export
+        print(f"\nExporting to {output_file}...")
+        self._write_export(segments, output_file, session_id)
+        print(f"✓ Complete!")
+
+    def _write_export(self, segments: List[Dict], output_file: str, session_id: str):
+        """Write the formatted export file."""
+        total_entries = sum(len(seg['entries']) for seg in segments)
+
+        with open(output_file, 'w', encoding='utf-8') as out:
+            # Minimal header
+            out.write(f"Exported: {datetime.now().isoformat()}\n")
+            out.write(f"Session: {session_id}\n")
+            out.write(f"Segments: {len(segments)} | Entries: {total_entries}\n")
+
+            # Write content
+            entry_num = 0
+            for seg_idx, segment in enumerate(segments, 1):
+                if len(segments) > 1:
+                    out.write(f"\n--- Segment {seg_idx}/{len(segments)} ---\n")
+
+                for entry in segment['entries']:
+                    formatted = self._format_entry(entry, entry_num + 1)
+                    if formatted:
+                        entry_num += 1
+                        out.write(formatted)
+
+            out.write(f"\n--- END ({entry_num} entries) ---\n")
+
+    def _format_entry(self, entry: Dict[str, Any], num: int) -> Optional[str]:
+        """Format a single entry for export."""
+        entry_type = entry.get('type')
+
+        if entry_type == 'user':
+            message = entry.get('message', {})
+            content = message.get('content', '')
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        block_type = block.get('type', '')
+                        if block_type == 'text':
+                            text = self.clean_system_reminders(block.get('text', ''))
+                            if text:  # Only add if not empty after cleaning
+                                text_parts.append(text)
+                        elif block_type == 'tool_result' and not self.simple_mode:
+                            tool_use_id = block.get('tool_use_id', 'unknown')
+                            result_content = block.get('content', '')
+
+                            # Handle list content (extract text from blocks)
+                            if isinstance(result_content, list):
+                                content_parts = []
+                                for item in result_content:
+                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                        content_parts.append(item.get('text', ''))
+                                result_content = '\n'.join(content_parts)
+
+                            result_content = self.clean_system_reminders(result_content)
+                            # Truncate very long results
+                            if isinstance(result_content, str) and len(result_content) > 5000:
+                                result_content = result_content[:5000] + f"\n... (truncated, {len(result_content)} chars total)"
+                            text_parts.append(f"[TOOL RESULT for {tool_use_id}]\n{result_content}")
+                text = '\n\n'.join(text_parts)
+            else:
+                text = self.clean_system_reminders(str(content))
+
+            return f"\n[{num}] USER:\n{text}\n"
+
+        elif entry_type == 'assistant':
+            message = entry.get('message', {})
+            content = message.get('content', [])
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        block_type = block.get('type', '')
+                        if block_type == 'text':
+                            text = self.clean_system_reminders(block.get('text', ''))
+                            if text:  # Only add if not empty after cleaning
+                                text_parts.append(text)
+                        elif block_type == 'thinking' and not self.simple_mode:
+                            thinking = self.clean_system_reminders(block.get('thinking', ''))
+                            if thinking:
+                                text_parts.append(f"[THINKING]\n{thinking}\n[/THINKING]")
+                        elif block_type == 'tool_use' and not self.simple_mode:
+                            tool_name = block.get('name', 'unknown')
+                            tool_input = block.get('input', {})
+                            tool_id = block.get('id', 'unknown')
+                            # Format tool input nicely
+                            input_str = json.dumps(tool_input, indent=2)
+                            # Truncate very long inputs
+                            if len(input_str) > 2000:
+                                input_str = input_str[:2000] + "\n... (truncated)"
+                            text_parts.append(f"[TOOL USE: {tool_name}]\nID: {tool_id}\nInput:\n{input_str}")
+                text = '\n\n'.join(text_parts)
+            else:
+                text = self.clean_system_reminders(str(content))
+
+            return f"\n[{num}] ASSISTANT:\n{text}\n"
+
+        return None
+
+
+def find_current_session() -> Path:
+    """Find the most recently modified session file."""
+    claude_dir = Path.home() / ".claude" / "projects" / "-workspace"
+
+    sessions = []
+    for file_path in claude_dir.glob("*.jsonl"):
+        if not file_path.name.startswith("agent-"):
+            sessions.append((file_path.stat().st_mtime, file_path))
+
+    if not sessions:
+        raise FileNotFoundError("No session files found")
+
+    sessions.sort(reverse=True)
+    return sessions[0][1]
+
+
+def interactive_select_conversation():
+    """Interactive mode to select which conversation to export."""
+    import curses
+
+    claude_dir = Path.home() / ".claude" / "projects" / "-workspace"
+
+    print("="*80)
+    print("INTERACTIVE CONVERSATION EXPORT")
+    print("="*80)
+    print("\nScanning for conversations...\n")
+
+    # Find all session files (skip tiny ones and agents)
+    session_files = []
+    for file_path in claude_dir.glob("*.jsonl"):
+        if file_path.name.startswith("agent-"):
+            continue
+        size = file_path.stat().st_size
+        if size > 10 * 1024:  # Skip files < 10KB
+            session_files.append((file_path.stat().st_mtime, size, file_path))
+
+    session_files.sort(reverse=True)  # Most recent first
+
+    # Analyze each file to find conversation chains
+    exporter = ConversationExporter()
+    conversations_list = []
+    seen_session_ids = set()
+
+    for mtime, size, file_path in session_files[:20]:  # Limit to 20 most recent
+        try:
+            entries = exporter.load_file(file_path)
+            conversations = exporter.identify_conversations(entries)
+
+            for session_id, conv_data in conversations.items():
+                if len(conv_data['entries']) < 5:  # Skip very small conversations
+                    continue
+
+                # Skip if we've already seen this session (it's part of a chain we already processed)
+                if session_id in seen_session_ids:
+                    continue
+
+                # Check if this conversation is a continuation (has summaries)
+                # If it has summaries, it's the HEAD of a chain, which is what we want to show
+                # If it has NO summaries, it's a standalone conversation
+                # Either way, we show it (but not older parts of the chain)
+
+                # Get first and last user messages
+                first_msg = None
+                last_msg = None
+
+                # Search forward for first message
+                for entry in conv_data['entries'][:50]:
+                    if entry.get('type') == 'user':
+                        msg = entry.get('message', {})
+                        content = msg.get('content', '')
+                        if isinstance(content, str) and content:
+                            first_msg = content
+                            break
+                        elif isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get('type') == 'text':
+                                    first_msg = block.get('text', '')
+                                    break
+                            if first_msg:
+                                break
+
+                # Search backward for last message
+                for entry in reversed(conv_data['entries'][-50:]):
+                    if entry.get('type') == 'user':
+                        msg = entry.get('message', {})
+                        content = msg.get('content', '')
+                        if isinstance(content, str) and content:
+                            last_msg = content
+                            break
+                        elif isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get('type') == 'text':
+                                    last_msg = block.get('text', '')
+                                    break
+                            if last_msg:
+                                break
+
+                # Sanitize messages: remove newlines, backslashes, and truncate
+                def sanitize(text):
+                    if not text:
+                        return "(no text messages)"
+                    # Replace newlines and other whitespace with spaces
+                    text = ' '.join(text.split())
+                    # Remove backslashes
+                    text = text.replace('\\', '')
+                    return text
+
+                first_msg = sanitize(first_msg)
+                last_msg = sanitize(last_msg)
+
+                # Get timestamp from first entry
+                first_entry = conv_data['entries'][0] if conv_data['entries'] else {}
+                timestamp = first_entry.get('timestamp', '')
+                if timestamp:
+                    try:
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        time_str = dt.strftime('%Y-%m-%d %H:%M')
+                    except:
+                        time_str = timestamp[:16]
+                else:
+                    time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+
+                # Count summaries to indicate chain depth
+                summary_count = len(conv_data['summaries'])
+                chain_info = f" [+{summary_count} earlier]" if summary_count > 0 else ""
+
+                conversations_list.append({
+                    'file': file_path,
+                    'session_id': session_id,
+                    'time': time_str,
+                    'entries': len(conv_data['entries']),
+                    'first_msg': first_msg or "(no text messages)",
+                    'last_msg': last_msg or "(no text messages)",
+                    'file_size': size,
+                    'chain_depth': summary_count
+                })
+
+                seen_session_ids.add(session_id)
+
+        except Exception as e:
+            continue
+
+    if not conversations_list:
+        print("ERROR: No conversations found")
+        sys.exit(1)
+
+    # Use curses for arrow-key selection
+    def draw_menu(stdscr, selected_idx):
+        stdscr.clear()
+        h, w = stdscr.getmaxyx()
+        has_colors = curses.has_colors()
+
+        # Header
+        title = "Select Conversation (UP/DOWN arrows, ENTER to select, q to quit)"
+        header_attr = curses.color_pair(1) | curses.A_BOLD if has_colors else curses.A_BOLD
+        stdscr.addstr(0, 0, title[:w-1], header_attr)
+        stdscr.addstr(1, 0, "=" * min(w-1, 80), header_attr)
+
+        # Calculate how many conversations fit on screen (each takes 4 lines)
+        lines_per_conv = 4
+        max_visible = max(1, (h - 4) // lines_per_conv)
+
+        # Calculate scroll window
+        if len(conversations_list) <= max_visible:
+            visible_start = 0
+            visible_end = len(conversations_list)
+        else:
+            # Center the selected item
+            visible_start = max(0, selected_idx - max_visible // 2)
+            visible_end = min(len(conversations_list), visible_start + max_visible)
+            # Adjust if we're at the end
+            if visible_end == len(conversations_list):
+                visible_start = max(0, visible_end - max_visible)
+
+        # Show conversations
+        current_y = 3
+        for i in range(visible_start, visible_end):
+            if current_y >= h - 2:
+                break
+
+            conv = conversations_list[i]
+
+            # Format the main line
+            chain_indicator = f" [+{conv['chain_depth']} earlier]" if conv['chain_depth'] > 0 else ""
+            line1 = f"{i+1}. [{conv['time']}] {conv['entries']} entries{chain_indicator}"
+
+            # Format the preview lines
+            max_preview_len = min(w-12, 90)
+            first_preview = conv['first_msg'][:max_preview_len]
+            last_preview = conv['last_msg'][:max_preview_len]
+            line2 = f"   First: {first_preview}..."
+            line3 = f"   Last:  {last_preview}..."
+
+            # Draw with highlighting if selected
+            if i == selected_idx:
+                # Selected conversation - use green/bold with reverse video
+                line1_attr = curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD if has_colors else curses.A_REVERSE | curses.A_BOLD
+                line2_attr = curses.color_pair(4) | curses.A_REVERSE if has_colors else curses.A_REVERSE
+                line3_attr = curses.color_pair(5) | curses.A_REVERSE if has_colors else curses.A_REVERSE
+
+                try:
+                    stdscr.addstr(current_y, 0, line1[:w-1], line1_attr)
+                    if current_y + 1 < h - 1:
+                        stdscr.addstr(current_y + 1, 0, line2[:w-1], line2_attr)
+                    if current_y + 2 < h - 1:
+                        stdscr.addstr(current_y + 2, 0, line3[:w-1], line3_attr)
+                except curses.error:
+                    pass
+            else:
+                # Non-selected conversation - use subtle colors
+                line1_attr = curses.color_pair(6) if has_colors else curses.A_NORMAL
+                line2_attr = curses.color_pair(4) | curses.A_DIM if has_colors else curses.A_DIM
+                line3_attr = curses.color_pair(5) | curses.A_DIM if has_colors else curses.A_DIM
+
+                try:
+                    stdscr.addstr(current_y, 0, line1[:w-1], line1_attr)
+                    if current_y + 1 < h - 1:
+                        stdscr.addstr(current_y + 1, 0, line2[:w-1], line2_attr)
+                    if current_y + 2 < h - 1:
+                        stdscr.addstr(current_y + 2, 0, line3[:w-1], line3_attr)
+                except curses.error:
+                    pass
+
+            current_y += lines_per_conv
+
+        # Show scroll indicator
+        if len(conversations_list) > max_visible:
+            indicator = f" Showing {visible_start+1}-{visible_end} of {len(conversations_list)} "
+            indicator_attr = curses.color_pair(3) | curses.A_DIM if has_colors else curses.A_DIM
+            try:
+                stdscr.addstr(h-1, 0, indicator[:w-1], indicator_attr)
+            except curses.error:
+                pass
+
+        stdscr.refresh()
+
+    def select_with_arrows(stdscr):
+        curses.curs_set(0)  # Hide cursor
+
+        # Initialize colors if available
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+            # Define color pairs
+            curses.init_pair(1, curses.COLOR_CYAN, -1)      # Header
+            curses.init_pair(2, curses.COLOR_GREEN, -1)     # Selected conversation
+            curses.init_pair(3, curses.COLOR_YELLOW, -1)    # Chain indicator
+            curses.init_pair(4, curses.COLOR_BLUE, -1)      # First message
+            curses.init_pair(5, curses.COLOR_MAGENTA, -1)   # Last message
+            curses.init_pair(6, curses.COLOR_WHITE, -1)     # Normal text
+
+        selected_idx = 0
+
+        while True:
+            draw_menu(stdscr, selected_idx)
+
+            key = stdscr.getch()
+
+            if key == curses.KEY_UP and selected_idx > 0:
+                selected_idx -= 1
+            elif key == curses.KEY_DOWN and selected_idx < len(conversations_list) - 1:
+                selected_idx += 1
+            elif key in [ord('\n'), ord('\r'), curses.KEY_ENTER, 10, 13]:
+                return selected_idx
+            elif key in [ord('q'), ord('Q'), 27]:  # q or ESC
+                return None
+
+    selected_idx = curses.wrapper(select_with_arrows)
+
+    if selected_idx is None:
+        print("\nCancelled.")
+        sys.exit(0)
+
+    selected = conversations_list[selected_idx]
+
+    # Get output filename
+    default_output = f"conversation_{selected['time'].replace(' ', '_').replace(':', '-')}.txt"
+    output_file = input(f"\nOutput filename [{default_output}]: ").strip()
+    if not output_file:
+        output_file = default_output
+
+    print()
+    return selected['file'], output_file, selected['session_id']
+
+
+def main():
+    # Parse flags
+    simple_mode = '--simple' in sys.argv
+    interactive = '-i' in sys.argv or '--interactive' in sys.argv
+    show_help = '-h' in sys.argv or '--help' in sys.argv or 'help' in sys.argv
+
+    # Remove flags from argv for positional arg parsing
+    args = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
+
+    # Help
+    if show_help:
+        print("Usage: claude_conversation_export.py [options] [session_file] [output_file] [session_id]")
+        print("\nOptions:")
+        print("  -i, --interactive    Interactive mode - choose from available conversations")
+        print("  --simple            Simple mode - skip tool calls, tool results, and thinking blocks")
+        print("  -h, --help          Show this help message")
+        print("\nExamples:")
+        print("  # Interactive mode")
+        print("  ./claude_conversation_export.py -i")
+        print("\n  # Simple mode (just user/assistant text)")
+        print("  ./claude_conversation_export.py --simple")
+        print("\n  # Interactive + simple")
+        print("  ./claude_conversation_export.py -i --simple")
+        print("\n  # Auto-detect current session")
+        print("  ./claude_conversation_export.py")
+        print("\n  # Export specific file")
+        print("  ./claude_conversation_export.py session.jsonl output.txt")
+        sys.exit(0)
+
+    # Interactive mode
+    if interactive:
+        session_file, output_file, session_id = interactive_select_conversation()
+    # No arguments - auto-detect current session
+    elif len(args) == 0:
+        print("Auto-detecting current session...\n")
+        session_file = find_current_session()
+        output_file = "conversation_export.txt"
+        session_id = None
+    # Manual specification
+    else:
+        session_file = Path(args[0]).expanduser()
+        output_file = args[1] if len(args) > 1 else "conversation_export.txt"
+        session_id = args[2] if len(args) > 2 else None
+
+    if not session_file.exists():
+        print(f"ERROR: File not found: {session_file}")
+        sys.exit(1)
+
+    exporter = ConversationExporter(simple_mode=simple_mode)
+    exporter.export_conversation(session_file, output_file, session_id)
+
+
+if __name__ == "__main__":
+    main()
