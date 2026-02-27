@@ -50,6 +50,13 @@ else
 fi
 alias unlink-devcontainer='rm .devcontainer'
 
+# Kimi: ensure AGENTS.md exists in project dir (no global config support)
+kimi() {
+  [[ ! -e AGENTS.md ]] && [[ -f ~/code/dotfiles/ai/AGENTS.md ]] && \
+    ln -s ~/code/dotfiles/ai/AGENTS.md AGENTS.md 2>/dev/null
+  command kimi "$@"
+}
+
 droot() {
   if [[ -z "$1" ]] || [[ -z "$2" ]]; then
     echo "Usage: droot <container-name> <command...>"
