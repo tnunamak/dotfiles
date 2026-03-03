@@ -4,24 +4,50 @@ set -euo pipefail
 # Launch devcontainer for any project
 # - Auto-links .devcontainer if missing
 # - Creates required host directories
-# - Runs Claude Code inside the container
+# - Runs a tool (claude, codex, gemini, kimi, or shell) inside the container
 
-# Resolve devcontainer config location
+# Resolve devcontainer config location from dotfiles
 DOTFILES_DIR="$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)"
-if [[ "$(uname)" == "Darwin" ]]; then
-    DEVCONTAINER_SOURCE="$DOTFILES_DIR/devcontainer"
-else
-    DEVCONTAINER_SOURCE="/mnt/devcontainer-ro"
-fi
+DEVCONTAINER_SOURCE="$DOTFILES_DIR/devcontainer"
 REBUILD=false
+TOOL="shell"
+KNOWN_TOOLS="claude codex gemini kimi shell"
+
+usage() {
+    cat <<'EOF'
+Usage: devc [flags] [tool] [workspace]
+
+Tools: claude, codex, gemini, kimi, shell (default)
+
+Flags:
+  --rebuild        Remove and rebuild the devcontainer
+  -t TOOL          Specify an arbitrary command as the tool
+  --help, -h       Show this help
+
+Examples:
+  devc                                   # shell in current dir
+  devc claude                            # claude in current dir
+  devc codex ~/code/myproject            # codex in ~/code/myproject
+  devc ~/code/myproject                  # shell in ~/code/myproject
+  devc -t 'npm test' ~/code/myproject    # run arbitrary command
+EOF
+    exit 0
+}
 
 # Parse flags
 while [[ "${1:-}" == -* ]]; do
     case "$1" in
         --rebuild) REBUILD=true; shift ;;
+        -t) TOOL="${2:?-t requires an argument}"; shift 2 ;;
+        --help|-h) usage ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
+
+# First positional: tool name (if known) or workspace path
+if [[ -n "${1:-}" ]] && [[ " $KNOWN_TOOLS " == *" $1 "* ]]; then
+    TOOL="$1"; shift
+fi
 
 WORKSPACE="${1:-$(pwd)}"
 
@@ -59,7 +85,7 @@ fi
 
 # Run initializeCommand from devcontainer.json (create required dirs)
 mkdir -p ~/.devcontainer-homes/"${WORKSPACE_NAME}"/.config \
-         ~/.claude \
+         ~/.claude ~/.codex ~/.gemini ~/.kimi \
          ~/.config/{git,gh,gcloud,posthog}
 touch ~/.claude/.credentials.json ~/.sentryclirc 2>/dev/null || true
 
@@ -99,6 +125,15 @@ if [[ -f "$WORKSPACE/.devport" ]]; then
     done < "$WORKSPACE/.devport"
 fi
 
-# Run Claude Code
-exec devcontainer exec --workspace-folder "$WORKSPACE" \
-  bash -lc 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --dangerously-skip-permissions'
+# Resolve tool command
+case "$TOOL" in
+    claude)  CMD='export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --dangerously-skip-permissions' ;;
+    codex)   CMD='codex --full-auto' ;;
+    gemini)  CMD='gemini --yolo' ;;
+    kimi)    CMD='kimi --yolo' ;;
+    shell)   CMD='exec bash -l' ;;
+    *)       CMD="$TOOL" ;;
+esac
+
+echo "Running: $TOOL"
+exec devcontainer exec --workspace-folder "$WORKSPACE" bash -lc "$CMD"

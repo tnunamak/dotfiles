@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Host-side Playwright MCP server for devcontainer browser access.
+# Runs a headed browser that devcontainers can control via MCP over HTTP.
+# Usage: playwright-mcp-server (or via systemd user service)
+
+# Ensure node/npx are on PATH (systemd doesn't source shell profiles)
+export NVM_DIR="$HOME/.nvm"
+[[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
+
+exec npx @playwright/mcp@latest --port 3100 --host 0.0.0.0 --allowed-hosts '*'

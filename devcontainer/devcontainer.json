@@ -1,17 +1,20 @@
 {
   "name": "Claude Code Sandbox",
+  "initializeCommand": "mkdir -p ~/.devcontainer-homes/${localWorkspaceFolderBasename}/.config ~/.claude ~/.codex ~/.gemini ~/.kimi ~/.config/{git,gh,gcloud,posthog} && touch ~/.claude/.credentials.json ~/.sentryclirc",
   "build": {
     "dockerfile": "Dockerfile",
     "args": {
-      "TZ": "${localEnv:TZ:America/Los_Angeles}",
-      "CLAUDE_CODE_VERSION": "latest",
+      "TZ": "${localEnv:TZ:America/Chicago}",
       "GIT_DELTA_VERSION": "0.18.2",
       "ZSH_IN_DOCKER_VERSION": "1.2.0"
     }
   },
   "runArgs": [
+    "--name", "${localWorkspaceFolderBasename}-dev",
+    "--device", "nvidia.com/gpu=all",
     "--cap-add=NET_ADMIN",
-    "--cap-add=NET_RAW"
+    "--cap-add=NET_RAW",
+    "--privileged"
   ],
   "customizations": {
     "vscode": {
@@ -43,15 +46,44 @@
   "remoteUser": "node",
   "mounts": [
     "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
-    "source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume"
+    "source=${localEnv:HOME}/.devcontainer-homes/${localWorkspaceFolderBasename},target=/home/node,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude.json,target=/home/node/.claude.json,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.kimi,target=/home/node/.kimi,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/../,target=/projects,type=bind",
+    "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gcloud,target=/home/node/.config/gcloud,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly",
+    "source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,type=bind",
+    "source=${localEnv:HOME}/.sentryclirc,target=/home/node/.sentryclirc,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/posthog,target=/home/node/.config/posthog,type=bind,consistency=cached",
+    "source=devcontainer-npm-cache,target=/home/node/.npm,type=volume",
+    "source=devcontainer-bun-cache,target=/home/node/.bun/install/cache,type=volume",
+    "source=devcontainer-pip-cache,target=/home/node/.cache/pip,type=volume",
+    "source=devcontainer-pnpm-store,target=/home/node/.local/share/pnpm/store,type=volume",
+    "source=devcontainer-cargo,target=/home/node/.cargo,type=volume",
+    "source=devcontainer-rustup,target=/home/node/.rustup,type=volume"
   ],
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
-    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
+    "SSH_AUTH_SOCK": "/ssh-agent",
+    "EDITOR": "${localEnv:EDITOR:vim}",
+    "VISUAL": "${localEnv:VISUAL:vim}",
+    "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "KIMI_CODE_API_KEY": "${localEnv:KIMI_CODE_API_KEY}",
+    "NGROK_AUTHTOKEN": "${localEnv:NGROK_AUTHTOKEN}",
+    "SENTRY_AUTH_TOKEN": "${localEnv:SENTRY_AUTH_TOKEN}",
+    "POSTHOG_PERSONAL_API_KEY": "${localEnv:POSTHOG_PERSONAL_API_KEY}"
   },
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=delegated",
+  "workspaceFolder": "${localWorkspaceFolder}",
   "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
   "waitFor": "postStartCommand"
 }
