@@ -20,6 +20,9 @@ export GPG_TTY=$(tty)
 # Privacy
 export DO_NOT_TRACK=1
 
+# Kitty: use SSH kitten for automatic terminfo + shell integration
+[[ "$TERM" == "xterm-kitty" ]] && alias ssh='kitten ssh'
+
 # Aliases
 alias ll='ls -lah'
 alias la='ls -A'
