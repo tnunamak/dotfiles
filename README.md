@@ -64,6 +64,28 @@ To update the devcontainer config from upstream:
 # Review the diff, then commit if happy
 ```
 
+## Kitty + tmux
+
+**SSH** is aliased to `kitten ssh` when running in kitty. This automatically copies terminfo to remote hosts, fixing the `xterm-kitty: unknown terminal type` error that breaks tmux over SSH. Works transparently — just `ssh host` as normal.
+
+**tmux essentials:**
+- `ctrl+b w` — tree view of all sessions/windows/panes (the "menu")
+- `ctrl+b c` — new window, `ctrl+b 0-9` — switch window
+- `ctrl+b %` — vertical split, `ctrl+b "` — horizontal split
+- `ctrl+b z` — zoom pane to fullscreen (toggle)
+- `ctrl+b ,` — rename window
+- `tmux new -s name` — named session, `tmux a -t name` — reattach
+
+Note: tmux keybindings don't work inside Claude Code (it captures input). Use mouse mode (`set -g mouse on` in `.tmux.conf`) to click between tmux panes while Claude is running.
+
+**kitty essentials:**
+- `ctrl+shift+f1` — show all keyboard shortcuts
+- `ctrl+shift+f2` — open full config with docs
+- `ctrl+shift+f5` — reload config
+- `ctrl+shift+e` — clickable links/paths/hashes in terminal output
+- `ctrl+shift+t` — new tab, `ctrl+shift+right/left` — switch tabs
+- `ctrl+shift+enter` — new split (works as tmux alternative for local use)
+
 ## Design decisions
 
 **Stow over chezmoi** — [chezmoi](https://www.chezmoi.io/) is more powerful (templating, secrets, encryption) but adds complexity. Stow is simpler: just symlinks, no state, no learning curve. Machine-specific config is handled by `.local` files that are sourced if present. If the setup grows to 3+ machines with significantly different needs, chezmoi would be worth revisiting.
