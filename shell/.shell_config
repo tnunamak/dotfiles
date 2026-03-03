@@ -100,3 +100,10 @@ fi
 
 # Machine-specific config (nvm, conda, android, etc.)
 [[ -f ~/.shell_local ]] && . ~/.shell_local
+
+# Startup status (print cached, refresh in background)
+if [[ $- == *i* ]] && [[ -z "$_SHELL_STATUS_RAN" ]]; then
+  export _SHELL_STATUS_RAN=1
+  [[ -f ~/.cache/shell-status/summary ]] && printf '%b\n' "$(cat ~/.cache/shell-status/summary)"
+  ( shell-status-refresh &>/dev/null & )
+fi

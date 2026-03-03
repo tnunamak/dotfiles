@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Collects shell startup status info and writes to a cache file.
+# Designed to run in the background — shell_config prints cached output instantly.
+set -euo pipefail
+
+CACHE_DIR="$HOME/.cache/shell-status"
+CACHE_FILE="$CACHE_DIR/summary"
+LOCK_FILE="$CACHE_DIR/.lock"
+mkdir -p "$CACHE_DIR"
+
+# Prevent concurrent runs
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+lines=()
+
+# --- apt upgrades ---
+if command -v apt-get &>/dev/null; then
+  upgrades=$(apt-get -s upgrade 2>/dev/null | grep -c "^Inst" || true)
+  if (( upgrades > 0 )); then
+    lines+=("\033[33m$upgrades\033[0m package(s) upgradable")
+    lines+=("  sudo nala upgrade")
+  fi
+fi
+
+# --- disk cleanup ---
+if [[ -x "$HOME/.local/bin/cleanup-check" ]]; then
+  cleanup_output=$("$HOME/.local/bin/cleanup-check" 2>/dev/null || true)
+  if [[ -n "$cleanup_output" ]]; then
+    while IFS= read -r line; do
+      lines+=("$line")
+    done <<< "$cleanup_output"
+  fi
+fi
+
+# --- workstation issues ---
+if [[ -x "$HOME/.local/bin/workstation-issues" ]]; then
+  issues_output=$("$HOME/.local/bin/workstation-issues" --check-upstream 2>/dev/null || true)
+  if [[ -n "$issues_output" ]]; then
+    while IFS= read -r line; do
+      lines+=("$line")
+    done <<< "$issues_output"
+  fi
+fi
+
+# --- tool update checks ---
+update_lines=()
+
+check_deb_update() {
+  local pkg="$1" repo="$2"
+  local installed latest
+  installed=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null) || return
+  latest=$(command gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) || return
+  [[ -z "$latest" ]] && return
+  # Normalize: strip leading 'v' for comparison
+  local latest_bare="${latest#v}"
+  if [[ "$installed" != "$latest_bare" ]]; then
+    update_lines+=("  \033[33m↑\033[0m $pkg $installed → $latest_bare")
+    update_lines+=("    gh release download $latest --repo $repo --pattern '*.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/*.deb")
+  fi
+}
+
+check_deb_update "claude-code-history-viewer" "jhlee0409/claude-code-history-viewer"
+
+if (( ${#update_lines[@]} > 0 )); then
+  lines+=("Tool updates:")
+  lines+=("${update_lines[@]}")
+fi
+
+# --- write cache ---
+if (( ${#lines[@]} > 0 )); then
+  printf '%s\n' "${lines[@]}" > "$CACHE_FILE"
+else
+  rm -f "$CACHE_FILE"
+fi

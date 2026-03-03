@@ -27,8 +27,14 @@ if ! command -v stow &>/dev/null; then
 fi
 
 echo "Stowing packages: ${PACKAGES[*]}"
+# --no-folding for bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
+NO_FOLD_PKGS=(bin)
 for pkg in "${PACKAGES[@]}"; do
-  stow -d "$DOTFILES_DIR" -t "$HOME" --restow "$pkg"
+  extra_flags=()
+  for nf in "${NO_FOLD_PKGS[@]}"; do
+    [[ "$pkg" == "$nf" ]] && extra_flags+=(--no-folding) && break
+  done
+  stow -d "$DOTFILES_DIR" -t "$HOME" --restow "${extra_flags[@]}" "$pkg"
 done
 
 # --- Zsh plugins ---
@@ -97,18 +103,28 @@ fi
 # --- Devcontainer bind mount (Linux only) ---
 
 if [[ "$(uname)" == "Linux" && -d "$DOTFILES_DIR/devcontainer" ]]; then
+  FSTAB_LINE="$DOTFILES_DIR/devcontainer /mnt/devcontainer-ro none bind,ro,nofail,x-systemd.automount 0 0"
+
+  # Create mount point and set up fstab if needed
   if [[ ! -d /mnt/devcontainer-ro ]]; then
     echo ""
     echo "Setting up devcontainer bind mount (requires sudo)..."
     sudo mkdir -p /mnt/devcontainer-ro
-    sudo mount --bind "$DOTFILES_DIR/devcontainer" /mnt/devcontainer-ro
-    sudo mount -o remount,bind,ro /mnt/devcontainer-ro
+  fi
 
-    FSTAB_LINE="$DOTFILES_DIR/devcontainer /mnt/devcontainer-ro none bind,ro,nofail,x-systemd.automount 0 0"
-    if ! grep -qF "/mnt/devcontainer-ro" /etc/fstab; then
-      echo "Adding bind mount to /etc/fstab..."
-      echo "$FSTAB_LINE" | sudo tee -a /etc/fstab > /dev/null
+  # Fix fstab if missing or pointing at wrong source
+  if grep -qF "/mnt/devcontainer-ro" /etc/fstab; then
+    if ! grep -qF "$DOTFILES_DIR/devcontainer" /etc/fstab; then
+      echo "Updating fstab to point at $DOTFILES_DIR/devcontainer..."
+      sudo sed -i "\|/mnt/devcontainer-ro|c\\$FSTAB_LINE" /etc/fstab
+      sudo systemctl daemon-reload
+      sudo mount -o remount /mnt/devcontainer-ro 2>/dev/null || sudo mount /mnt/devcontainer-ro
     fi
+  else
+    echo "Adding bind mount to /etc/fstab..."
+    echo "$FSTAB_LINE" | sudo tee -a /etc/fstab > /dev/null
+    sudo systemctl daemon-reload
+    sudo mount /mnt/devcontainer-ro
   fi
 fi
 
