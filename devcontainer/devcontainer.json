@@ -54,6 +54,7 @@
     "source=${localEnv:HOME}/.kimi,target=/home/node/.kimi,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/../,target=/projects,type=bind",
     "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.gitconfig.local,target=/home/node/.gitconfig.local,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/gcloud,target=/home/node/.config/gcloud,type=bind,consistency=cached",
