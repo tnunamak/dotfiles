@@ -19,6 +19,7 @@ export GPG_TTY=$(tty)
 
 # Privacy
 export DO_NOT_TRACK=1
+export RTK_TELEMETRY_DISABLED=1
 
 # Kitty: use SSH kitten for automatic terminfo + shell integration
 [[ "$TERM" == "xterm-kitty" ]] && alias ssh='kitten ssh'
@@ -29,6 +30,7 @@ alias la='ls -A'
 alias gs='git status'
 alias gd='git diff'
 alias gl='git log --oneline -20'
+alias updates='shell-status-refresh details'
 
 if [[ -n "$IS_LINUX" ]]; then
   alias pbcopy='xclip -selection clipboard'
@@ -46,11 +48,7 @@ fi
 alias lsports="sudo lsof -iTCP -sTCP:LISTEN -n -P | awk 'NR>1 {print \$9, \$1, \$2}' | sed 's/.*://' | while read -r port process pid; do echo \"Port \$port: \$(ps -p \$pid -o command= | sed 's/^-//') (PID: \$pid)\"; done | sort -n"
 
 # Devcontainer helpers
-if [[ -n "$IS_MACOS" ]]; then
-  alias link-devcontainer='ln -sf "$HOME/code/dotfiles/devcontainer" .devcontainer'
-else
-  alias link-devcontainer='ln -sf /mnt/devcontainer-ro .devcontainer'
-fi
+alias link-devcontainer='ln -sf "$HOME/code/dotfiles/devcontainer" .devcontainer'
 alias unlink-devcontainer='rm .devcontainer'
 
 # Kimi: ensure AGENTS.md exists in project dir (no global config support)

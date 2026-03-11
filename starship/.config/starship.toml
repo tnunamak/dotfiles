@@ -1,7 +1,9 @@
-# Minimal starship config — shows what matters, hides what doesn't
+# Starship config — defaults with tweaks
 # Full reference: https://starship.rs/config/
 
-format = """$directory$git_branch$git_status$python$nodejs$rust$golang$cmd_duration$line_break$character"""
+[line_break]
+disabled = true
+
 
 [directory]
 truncation_length = 3
@@ -36,3 +38,6 @@ detect_extensions = []
 [golang]
 format = '[${version}]($style) '
 detect_extensions = []
+
+[gcloud]
+disabled = true
