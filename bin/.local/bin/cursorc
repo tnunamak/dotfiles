@@ -6,11 +6,7 @@ set -euo pipefail
 
 # Resolve devcontainer config location
 DOTFILES_DIR="$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)"
-if [[ "$(uname)" == "Darwin" ]]; then
-    DEVCONTAINER_SOURCE="$DOTFILES_DIR/devcontainer"
-else
-    DEVCONTAINER_SOURCE="/mnt/devcontainer-ro"
-fi
+DEVCONTAINER_SOURCE="$DOTFILES_DIR/devcontainer"
 
 WORKSPACE="${1:-$(pwd)}"
 WORKSPACE=$(cd "$WORKSPACE" && pwd)

@@ -26,7 +26,7 @@ zstyle ':completion:*' matcher-list 'm:{a-z}={A-Z}'
 ZSH_PLUGINS=~/.zsh/plugins
 [[ -f $ZSH_PLUGINS/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && \
   source $ZSH_PLUGINS/zsh-autosuggestions/zsh-autosuggestions.zsh
-# Syntax highlighting must be sourced last
+# Syntax highlighting must be sourced last among plugins
 [[ -f $ZSH_PLUGINS/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] && \
   source $ZSH_PLUGINS/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
@@ -35,12 +35,16 @@ if command -v fzf &>/dev/null; then
   eval "$(fzf --zsh 2>/dev/null)" || true
 fi
 
-# zoxide (smarter cd)
-if command -v zoxide &>/dev/null; then
-  eval "$(zoxide init zsh --cmd cd)"
-fi
-
 # Starship prompt
 if command -v starship &>/dev/null; then
   eval "$(starship init zsh)"
 fi
+
+# zoxide (smarter cd) — must be last
+if command -v zoxide &>/dev/null; then
+  eval "$(zoxide init zsh --cmd cd)"
+fi
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
