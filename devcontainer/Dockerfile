@@ -207,12 +207,16 @@ RUN npm install -g @sentry/cli
 # Install PostHog CLI
 RUN npm install -g @posthog/cli
 
+# Install rtk (CLI proxy that reduces LLM token consumption)
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+
 # Copy binaries that native installers put under ~/.local or ~/.bun to a
 # system path — the home dir bind mount shadows the image's /home/node/.
 USER root
 RUN for pair in \
       "/home/node/.bun/bin/bun:bun" \
-      "/home/node/.local/bin/claude:claude"; \
+      "/home/node/.local/bin/claude:claude" \
+      "/home/node/.local/bin/rtk:rtk"; \
     do \
       src="${pair%%:*}"; name="${pair##*:}"; \
       real="$(readlink -f "$src" 2>/dev/null || true)"; \
