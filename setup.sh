@@ -28,7 +28,7 @@ fi
 
 echo "Stowing packages: ${PACKAGES[*]}"
 # --no-folding for bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
-NO_FOLD_PKGS=(bin)
+NO_FOLD_PKGS=(bin nvim)
 for pkg in "${PACKAGES[@]}"; do
   extra_flags=()
   for nf in "${NO_FOLD_PKGS[@]}"; do

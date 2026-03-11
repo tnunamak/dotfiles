@@ -53,3 +53,6 @@ Keep these as defaults, not rigid rules:
 1. Be skeptical: after building something, test the full user journey yourself. When you identity the root cause of a bug, test your hypothesis. You are trusted to a point, but act as if you're not trusted and require proving important changes are valid before making them. After you identify an explanation for a problem, review whether it squares with everything you know and watch out for logical inconsistencies.
 2. When you have to design something, research prior art. E.g. how do leading modern dev shops like Stripe build a volume slider?
 3. Be willing to build AI-friendly interfaces to the black boxes you build to maxmimize the amount of code you can efficiently put under test and minimize the time you or Tim spends in the browser.
+
+# Resources
+2026-Vana-Corporate-Strategy.md is a two page doc in which Vana execs have written up this year's company strategy.
