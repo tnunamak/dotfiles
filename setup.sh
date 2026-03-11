@@ -3,6 +3,9 @@ set -euo pipefail
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Cache sudo credentials upfront
+sudo -v
+
 # Detect interactive terminal
 INTERACTIVE=false
 [[ -t 0 ]] && INTERACTIVE=true
@@ -17,18 +20,108 @@ prompt() {
   fi
 }
 
-# --- Stow ---
+# --- Platform packages ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex)
+case "$(uname)" in
+  Linux)
+    echo "Installing system packages (apt)..."
+    sudo apt-get update
+    sudo apt-get install -y neovim git ripgrep curl zsh fzf stow xclip socat
 
-if ! command -v stow &>/dev/null; then
-  echo "Error: GNU Stow not found. Run the platform setup script first."
-  exit 1
+    # Starship
+    if ! command -v starship &>/dev/null; then
+      curl -sS https://starship.rs/install.sh | sh -s -- -y
+    fi
+
+    # zoxide
+    if ! command -v zoxide &>/dev/null; then
+      curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
+    fi
+
+    # git-filter-repo (for sync-devcontainer.sh)
+    if ! command -v git-filter-repo &>/dev/null; then
+      sudo apt-get install -y git-filter-repo
+    fi
+    ;;
+  Darwin)
+    if ! command -v brew &>/dev/null; then
+      echo "Homebrew not found. Install it from https://brew.sh"
+      exit 1
+    fi
+    echo "Installing system packages (brew)..."
+    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat
+    ;;
+  *)
+    echo "Unsupported platform: $(uname)"
+    exit 1
+    ;;
+esac
+
+# --- Cross-platform tool installs ---
+
+# Node.js (via nvm)
+if ! command -v node &>/dev/null; then
+  if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck source=/dev/null
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  fi
+  nvm install --lts
 fi
 
+# uv (Python package manager)
+if ! command -v uv &>/dev/null; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+
+# Claude Code
+if ! command -v claude &>/dev/null; then
+  npm install -g @anthropic-ai/claude-code
+fi
+
+# Gemini CLI
+if ! command -v gemini &>/dev/null; then
+  npm install -g @google/gemini-cli
+fi
+
+# Codex CLI
+if ! command -v codex &>/dev/null; then
+  npm install -g @openai/codex
+fi
+
+# Kimi Code CLI
+if ! command -v kimi &>/dev/null; then
+  uv tool install --python 3.13 kimi-cli
+fi
+
+# rstring (code summarization for AI context)
+if ! command -v rstring &>/dev/null; then
+  uv tool install rstring
+fi
+
+# rtk (CLI proxy that reduces LLM token consumption)
+if ! command -v rtk &>/dev/null; then
+  curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+fi
+# rtk init: --no-patch to avoid overwriting stowed settings.json (hook is already in it)
+if [[ ! -f ~/.claude/hooks/rtk-rewrite.sh ]]; then
+  rtk init --global --no-patch
+fi
+
+# Set zsh as default shell
+if [[ "$SHELL" != */zsh ]]; then
+  sudo chsh -s "$(which zsh)" "$USER"
+fi
+
+# --- Stow ---
+
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk)
+
+echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
 # --no-folding for bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
-NO_FOLD_PKGS=(bin nvim)
+NO_FOLD_PKGS=(bin nvim claude)
 for pkg in "${PACKAGES[@]}"; do
   extra_flags=()
   for nf in "${NO_FOLD_PKGS[@]}"; do
@@ -100,33 +193,6 @@ GITEOF
   echo "Wrote ~/.gitconfig.local"
 fi
 
-# --- Devcontainer bind mount (Linux only) ---
-
-if [[ "$(uname)" == "Linux" && -d "$DOTFILES_DIR/devcontainer" ]]; then
-  FSTAB_LINE="$DOTFILES_DIR/devcontainer /mnt/devcontainer-ro none bind,ro,nofail,x-systemd.automount 0 0"
-
-  # Create mount point and set up fstab if needed
-  if [[ ! -d /mnt/devcontainer-ro ]]; then
-    echo ""
-    echo "Setting up devcontainer bind mount (requires sudo)..."
-    sudo mkdir -p /mnt/devcontainer-ro
-  fi
-
-  # Fix fstab if missing or pointing at wrong source
-  if grep -qF "/mnt/devcontainer-ro" /etc/fstab; then
-    if ! grep -qF "$DOTFILES_DIR/devcontainer" /etc/fstab; then
-      echo "Updating fstab to point at $DOTFILES_DIR/devcontainer..."
-      sudo sed -i "\|/mnt/devcontainer-ro|c\\$FSTAB_LINE" /etc/fstab
-      sudo systemctl daemon-reload
-      sudo mount -o remount /mnt/devcontainer-ro 2>/dev/null || sudo mount /mnt/devcontainer-ro
-    fi
-  else
-    echo "Adding bind mount to /etc/fstab..."
-    echo "$FSTAB_LINE" | sudo tee -a /etc/fstab > /dev/null
-    sudo systemctl daemon-reload
-    sudo mount /mnt/devcontainer-ro
-  fi
-fi
 
 echo ""
 echo "Done. Restart your shell or run: exec zsh"
