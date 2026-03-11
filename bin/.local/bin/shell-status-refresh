@@ -1,75 +1,470 @@
 #!/usr/bin/env bash
 # Collects shell startup status info and writes to a cache file.
 # Designed to run in the background — shell_config prints cached output instantly.
+#
+# Usage:
+#   shell-status-refresh           # refresh the cache (runs in background from shell_config)
+#   shell-status-refresh details   # print detailed info for collapsed categories
+#
+# UX design: see SHELL-STATUS-UX.md
 set -euo pipefail
 
 CACHE_DIR="$HOME/.cache/shell-status"
 CACHE_FILE="$CACHE_DIR/summary"
+DETAIL_FILE="$CACHE_DIR/details"
 LOCK_FILE="$CACHE_DIR/.lock"
 mkdir -p "$CACHE_DIR"
+
+human_size() {
+  local bytes=$1
+  if (( bytes >= 1073741824 )); then
+    printf "%.0fG" "$(echo "scale=1; $bytes/1073741824" | bc)"
+  elif (( bytes >= 1048576 )); then
+    printf "%.0fM" "$(echo "scale=0; $bytes/1048576" | bc)"
+  else
+    printf "%.0fK" "$(echo "scale=0; $bytes/1024" | bc)"
+  fi
+}
+
+# --- details subcommand ---
+if [[ "${1:-}" == "details" ]]; then
+  if [[ -f "$DETAIL_FILE" ]]; then
+    cat "$DETAIL_FILE"
+  else
+    echo "No details available. Run shell-status-refresh first."
+  fi
+  exit 0
+fi
 
 # Prevent concurrent runs
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
 
+TMPDIR_PARALLEL=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_PARALLEL"' EXIT
+
 lines=()
+detail_out=()
 
-# --- apt upgrades ---
-if command -v apt-get &>/dev/null; then
-  upgrades=$(apt-get -s upgrade 2>/dev/null | grep -c "^Inst" || true)
-  if (( upgrades > 0 )); then
-    lines+=("\033[33m$upgrades\033[0m package(s) upgradable")
-    lines+=("  sudo nala upgrade")
+# ============================================================================
+# Level 1: Alerts
+# ============================================================================
+
+# --- cleanup-check: read cache directly for one-line summary ---
+cleanup_cache="/tmp/.cleanup-check-cache-$(id -u)"
+cleanup_script="$HOME/.local/bin/cleanup-check"
+if [[ -x "$cleanup_script" ]]; then
+  # Ensure cache is populated (runs silently)
+  "$cleanup_script" &>/dev/null || true
+
+  if [[ -f "$cleanup_cache" ]]; then
+    disk_pct=$(sed -n '1p' "$cleanup_cache")
+    total_cleanable=$(sed -n '2p' "$cleanup_cache")
+
+    if (( disk_pct >= 75 || total_cleanable >= 5368709120 )); then
+      clean_size=$(human_size "$total_cleanable")
+      lines+=("Run cleanup-check to see ~${clean_size} reclaimable|")
+    fi
+
+    # Build detail section from raw cache data
+    detail_out+=("Disk: ${disk_pct}%")
+    if (( total_cleanable > 0 )); then
+      detail_out+=("  Reclaimable (~$(human_size "$total_cleanable")):")
+      while IFS=: read -r type count size; do
+        [[ "$type" == "---" ]] && break
+        case "$type" in
+          node_modules_old) detail_out+=("    rm $count old node_modules (>6mo): $(human_size "$size")") ;;
+          pip_cache)        detail_out+=("    pip cache purge: $(human_size "$size")") ;;
+          uv_cache)         detail_out+=("    uv cache clean: $(human_size "$size")") ;;
+          thumbnails)       detail_out+=("    rm thumbnail cache: $(human_size "$size")") ;;
+          hf_cache)         detail_out+=("    rm HuggingFace cache: $(human_size "$size")") ;;
+          docker)           detail_out+=("    docker system prune -af: $(human_size "$size")") ;;
+        esac
+      done < <(tail -n +3 "$cleanup_cache")
+    fi
+    # Info items (after the --- separator)
+    has_manual=false
+    while IFS=: read -r type val size; do
+      [[ -z "$type" ]] && continue
+      if [[ "$has_manual" == "false" ]]; then
+        detail_out+=("  Manual:")
+        has_manual=true
+      fi
+      case "$type" in
+        steam)              detail_out+=("    Steam games: $(human_size "$size")") ;;
+        conda)              detail_out+=("    Conda envs: $(human_size "$size")              conda env list") ;;
+        devcontainer_homes) detail_out+=("    Devcontainer homes: $(human_size "$size")      du -sh ~/.devcontainer-homes/*") ;;
+        git_bloat)          detail_out+=("    Git repo $val: $(human_size "$size")            git gc") ;;
+        windows)            detail_out+=("    Windows partition: ${val}% used") ;;
+      esac
+    done < <(sed -n '/^---$/,$ p' "$cleanup_cache" | tail -n +2)
   fi
 fi
 
-# --- disk cleanup ---
-if [[ -x "$HOME/.local/bin/cleanup-check" ]]; then
-  cleanup_output=$("$HOME/.local/bin/cleanup-check" 2>/dev/null || true)
-  if [[ -n "$cleanup_output" ]]; then
-    while IFS= read -r line; do
-      lines+=("$line")
-    done <<< "$cleanup_output"
+# --- workstation-issues: already outputs 0-1 lines ---
+wi_script="$HOME/.local/bin/workstation-issues"
+if [[ -x "$wi_script" ]]; then
+  wi_output=$("$wi_script" --check-upstream 2>/dev/null || true)
+  if [[ -n "$wi_output" ]]; then
+    while IFS= read -r line; do lines+=("$line|"); done <<< "$wi_output"
   fi
 fi
 
-# --- workstation issues ---
-if [[ -x "$HOME/.local/bin/workstation-issues" ]]; then
-  issues_output=$("$HOME/.local/bin/workstation-issues" --check-upstream 2>/dev/null || true)
-  if [[ -n "$issues_output" ]]; then
-    while IFS= read -r line; do
-      lines+=("$line")
-    done <<< "$issues_output"
-  fi
-fi
+# ============================================================================
+# Level 2: Updates — data collection
+# ============================================================================
 
-# --- tool update checks ---
-update_lines=()
+# Two separate entry arrays: tools (individual upgrades) and managers (bulk upgrades)
+# Format: "label|detail|command"
+tool_entries=()
+manager_entries=()
+# Repo count tracked separately
+repo_count=0
 
-check_deb_update() {
-  local pkg="$1" repo="$2"
-  local installed latest
-  installed=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null) || return
-  latest=$(command gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) || return
+# Detail sections: ordered list of "header|key"; detail_<key>=() holds lines
+detail_section_order=()
+declare_detail_section() { detail_section_order+=("$1|$2"); }
+
+# ============================================================================
+# Simple bulk package managers (data-driven)
+# Format: "display_name;check_binary;count_command;upgrade_command"
+# ============================================================================
+
+simple_bulk_managers=(
+  "apt;apt-get;apt-get -s upgrade 2>/dev/null | grep -c '^Inst';sudo nala upgrade"
+  "snap;snap;snap refresh --list 2>/dev/null | tail -n +2 | wc -l;sudo snap refresh"
+  "flatpak;flatpak;flatpak remote-ls --updates 2>/dev/null | wc -l;flatpak update"
+)
+
+for entry in "${simple_bulk_managers[@]}"; do
+  IFS=';' read -r mgr_name mgr_bin mgr_count_cmd mgr_upgrade <<< "$entry"
+  command -v "$mgr_bin" &>/dev/null || continue
+  count=$(eval "$mgr_count_cmd" || true)
+  (( count > 0 )) && manager_entries+=("$mgr_name|$count package(s)|$mgr_upgrade")
+done
+
+# ============================================================================
+# Python package managers: npm, pip --user, pipx (single Python invocation)
+# ============================================================================
+
+detail_npm=()
+detail_pip=()
+detail_pipx=()
+
+python_pkg_output=$(python3 <<'PYEOF'
+import json, subprocess, sys
+
+results = {}
+
+# npm globals
+try:
+    r = subprocess.run(["npm", "outdated", "-g", "--json"],
+                       capture_output=True, text=True, timeout=30)
+    data = json.loads(r.stdout) if r.stdout.strip() else {}
+    if data:
+        results["npm"] = [
+            f"{name} {info.get('current','?')} \u2192 {info.get('latest','?')}"
+            for name, info in sorted(data.items())
+        ]
+except Exception:
+    pass
+
+# pip --user
+try:
+    r = subprocess.run(["pip", "list", "--user", "--outdated", "--format=json"],
+                       capture_output=True, text=True, timeout=30)
+    data = json.loads(r.stdout) if r.stdout.strip() else []
+    if data:
+        results["pip"] = [
+            f"{p['name']} {p['version']} \u2192 {p['latest_version']}"
+            for p in sorted(data, key=lambda x: x["name"])
+        ]
+except Exception:
+    pass
+
+# pipx
+try:
+    r = subprocess.run(["pipx", "list", "--json"],
+                       capture_output=True, text=True, timeout=30)
+    data = json.loads(r.stdout) if r.stdout.strip() else {}
+    outdated = []
+    for name, info in sorted(data.get("venvs", {}).items()):
+        ver = info["metadata"]["main_package"]["package_version"]
+        try:
+            r2 = subprocess.run(["pip", "index", "versions", name],
+                                capture_output=True, text=True, timeout=10)
+            if "(" in r2.stdout:
+                latest = r2.stdout.split("(")[1].split(")")[0]
+                if latest and latest != ver:
+                    outdated.append(f"{name} {ver} \u2192 {latest}")
+        except Exception:
+            pass
+    if outdated:
+        results["pipx"] = outdated
+except Exception:
+    pass
+
+json.dump(results, sys.stdout)
+PYEOF
+) || python_pkg_output="{}"
+
+# Parse results into bash arrays
+# Format: "detail_key|display_name|upgrade_cmd"
+python_managers=(
+  "npm|npm globals|npm outdated -g && npm update -g"
+  "pip|pip --user|pip install --user --upgrade <pkg>"
+  "pipx|pipx|pipx upgrade-all"
+)
+
+for pm_entry in "${python_managers[@]}"; do
+  IFS='|' read -r pm_key pm_display pm_upgrade <<< "$pm_entry"
+  while IFS= read -r l; do
+    [[ -n "$l" ]] && eval "detail_${pm_key}+=(\"    \$l\")"
+  done < <(echo "$python_pkg_output" | python3 -c "
+import sys, json
+d = json.load(sys.stdin).get('$pm_key', [])
+for line in d: print(line)
+" 2>/dev/null || true)
+  eval "count=\${#detail_${pm_key}[@]}"
+  (( count > 0 )) && manager_entries+=("$pm_display|$count package(s)|$pm_upgrade")
+  declare_detail_section "$pm_display" "$pm_key"
+done
+declare_detail_section "cargo" "cargo"
+
+# ============================================================================
+# Individual tool checks (parallel, data-driven)
+# ============================================================================
+
+individual_tools=(
+  # GitHub release tools: latest from gh api
+  "claude-code-history-viewer;dpkg-query -W -f='\${Version}' claude-code-history-viewer;gh api repos/jhlee0409/claude-code-history-viewer/releases/latest --jq .tag_name;gh release download \$(gh api repos/jhlee0409/claude-code-history-viewer/releases/latest --jq .tag_name) --repo jhlee0409/claude-code-history-viewer --pattern '*.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/*.deb"
+  "rtk;rtk --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/rtk-ai/rtk/releases/latest --jq .tag_name;curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"
+  "starship;starship --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/starship/starship/releases/latest --jq .tag_name;curl -sS https://starship.rs/install.sh | sh -s -- -y"
+  "zoxide;zoxide --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/ajeetdsouza/zoxide/releases/latest --jq .tag_name;curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh"
+  "uv;uv --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/astral-sh/uv/releases/latest --jq .tag_name;curl -LsSf https://astral.sh/uv/install.sh | sh"
+  "bun;bun --version 2>/dev/null | head -1;gh api repos/oven-sh/bun/releases/latest --jq .tag_name;bun upgrade"
+  "immich-go;immich-go version 2>/dev/null | awk '{print \$2}' | sed 's/version://' | grep -v '^dev\$';gh api repos/simulot/immich-go/releases/latest --jq .tag_name;go install github.com/simulot/immich-go@latest"
+  "clawmeter;clawmeter --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/tnunamak/clawmeter/releases/latest --jq .tag_name;go install github.com/tnunamak/clawmeter/cmd/clawmeter@latest"
+  # npm registry tool
+  "claude;claude --version 2>/dev/null | head -1 | awk '{print \$1}';npm view @anthropic-ai/claude-code version;npm install -g @anthropic-ai/claude-code@latest"
+  # rustup
+  "rustc;rustc --version 2>/dev/null | awk '{print \$2}';rustup check 2>/dev/null | grep 'Update available' | head -1 | sed 's/.*-> \\([^ ]*\\).*/\\1/';rustup update"
+)
+
+check_tool_bg() {
+  local name="$1" installed_cmd="$2" latest_cmd="$3" upgrade_cmd="$4" outfile="$5"
+  local installed latest installed_bare latest_bare
+  installed=$(eval "$installed_cmd" 2>/dev/null) || return
+  [[ -z "$installed" ]] && return
+  latest=$(eval "$latest_cmd" 2>/dev/null) || return
   [[ -z "$latest" ]] && return
-  # Normalize: strip leading 'v' for comparison
-  local latest_bare="${latest#v}"
-  if [[ "$installed" != "$latest_bare" ]]; then
-    update_lines+=("  \033[33m↑\033[0m $pkg $installed → $latest_bare")
-    update_lines+=("    gh release download $latest --repo $repo --pattern '*.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/*.deb")
-  fi
+  # Normalize: strip v prefix and name-v / name- prefixes
+  installed_bare="${installed#v}"
+  latest_bare="${latest#v}"
+  latest_bare="${latest_bare#"$name-v"}"
+  latest_bare="${latest_bare#"$name-"}"
+  [[ "$installed_bare" == "$latest_bare" ]] && return
+  echo "$name|$installed_bare → $latest_bare|$upgrade_cmd" > "$outfile"
 }
 
-check_deb_update "claude-code-history-viewer" "jhlee0409/claude-code-history-viewer"
+tool_pids=()
+for tool_entry in "${individual_tools[@]}"; do
+  IFS=';' read -r t_name t_installed t_latest t_upgrade <<< "$tool_entry"
+  check_tool_bg "$t_name" "$t_installed" "$t_latest" "$t_upgrade" \
+    "$TMPDIR_PARALLEL/tool-$t_name" &
+  tool_pids+=($!)
+done
 
-if (( ${#update_lines[@]} > 0 )); then
-  lines+=("Tool updates:")
-  lines+=("${update_lines[@]}")
+# ============================================================================
+# Dynamic bulk checks (parallel per-item, data-driven collection)
+# ============================================================================
+
+bulk_pids=()
+
+# --- cargo crates ---
+detail_cargo=()
+if command -v cargo &>/dev/null; then
+  while IFS= read -r crate_line; do
+    crate_name=$(echo "$crate_line" | awk '{print $1}')
+    crate_ver=$(echo "$crate_line" | awk '{print $2}' | tr -d ':v')
+    [[ -z "$crate_name" || -z "$crate_ver" ]] && continue
+    (
+      latest=$(curl -sf "https://crates.io/api/v1/crates/$crate_name" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_stable_version'])" 2>/dev/null) || exit 0
+      [[ -z "$latest" || "$crate_ver" == "$latest" ]] && exit 0
+      echo "    $crate_name $crate_ver → $latest"
+    ) > "$TMPDIR_PARALLEL/cargo-$crate_name" 2>/dev/null &
+    bulk_pids+=($!)
+  done < <(cargo install --list 2>/dev/null | grep -E '^\w' | grep -v '(/')
 fi
 
-# --- write cache ---
+# --- ~/applications git repos ---
+detail_apps=()
+if [[ -d "$HOME/applications" ]]; then
+  for repo_dir in "$HOME/applications"/*/; do
+    [[ -d "$repo_dir/.git" ]] || continue
+    name=$(basename "$repo_dir")
+    (
+      git -C "$repo_dir" fetch --quiet 2>/dev/null || exit 0
+      local_head=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || exit 0
+      remote_head=$(git -C "$repo_dir" rev-parse '@{u}' 2>/dev/null) || exit 0
+      [[ "$local_head" == "$remote_head" ]] && exit 0
+      behind=$(git -C "$repo_dir" rev-list --count HEAD..@{u} 2>/dev/null) || behind="?"
+      local_tag=$(git -C "$repo_dir" describe --tags --abbrev=0 HEAD 2>/dev/null) || local_tag=""
+      remote_tag=$(git -C "$repo_dir" describe --tags --abbrev=0 '@{u}' 2>/dev/null) || remote_tag=""
+      if [[ -n "$local_tag" && -n "$remote_tag" && "$local_tag" != "$remote_tag" ]]; then
+        echo "  $name $local_tag → $remote_tag ($behind commits)"
+      else
+        echo "  $name ($behind commits behind)"
+      fi
+    ) > "$TMPDIR_PARALLEL/apps-$name" 2>/dev/null &
+    bulk_pids+=($!)
+  done
+fi
+
+# ============================================================================
+# Wait for all parallel jobs, collect results
+# ============================================================================
+
+for pid in "${tool_pids[@]}" "${bulk_pids[@]}"; do
+  wait "$pid" 2>/dev/null || true
+done
+
+# Individual tool results → tool_entries
+for f in "$TMPDIR_PARALLEL"/tool-*; do
+  [[ -f "$f" ]] || continue
+  tool_entries+=("$(cat "$f")")
+done
+
+# Cargo → manager_entries
+for f in "$TMPDIR_PARALLEL"/cargo-*; do
+  [[ -f "$f" ]] || continue
+  content=$(cat "$f")
+  [[ -n "$content" ]] && detail_cargo+=("$content")
+done
+if (( ${#detail_cargo[@]} > 0 )); then
+  manager_entries+=("cargo|${#detail_cargo[@]} package(s)|cargo install <crate>")
+fi
+
+# ~/applications → repo_count + detail_apps
+for f in "$TMPDIR_PARALLEL"/apps-*; do
+  [[ -f "$f" ]] || continue
+  content=$(cat "$f")
+  [[ -n "$content" ]] && detail_apps+=("$content")
+done
+repo_count=${#detail_apps[@]}
+
+# ============================================================================
+# Format summary line
+# ============================================================================
+
+tool_count=${#tool_entries[@]}
+manager_count=${#manager_entries[@]}
+update_total=$(( tool_count + manager_count + repo_count ))
+
+if (( update_total > 0 )); then
+  lines+=("Run updates to see $update_total available upgrades|")
+fi
+
+# ============================================================================
+# Format detail file
+# ============================================================================
+
+# --- Outdated tools section ---
+if (( ${#tool_entries[@]} > 0 )); then
+  (( ${#detail_out[@]} > 0 )) && detail_out+=("")
+  detail_out+=("Outdated tools:")
+
+  left_parts=()
+  right_parts=()
+  for entry in "${tool_entries[@]}"; do
+    IFS='|' read -r name detail cmd <<< "$entry"
+    left_parts+=("  $name $detail")
+    right_parts+=("$cmd")
+  done
+
+  max_left=0
+  for left in "${left_parts[@]}"; do
+    (( ${#left} > max_left )) && max_left=${#left}
+  done
+  for i in "${!left_parts[@]}"; do
+    padding=$(( max_left - ${#left_parts[$i]} + 2 ))
+    spaces=$(printf '%*s' "$padding" '')
+    detail_out+=("${left_parts[$i]}${spaces}${right_parts[$i]}")
+  done
+fi
+
+# --- Package managers section ---
+if (( ${#manager_entries[@]} > 0 )); then
+  (( ${#detail_out[@]} > 0 )) && detail_out+=("")
+  detail_out+=("Package managers:")
+
+  left_parts=()
+  right_parts=()
+  for entry in "${manager_entries[@]}"; do
+    IFS='|' read -r name detail cmd <<< "$entry"
+    left_parts+=("  $name $detail")
+    right_parts+=("$cmd")
+  done
+
+  max_left=0
+  for left in "${left_parts[@]}"; do
+    (( ${#left} > max_left )) && max_left=${#left}
+  done
+  for i in "${!left_parts[@]}"; do
+    padding=$(( max_left - ${#left_parts[$i]} + 2 ))
+    spaces=$(printf '%*s' "$padding" '')
+    detail_out+=("${left_parts[$i]}${spaces}${right_parts[$i]}")
+  done
+
+  # Per-package detail lines under each manager
+  for section in "${detail_section_order[@]}"; do
+    IFS='|' read -r header key <<< "$section"
+    local_ref="detail_${key}[@]"
+    section_lines=()
+    if [[ -n "${!local_ref+x}" ]]; then
+      section_lines=("${!local_ref}")
+    fi
+    (( ${#section_lines[@]} == 0 )) && continue
+    detail_out+=("")
+    detail_out+=("  $header:")
+    detail_out+=("${section_lines[@]}")
+  done
+fi
+
+# --- ~/applications section ---
+if (( repo_count > 0 )); then
+  (( ${#detail_out[@]} > 0 )) && detail_out+=("")
+  detail_out+=("~/applications ($repo_count repos behind):")
+  detail_out+=("${detail_apps[@]}")
+fi
+
+# --- write files ---
+if (( ${#detail_out[@]} > 0 )); then
+  printf '%s\n' "${detail_out[@]}" > "$DETAIL_FILE"
+else
+  rm -f "$DETAIL_FILE"
+fi
+
 if (( ${#lines[@]} > 0 )); then
-  printf '%s\n' "${lines[@]}" > "$CACHE_FILE"
+  # Align right-hand commands: lines are "left|right" pairs
+  max_left=0
+  for entry in "${lines[@]}"; do
+    left="${entry%%|*}"
+    (( ${#left} > max_left )) && max_left=${#left}
+  done
+  {
+    for entry in "${lines[@]}"; do
+      left="${entry%%|*}"
+      right="${entry#*|}"
+      if [[ -n "$right" ]]; then
+        padding=$(( max_left - ${#left} + 2 ))
+        printf '%s%*s%s\n' "$left" "$padding" '' "$right"
+      else
+        printf '%s\n' "$left"
+      fi
+    done
+  } > "$CACHE_FILE"
 else
   rm -f "$CACHE_FILE"
 fi
