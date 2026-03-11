@@ -51,6 +51,10 @@ if command -v dockerd &> /dev/null; then
   done
 fi
 
+# Fix ownership of dirs that Docker creates as root for volume mount points
+# (e.g. pip-cache → .cache/pip, pnpm-store → .local/share/pnpm/store)
+chown node:node /home/node/.local /home/node/.local/share /home/node/.cache 2>/dev/null || true
+
 echo "Firewall configured: LAN blocked, internet allowed (DNS via 1.1.1.1/8.8.8.8)"
 
 # Previous domain-allowlist firewall (default-deny internet, allow specific hosts):

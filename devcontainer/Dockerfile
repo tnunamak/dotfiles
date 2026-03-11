@@ -1,8 +1,18 @@
-FROM node:20
+FROM node:22-trixie
 
 ARG TZ
 ENV TZ="$TZ"
 
+# Install CUDA runtime libraries (cuBLAS, cuDNN, etc.) for GPU-accelerated ML tools.
+# The GPU device + driver are passed through via --device nvidia.com/gpu=all,
+# but higher-level CUDA libs must be in the image.
+ARG CUDA_VERSION=12-8
+RUN echo "deb [trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/ /" \
+    > /etc/apt/sources.list.d/cuda.list && \
+  apt-get update && apt-get install -y --no-install-recommends \
+    cuda-libraries-${CUDA_VERSION} \
+    libcudnn9-cuda-12 \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install basic development tools, iptables/ipset, and Docker
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -66,7 +76,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN npx playwright install-deps && \
   mkdir -p /opt/playwright && \
   npx playwright install chromium && \
-  chmod -R o+rx /opt/playwright
+  chown -R node:node /opt/playwright
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
@@ -158,12 +168,32 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 # Install pnpm
 RUN npm install -g pnpm
 
+# Install LSP language servers for Claude Code intelligence
+RUN npm install -g typescript-language-server typescript pyright
+
+# Install Playwright MCP server (browser already installed above)
+RUN npm install -g @playwright/mcp
+
 # Install Claude Code (native installer puts it in ~/.local which gets
 # shadowed by the home dir bind mount — copied to /usr/local/bin below)
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Install gemini-cli
+# Install gemini-cli (auto-update disabled via settings — it breaks npm-global
+# installs inside containers because the restarted process can't resolve its module)
 RUN npm install -g @google/gemini-cli
+
+# Install codex-cli
+RUN npm install -g @openai/codex
+
+# Install kimi-cli (Moonshot AI) — needs Python >=3.12 but Bookworm ships 3.11.
+# uv downloads a standalone Python 3.12 and creates an isolated venv.
+# UV_TOOL_DIR/UV_TOOL_BIN_DIR put the venv and shim in system paths accessible to all users.
+USER root
+RUN curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh && \
+    UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/uv-python \
+    /root/.local/bin/uv tool install kimi-cli --python 3.12 && \
+    chmod -R o+rX /opt/uv-tools /opt/uv-python
+USER node
 
 # Install Vercel CLI
 RUN npm install -g vercel
@@ -193,6 +223,10 @@ RUN for pair in \
       fi; \
     done
 USER node
+
+# Disable gemini-cli auto-update (breaks npm-global installs in containers)
+RUN mkdir -p /home/node/.gemini && \
+  echo '{"general":{"disableAutoUpdate":true}}' > /home/node/.gemini/settings.json
 
 # Copy and set up firewall script
 COPY init-firewall.sh /usr/local/bin/
