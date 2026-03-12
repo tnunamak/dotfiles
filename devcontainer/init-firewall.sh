@@ -1,12 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# Create symlinks so host paths resolve correctly inside container
-# (git signing uses /home/tnunamak/.ssh, claude plugins use /home/tnunamak/.claude)
-mkdir -p /home/tnunamak
-ln -sfn /home/node/.ssh /home/tnunamak/.ssh
-ln -sfn /home/node/.claude /home/tnunamak/.claude
-
 # Block LAN access, allow everything else
 # This prevents the container from reaching local network devices
 # while keeping full internet access for development tools
@@ -53,7 +47,9 @@ fi
 
 # Fix ownership of dirs that Docker creates as root for volume mount points
 # (e.g. pip-cache → .cache/pip, pnpm-store → .local/share/pnpm/store)
-chown node:node /home/node/.local /home/node/.local/share /home/node/.cache 2>/dev/null || true
+DEV_USER=$(stat -c '%U' /workspace 2>/dev/null || echo node)
+DEV_HOME=$(eval echo "~$DEV_USER")
+chown "$DEV_USER:$DEV_USER" "$DEV_HOME/.local" "$DEV_HOME/.local/share" "$DEV_HOME/.cache" 2>/dev/null || true
 
 echo "Firewall configured: LAN blocked, internet allowed (DNS via 1.1.1.1/8.8.8.8)"
 
