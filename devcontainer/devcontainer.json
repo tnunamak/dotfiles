@@ -6,7 +6,8 @@
     "args": {
       "TZ": "${localEnv:TZ:America/Chicago}",
       "GIT_DELTA_VERSION": "0.18.2",
-      "ZSH_IN_DOCKER_VERSION": "1.2.0"
+      "ZSH_IN_DOCKER_VERSION": "1.2.0",
+      "DEV_USER": "${localEnv:USER}"
     }
   },
   "runArgs": [
@@ -43,31 +44,32 @@
       }
     }
   },
-  "remoteUser": "node",
+  "remoteUser": "${localEnv:USER}",
+  "updateRemoteUserUID": true,
   "mounts": [
     "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
-    "source=${localEnv:HOME}/.devcontainer-homes/${localWorkspaceFolderBasename},target=/home/node,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.claude.json,target=/home/node/.claude.json,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.kimi,target=/home/node/.kimi,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.devcontainer-homes/${localWorkspaceFolderBasename},target=/home/${localEnv:USER},type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude,target=/home/${localEnv:USER}/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude.json,target=/home/${localEnv:USER}/.claude.json,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.codex,target=/home/${localEnv:USER}/.codex,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.gemini,target=/home/${localEnv:USER}/.gemini,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.kimi,target=/home/${localEnv:USER}/.kimi,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/../,target=${localEnv:HOME}/code,type=bind",
-    "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.gitconfig.local,target=/home/node/.gitconfig.local,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.config/gcloud,target=/home/node/.config/gcloud,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly",
+    "source=${localEnv:HOME}/.gitconfig,target=/home/${localEnv:USER}/.gitconfig,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.gitconfig.local,target=/home/${localEnv:USER}/.gitconfig.local,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/git,target=/home/${localEnv:USER}/.config/git,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gh,target=/home/${localEnv:USER}/.config/gh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gcloud,target=/home/${localEnv:USER}/.config/gcloud,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USER}/.ssh,type=bind,readonly",
     "source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,type=bind",
-    "source=${localEnv:HOME}/.sentryclirc,target=/home/node/.sentryclirc,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.config/posthog,target=/home/node/.config/posthog,type=bind,consistency=cached",
-    "source=devcontainer-npm-cache,target=/home/node/.npm,type=volume",
-    "source=devcontainer-bun-cache,target=/home/node/.bun/install/cache,type=volume",
-    "source=devcontainer-pip-cache,target=/home/node/.cache/pip,type=volume",
-    "source=devcontainer-pnpm-store,target=/home/node/.local/share/pnpm/store,type=volume",
-    "source=devcontainer-cargo,target=/home/node/.cargo,type=volume",
-    "source=devcontainer-rustup,target=/home/node/.rustup,type=volume"
+    "source=${localEnv:HOME}/.sentryclirc,target=/home/${localEnv:USER}/.sentryclirc,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/posthog,target=/home/${localEnv:USER}/.config/posthog,type=bind,consistency=cached",
+    "source=devcontainer-npm-cache,target=/home/${localEnv:USER}/.npm,type=volume",
+    "source=devcontainer-bun-cache,target=/home/${localEnv:USER}/.bun/install/cache,type=volume",
+    "source=devcontainer-pip-cache,target=/home/${localEnv:USER}/.cache/pip,type=volume",
+    "source=devcontainer-pnpm-store,target=/home/${localEnv:USER}/.local/share/pnpm/store,type=volume",
+    "source=devcontainer-cargo,target=/home/${localEnv:USER}/.cargo,type=volume",
+    "source=devcontainer-rustup,target=/home/${localEnv:USER}/.rustup,type=volume"
   ],
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
@@ -85,6 +87,6 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=delegated",
   "workspaceFolder": "${localWorkspaceFolder}",
-  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh && [ \"$HOST_HOME\" != '/home/node' ] && ln -sfn \"$HOST_HOME/code\" ~/code || true",
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
   "waitFor": "postStartCommand"
 }

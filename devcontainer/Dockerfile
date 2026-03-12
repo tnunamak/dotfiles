@@ -3,6 +3,15 @@ FROM node:22-trixie
 ARG TZ
 ENV TZ="$TZ"
 
+# Rename the default 'node' user to match the host user.
+# This eliminates path mismatches between host and container
+# (e.g. /home/tnunamak/code/... works in both environments).
+ARG DEV_USER=node
+RUN if [ "$DEV_USER" != "node" ]; then \
+      usermod -l "$DEV_USER" -d "/home/$DEV_USER" -m node && \
+      groupmod -n "$DEV_USER" node; \
+    fi
+
 # Install CUDA runtime libraries (cuBLAS, cuDNN, etc.) for GPU-accelerated ML tools.
 # The GPU device + driver are passed through via --device nvidia.com/gpu=all,
 # but higher-level CUDA libs must be in the image.
@@ -82,21 +91,19 @@ RUN npx playwright install-deps && \
 RUN mkdir -p /usr/local/share/npm-global && \
   chown -R node:node /usr/local/share
 
-ARG USERNAME=node
-
 # Persist bash history.
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   && mkdir /commandhistory \
   && touch /commandhistory/.bash_history \
-  && chown -R $USERNAME /commandhistory
+  && chown -R $DEV_USER /commandhistory
 
 # Set `DEVCONTAINER` environment variable to help with orientation
 ENV DEVCONTAINER=true
 
 # Create workspace and config directories and set permissions
 # Note: .config must be created here so bind mounts for subdirs (git, gh, gcloud) don't make it root-owned
-RUN mkdir -p /workspace /home/node/.claude /home/node/.config && \
-  chown -R node:node /workspace /home/node/.claude /home/node/.config
+RUN mkdir -p /workspace /home/$DEV_USER/.claude /home/$DEV_USER/.config && \
+  chown -R $DEV_USER:$DEV_USER /workspace /home/$DEV_USER/.claude /home/$DEV_USER/.config
 
 WORKDIR /workspace
 
@@ -107,7 +114,7 @@ RUN ARCH=$(dpkg --print-architecture) && \
   rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
 
 # Set up non-root user
-USER node
+USER $DEV_USER
 
 # Install global packages
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
@@ -131,7 +138,7 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -x
 
 # Install bun with proper PATH setup
-ENV BUN_INSTALL=/home/node/.bun
+ENV BUN_INSTALL=/home/$DEV_USER/.bun
 ENV PATH=$BUN_INSTALL/bin:$PATH
 RUN curl -fsSL https://bun.sh/install | bash && \
     # Add to shell configs for interactive sessions
@@ -144,14 +151,14 @@ RUN curl -fsSL https://bun.sh/install | bash && \
 
 # Install Poetry via pip (the official installer puts it in ~/.local which
 # gets shadowed by the home dir bind mount)
-ENV PATH="/home/node/.local/bin:$PATH"
+ENV PATH="/home/$DEV_USER/.local/bin:$PATH"
 USER root
 RUN pip3 install poetry && poetry --version
-USER node
+USER $DEV_USER
 
 # Install Rust using rustup (official installer)
-ENV CARGO_HOME=/home/node/.cargo
-ENV RUSTUP_HOME=/home/node/.rustup
+ENV CARGO_HOME=/home/$DEV_USER/.cargo
+ENV RUSTUP_HOME=/home/$DEV_USER/.rustup
 ENV PATH=$CARGO_HOME/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable && \
     # Add to shell configs for interactive sessions
@@ -193,7 +200,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 
     UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     /root/.local/bin/uv tool install kimi-cli --python 3.12 && \
     chmod -R o+rX /opt/uv-tools /opt/uv-python
-USER node
+USER $DEV_USER
 
 # Install Vercel CLI
 RUN npm install -g vercel
@@ -211,12 +218,12 @@ RUN npm install -g @posthog/cli
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 
 # Copy binaries that native installers put under ~/.local or ~/.bun to a
-# system path — the home dir bind mount shadows the image's /home/node/.
+# system path — the home dir bind mount shadows the image home at runtime.
 USER root
 RUN for pair in \
-      "/home/node/.bun/bin/bun:bun" \
-      "/home/node/.local/bin/claude:claude" \
-      "/home/node/.local/bin/rtk:rtk"; \
+      "/home/$DEV_USER/.bun/bin/bun:bun" \
+      "/home/$DEV_USER/.local/bin/claude:claude" \
+      "/home/$DEV_USER/.local/bin/rtk:rtk"; \
     do \
       src="${pair%%:*}"; name="${pair##*:}"; \
       real="$(readlink -f "$src" 2>/dev/null || true)"; \
@@ -226,19 +233,19 @@ RUN for pair in \
         echo "ERROR: Expected $name at $src but not found. Installer may have changed layout." >&2; exit 1; \
       fi; \
     done
-USER node
+USER $DEV_USER
 
 # Disable gemini-cli auto-update (breaks npm-global installs in containers)
-RUN mkdir -p /home/node/.gemini && \
-  echo '{"general":{"disableAutoUpdate":true}}' > /home/node/.gemini/settings.json
+RUN mkdir -p /home/$DEV_USER/.gemini && \
+  echo '{"general":{"disableAutoUpdate":true}}' > /home/$DEV_USER/.gemini/settings.json
 
 # Copy and set up firewall script
 COPY init-firewall.sh /usr/local/bin/
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh && \
-  echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall
+  echo "$DEV_USER ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/dev-firewall && \
+  chmod 0440 /etc/sudoers.d/dev-firewall
 
-# Add node user to docker group for DinD access
-RUN usermod -aG docker node
-USER node
+# Add dev user to docker group for DinD access
+RUN usermod -aG docker $DEV_USER
+USER $DEV_USER
