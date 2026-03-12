@@ -1,6 +1,6 @@
 {
   "name": "Claude Code Sandbox",
-  "initializeCommand": "mkdir -p ~/.devcontainer-homes/${localWorkspaceFolderBasename}/{.config,.local/share,.cache} ~/.claude ~/.codex ~/.gemini ~/.kimi ~/.config/{git,gh,gcloud,posthog} && touch ~/.claude/.credentials.json ~/.sentryclirc",
+  "initializeCommand": "mkdir -p ~/.devcontainer-homes/${localWorkspaceFolderBasename}/{.config,.local/share,.cache} ~/.claude ~/.codex ~/.gemini ~/.kimi ~/.config/{git,gh,gcloud,posthog} ~/.npm ~/.local/share/pnpm ~/.cache/pip ~/.bun/install/cache && touch ~/.claude/.credentials.json ~/.sentryclirc",
   "build": {
     "dockerfile": "Dockerfile",
     "args": {
@@ -64,10 +64,10 @@
     "source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,type=bind",
     "source=${localEnv:HOME}/.sentryclirc,target=/home/${localEnv:USER}/.sentryclirc,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/posthog,target=/home/${localEnv:USER}/.config/posthog,type=bind,consistency=cached",
-    "source=devcontainer-npm-cache,target=/home/${localEnv:USER}/.npm,type=volume",
-    "source=devcontainer-bun-cache,target=/home/${localEnv:USER}/.bun/install/cache,type=volume",
-    "source=devcontainer-pip-cache,target=/home/${localEnv:USER}/.cache/pip,type=volume",
-    "source=devcontainer-pnpm-store,target=/home/${localEnv:USER}/.local/share/pnpm,type=volume",
+    "source=${localEnv:HOME}/.npm,target=/home/${localEnv:USER}/.npm,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.bun/install/cache,target=/home/${localEnv:USER}/.bun/install/cache,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.cache/pip,target=/home/${localEnv:USER}/.cache/pip,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.local/share/pnpm,target=/home/${localEnv:USER}/.local/share/pnpm,type=bind,consistency=cached",
     "source=devcontainer-cargo,target=/home/${localEnv:USER}/.cargo,type=volume",
     "source=devcontainer-rustup,target=/home/${localEnv:USER}/.rustup,type=volume"
   ],
