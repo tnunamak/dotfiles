@@ -128,7 +128,7 @@ fi
 # Resolve tool command
 case "$TOOL" in
     claude)  CMD='export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --dangerously-skip-permissions' ;;
-    codex)   CMD='codex --full-auto' ;;
+    codex)   CMD='codex --dangerously-bypass-approvals-and-sandbox' ;;
     gemini)  CMD='gemini --yolo' ;;
     kimi)    CMD='kimi --yolo' ;;
     shell)   CMD='exec bash -l' ;;
