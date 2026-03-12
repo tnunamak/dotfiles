@@ -85,11 +85,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN npx playwright install-deps && \
   mkdir -p /opt/playwright && \
   npx playwright install chromium && \
-  chown -R node:node /opt/playwright
+  chown -R $DEV_USER:$DEV_USER /opt/playwright
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
-  chown -R node:node /usr/local/share
+  chown -R $DEV_USER:$DEV_USER /usr/local/share
 
 # Persist bash history.
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
