@@ -67,7 +67,7 @@
     "source=devcontainer-npm-cache,target=/home/${localEnv:USER}/.npm,type=volume",
     "source=devcontainer-bun-cache,target=/home/${localEnv:USER}/.bun/install/cache,type=volume",
     "source=devcontainer-pip-cache,target=/home/${localEnv:USER}/.cache/pip,type=volume",
-    "source=devcontainer-pnpm-store,target=/home/${localEnv:USER}/.local/share/pnpm/store,type=volume",
+    "source=devcontainer-pnpm-store,target=/home/${localEnv:USER}/.local/share/pnpm,type=volume",
     "source=devcontainer-cargo,target=/home/${localEnv:USER}/.cargo,type=volume",
     "source=devcontainer-rustup,target=/home/${localEnv:USER}/.rustup,type=volume"
   ],
