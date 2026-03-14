@@ -30,7 +30,7 @@ alias la='ls -A'
 alias gs='git status'
 alias gd='git diff'
 alias gl='git log --oneline -20'
-alias updates='shell-status-refresh details'
+
 
 if [[ -n "$IS_LINUX" ]]; then
   alias pbcopy='xclip -selection clipboard'
