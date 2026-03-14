@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Show available upgrades, optionally pick and run them.
+#
+# Usage:
+#   updates              # show details
+#   updates --apply      # pick upgrades to run via fzf, then refresh cache
+#   updates --refresh    # re-scan and show details
+set -euo pipefail
+
+CACHE_DIR="$HOME/.cache/shell-status"
+DETAIL_FILE="$CACHE_DIR/details"
+COMMANDS_FILE="$CACHE_DIR/commands"
+
+case "${1:-}" in
+  --refresh)
+    shell-status-refresh
+    exec "$0"
+    ;;
+  --apply)
+    if [[ ! -f "$COMMANDS_FILE" ]] || [[ ! -s "$COMMANDS_FILE" ]]; then
+      echo "Nothing to upgrade. Run 'updates --refresh' to re-scan."
+      exit 0
+    fi
+
+    # fzf multi-select: show labels, extract commands
+    selected=$(cut -f1 "$COMMANDS_FILE" \
+      | fzf --multi --header="Select upgrades (TAB to toggle, ENTER to run)" \
+      2>/dev/null) || exit 0
+
+    [[ -z "$selected" ]] && exit 0
+
+    # Map selected labels back to commands
+    while IFS= read -r label; do
+      cmd=$(awk -F'\t' -v lbl="$label" '$1 == lbl {print $2}' "$COMMANDS_FILE")
+      [[ -z "$cmd" ]] && continue
+      echo ""
+      echo "==> $label"
+      echo "  \$ $cmd"
+      echo ""
+      eval "$cmd"
+    done <<< "$selected"
+
+    echo ""
+    echo "Refreshing cache..."
+    shell-status-refresh
+    exec "$0"
+    ;;
+  *)
+    if [[ -f "$DETAIL_FILE" ]]; then
+      cat "$DETAIL_FILE"
+    else
+      echo "No details available. Run 'updates --refresh' to scan."
+    fi
+    ;;
+esac

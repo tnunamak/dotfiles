@@ -12,6 +12,7 @@ set -euo pipefail
 CACHE_DIR="$HOME/.cache/shell-status"
 CACHE_FILE="$CACHE_DIR/summary"
 DETAIL_FILE="$CACHE_DIR/details"
+COMMANDS_FILE="$CACHE_DIR/commands"
 LOCK_FILE="$CACHE_DIR/.lock"
 mkdir -p "$CACHE_DIR"
 
@@ -166,6 +167,9 @@ try:
             f"{name} {info.get('current','?')} \u2192 {info.get('latest','?')}"
             for name, info in sorted(data.items())
         ]
+        results["npm_cmd"] = "npm install -g " + " ".join(
+            f"{name}@latest" for name in sorted(data.keys())
+        )
 except Exception:
     pass
 
@@ -208,11 +212,21 @@ json.dump(results, sys.stdout)
 PYEOF
 ) || python_pkg_output="{}"
 
+# Extract dynamic upgrade commands from python output
+IFS=$'\t' read -r npm_upgrade_cmd pip_upgrade_cmd < <(echo "$python_pkg_output" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+npm_cmd = d.get('npm_cmd', 'npm update -g')
+pip_pkgs = [p.split()[0] for p in d.get('pip', [])]
+pip_cmd = 'pip install --user --upgrade ' + ' '.join(pip_pkgs) if pip_pkgs else ''
+print(npm_cmd + '\t' + pip_cmd)
+" 2>/dev/null) || { npm_upgrade_cmd="npm update -g"; pip_upgrade_cmd=""; }
+
 # Parse results into bash arrays
 # Format: "detail_key|display_name|upgrade_cmd"
 python_managers=(
-  "npm|npm globals|npm outdated -g && npm update -g"
-  "pip|pip --user|pip install --user --upgrade <pkg>"
+  "npm|npm globals|$npm_upgrade_cmd"
+  "pip|pip --user|$pip_upgrade_cmd"
   "pipx|pipx|pipx upgrade-all"
 )
 
@@ -343,7 +357,13 @@ for f in "$TMPDIR_PARALLEL"/cargo-*; do
   [[ -n "$content" ]] && detail_cargo+=("$content")
 done
 if (( ${#detail_cargo[@]} > 0 )); then
-  manager_entries+=("cargo|${#detail_cargo[@]} package(s)|cargo install <crate>")
+  # Build actual cargo install command from outdated crate names
+  cargo_crates=()
+  for line in "${detail_cargo[@]}"; do
+    crate_name=$(echo "$line" | awk '{print $1}')
+    [[ -n "$crate_name" ]] && cargo_crates+=("$crate_name")
+  done
+  manager_entries+=("cargo|${#detail_cargo[@]} package(s)|cargo install ${cargo_crates[*]}")
 fi
 
 # ~/applications → repo_count + detail_apps
@@ -363,7 +383,7 @@ manager_count=${#manager_entries[@]}
 update_total=$(( tool_count + manager_count + repo_count ))
 
 if (( update_total > 0 )); then
-  lines+=("Run updates to see $update_total available upgrades|")
+  lines+=("$update_total upgrades available — run updates --apply|")
 fi
 
 # ============================================================================
@@ -438,6 +458,18 @@ if (( repo_count > 0 )); then
   detail_out+=("~/applications ($repo_count repos behind):")
   detail_out+=("${detail_apps[@]}")
 fi
+
+# --- write commands file (tab-separated: label\tcmd) ---
+{
+  for entry in "${tool_entries[@]}"; do
+    IFS='|' read -r name detail cmd <<< "$entry"
+    printf '%s %s\t%s\n' "$name" "$detail" "$cmd"
+  done
+  for entry in "${manager_entries[@]}"; do
+    IFS='|' read -r name detail cmd <<< "$entry"
+    printf '%s %s\t%s\n' "$name" "$detail" "$cmd"
+  done
+} > "$COMMANDS_FILE"
 
 # --- write files ---
 if (( ${#detail_out[@]} > 0 )); then
