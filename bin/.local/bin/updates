@@ -29,16 +29,23 @@ case "${1:-}" in
 
     [[ -z "$selected" ]] && exit 0
 
-    # Map selected labels back to commands
+    # Collect commands from selections, then run with terminal stdin
+    cmds=()
+    labels=()
     while IFS= read -r label; do
       cmd=$(awk -F'\t' -v lbl="$label" '$1 == lbl {print $2}' "$COMMANDS_FILE")
       [[ -z "$cmd" ]] && continue
-      echo ""
-      echo "==> $label"
-      echo "  \$ $cmd"
-      echo ""
-      eval "$cmd" || echo "  (exited with status $?)"
+      labels+=("$label")
+      cmds+=("$cmd")
     done <<< "$selected"
+
+    for i in "${!cmds[@]}"; do
+      echo ""
+      echo "==> ${labels[$i]}"
+      echo "  \$ ${cmds[$i]}"
+      echo ""
+      eval "${cmds[$i]}" || echo "  (exited with status $?)"
+    done
 
     echo ""
     echo "Refreshing cache..."
