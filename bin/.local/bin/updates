@@ -37,7 +37,7 @@ case "${1:-}" in
       echo "==> $label"
       echo "  \$ $cmd"
       echo ""
-      eval "$cmd"
+      eval "$cmd" || echo "  (exited with status $?)"
     done <<< "$selected"
 
     echo ""
