@@ -47,5 +47,6 @@ export NVM_DIR="$HOME/.nvm"
 
 # zoxide (smarter cd) — must be last
 if command -v zoxide &>/dev/null; then
+  export _ZO_DOCTOR=0  # suppress false positive in non-interactive shells (Claude Code)
   eval "$(zoxide init zsh --cmd cd)"
 fi
