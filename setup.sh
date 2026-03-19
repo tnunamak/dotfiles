@@ -42,6 +42,25 @@ case "$(uname)" in
     if ! command -v git-filter-repo &>/dev/null; then
       sudo apt-get install -y git-filter-repo
     fi
+
+    # Kitty terminal
+    if ! command -v kitty &>/dev/null; then
+      sudo apt-get install -y kitty
+    fi
+
+    # Docker CE
+    if ! command -v docker &>/dev/null; then
+      sudo apt-get install -y ca-certificates gnupg
+      sudo install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      sudo chmod a+r /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+      sudo apt-get update
+      sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      sudo usermod -aG docker "$USER"
+      echo "NOTE: Log out and back in for docker group membership to take effect."
+    fi
     ;;
   Darwin)
     if ! command -v brew &>/dev/null; then
@@ -49,7 +68,11 @@ case "$(uname)" in
       exit 1
     fi
     echo "Installing system packages (brew)..."
-    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat
+    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat 2>&1 | grep -v 'already installed'
+    for cask in kitty docker; do
+      brew list --cask "$cask" &>/dev/null || brew install --cask "$cask"
+    done
+    brew upgrade neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat 2>&1 | grep -v 'already.*latest'
     ;;
   *)
     echo "Unsupported platform: $(uname)"
@@ -88,6 +111,11 @@ fi
 # Codex CLI
 if ! command -v codex &>/dev/null; then
   npm install -g @openai/codex
+fi
+
+# Devcontainer CLI
+if ! command -v devcontainer &>/dev/null; then
+  npm install -g @devcontainers/cli
 fi
 
 # Kimi Code CLI
