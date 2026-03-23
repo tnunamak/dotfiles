@@ -4,9 +4,8 @@
 #
 # Usage:
 #   shell-status-refresh           # refresh the cache (runs in background from shell_config)
-#   shell-status-refresh details   # print detailed info for collapsed categories
-#
-# UX design: see SHELL-STATUS-UX.md
+#   updates                        # show details (separate script)
+#   updates --apply                # fzf picker to run upgrades
 set -euo pipefail
 
 CACHE_DIR="$HOME/.cache/shell-status"
@@ -240,7 +239,7 @@ d = json.load(sys.stdin).get('$pm_key', [])
 for line in d: print(line)
 " 2>/dev/null || true)
   eval "count=\${#detail_${pm_key}[@]}"
-  (( count > 0 )) && manager_entries+=("$pm_display|$count package(s)|$pm_upgrade")
+  (( count > 0 && ${#pm_upgrade} > 0 )) && manager_entries+=("$pm_display|$count package(s)|$pm_upgrade")
   declare_detail_section "$pm_display" "$pm_key"
 done
 declare_detail_section "cargo" "cargo"
@@ -259,6 +258,11 @@ individual_tools=(
   "bun;bun --version 2>/dev/null | head -1;gh api repos/oven-sh/bun/releases/latest --jq .tag_name;bun upgrade"
   "immich-go;immich-go version 2>/dev/null | awk '{print \$2}' | sed 's/version://' | grep -v '^dev\$';gh api repos/simulot/immich-go/releases/latest --jq .tag_name;go install github.com/simulot/immich-go@latest"
   "clawmeter;clawmeter --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/tnunamak/clawmeter/releases/latest --jq .tag_name;go install github.com/tnunamak/clawmeter/cmd/clawmeter@latest"
+  # .deb from GitHub releases
+  "sunshine;dpkg-query -W -f='\${Version}' sunshine 2>/dev/null;gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name | ltrimstr(\"v\")';TAG=\$(gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name') && gh release download \$TAG --repo LizardByte/Sunshine --pattern 'sunshine-debian-trixie-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/sunshine-debian-trixie-amd64.deb"
+  "firefoxpwa;dpkg-query -W -f='\${Version}' firefoxpwa 2>/dev/null;gh api repos/filips123/PWAsForFirefox/releases/latest --jq '.tag_name | ltrimstr(\"v\")';gh release download --repo filips123/PWAsForFirefox --pattern 'firefoxpwa_*_amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/firefoxpwa_*_amd64.deb"
+  "nvidia-gpu-exporter;dpkg-query -W -f='\${Version}' nvidia-gpu-exporter 2>/dev/null;gh api repos/utkuozdemir/nvidia_gpu_exporter/releases/latest --jq '.tag_name | ltrimstr(\"v\")';gh release download --repo utkuozdemir/nvidia_gpu_exporter --pattern 'nvidia-gpu-exporter_*_linux_amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/nvidia-gpu-exporter_*_linux_amd64.deb"
+  "redisinsight;dpkg-query -W -f='\${Version}' redisinsight 2>/dev/null;gh api repos/redis/RedisInsight/releases/latest --jq '.tag_name | ltrimstr(\"v\")';gh release download --repo redis/RedisInsight --pattern 'Redis-Insight-linux-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/Redis-Insight-linux-amd64.deb"
   # npm registry tool
   "claude;claude --version 2>/dev/null | head -1 | awk '{print \$1}';npm view @anthropic-ai/claude-code version;npm install -g @anthropic-ai/claude-code@latest"
   # rustup
