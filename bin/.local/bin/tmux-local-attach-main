@@ -1,33 +1,142 @@
 #!/usr/bin/env bash
-# Attach to an existing detached grouped session in the "main" group,
-# or create a new one. Race-safe via flock.
-# Falls back to a plain shell if tmux fails to start.
+# Attach local terminals to fresh grouped tmux sessions in the "main" group.
+# Restored grouped-session focus is consumed from a short-lived queue written by
+# the post-restore hook. Normal launches pick an unused or least-viewed window.
 set -euo pipefail
 
-# If tmux can't even start a server, fall back to plain shell
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
+LOCK_FILE="${STATE_DIR}/attach-main.lock"
+RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
+RESTORE_STAMP_FILE="${STATE_DIR}/main.restore-stamp"
+RESTORE_TTL=45
+
+mkdir -p "$STATE_DIR"
+
+# If tmux cannot start, fall back to a plain shell.
 if ! tmux start-server 2>/dev/null; then
-  echo "tmux failed to start — falling back to plain shell" >&2
-  exit 0  # return to calling shell (don't exec, don't exit 1)
+  echo "tmux failed to start; falling back to plain shell" >&2
+  exit 0
 fi
 
-# Acquire exclusive lock (fd inherited by exec, released when process exits)
-exec {lockfd}>/tmp/tmux-attach-main.lock
-flock "$lockfd"
+window_exists() {
+  tmux list-windows -t =main -F '#{window_index}' 2>/dev/null | grep -Fxq -- "$1"
+}
 
-# Ensure the main session exists
-if ! tmux has-session -t main 2>/dev/null; then
-  exec tmux new-session -s main
-fi
+# Pop a window index from the restore queue (if it's fresh and valid).
+pop_restore_window() {
+  # Check timestamp — expire after RESTORE_TTL seconds
+  if [[ -f "$RESTORE_STAMP_FILE" ]]; then
+    local stamp now age
+    stamp=$(tr -d '[:space:]' < "$RESTORE_STAMP_FILE" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$((now - stamp))
+    if (( age > RESTORE_TTL )); then
+      rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
+      return 1
+    fi
+  else
+    rm -f "$RESTORE_QUEUE_FILE"
+    return 1
+  fi
 
-# Find a detached grouped session in the main group
-# Use list-sessions filter (display-message returns empty outside tmux context)
-target=""
-target=$(tmux list-sessions -F '#{session_name}' \
-  -f '#{&&:#{==:#{session_group},main},#{==:#{session_attached},0}}' 2>/dev/null \
-  | head -1) || true
+  # Pop the first valid window index
+  while [[ -s "$RESTORE_QUEUE_FILE" ]]; do
+    local window
+    IFS= read -r window < "$RESTORE_QUEUE_FILE" || break
+
+    # Remove the consumed line
+    local tmp="${RESTORE_QUEUE_FILE}.tmp.$$"
+    sed '1d' "$RESTORE_QUEUE_FILE" > "$tmp" 2>/dev/null || : > "$tmp"
+    mv "$tmp" "$RESTORE_QUEUE_FILE"
+
+    # Clean up empty files
+    if [[ ! -s "$RESTORE_QUEUE_FILE" ]]; then
+      rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
+    fi
+
+    if [[ "$window" =~ ^[0-9]+$ ]] && window_exists "$window"; then
+      printf '%s\n' "$window"
+      return 0
+    fi
+  done
+
+  rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
+  return 1
+}
+
+# Pick a window not currently viewed by any attached session, or the least-viewed.
+choose_normal_window() {
+  local -a windows=()
+  local -A counts=()
+
+  mapfile -t windows < <(tmux list-windows -t =main -F '#{window_index}' 2>/dev/null)
+  (( ${#windows[@]} > 0 )) || return 1
+
+  for idx in "${windows[@]}"; do
+    counts["$idx"]=0
+  done
+
+  # Count how many attached sessions are viewing each window
+  while IFS= read -r idx; do
+    [[ -n "${counts[$idx]+x}" ]] || continue
+    counts["$idx"]=$(( counts["$idx"] + 1 ))
+  done < <(
+    tmux list-sessions -F '#{window_index}' \
+      -f '#{&&:#{==:#{session_group},main},#{!=:#{session_attached},0}}' \
+      2>/dev/null || true
+  )
+
+  # Prefer an unviewed window
+  for idx in "${windows[@]}"; do
+    if (( counts["$idx"] == 0 )); then
+      printf '%s\n' "$idx"
+      return 0
+    fi
+  done
+
+  # Otherwise pick the least-viewed
+  local best_idx="" best_count=""
+  for idx in "${windows[@]}"; do
+    local count="${counts[$idx]}"
+    if [[ -z "$best_count" ]] || (( count < best_count )); then
+      best_idx="$idx"
+      best_count="$count"
+    fi
+  done
+
+  [[ -n "$best_idx" ]] || return 1
+  printf '%s\n' "$best_idx"
+}
+
+# Under lock: create a fresh grouped session and select the right window.
+target="$(
+  (
+    flock 9
+
+    # Ensure main session exists
+    tmux has-session -t =main 2>/dev/null || tmux new-session -d -s main
+
+    # Pick a window: restore queue first, then smart selection
+    target_window="$(pop_restore_window || true)"
+    if [[ -z "$target_window" ]]; then
+      target_window="$(choose_normal_window || true)"
+    fi
+
+    # Create a fresh grouped session
+    new_name="$(tmux new-session -dP -t =main -F '#{session_name}')"
+
+    # Set the target window before anyone attaches
+    if [[ -n "$target_window" ]]; then
+      tmux select-window -t "=${new_name}:${target_window}" >/dev/null 2>&1 || true
+    fi
+
+    printf '%s\n' "$new_name"
+  ) 9>"$LOCK_FILE"
+)" || true
 
 if [[ -n "$target" ]]; then
   exec tmux attach-session -t "=$target"
-else
-  exec tmux new-session -t main
 fi
+
+# Last-resort fallback
+exec tmux new-session -A -s main
