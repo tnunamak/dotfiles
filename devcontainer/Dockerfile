@@ -1,4 +1,4 @@
-FROM node:22-trixie
+FROM node:24.14.0-trixie
 
 ARG TZ
 ENV TZ="$TZ"
@@ -213,6 +213,12 @@ RUN npm install -g @sentry/cli
 
 # Install PostHog CLI
 RUN npm install -g @posthog/cli
+
+# Install Cloudflare Wrangler CLI
+RUN npm install -g wrangler
+
+# Install Neon CLI (Postgres)
+RUN npm install -g neonctl
 
 # Install rtk (CLI proxy that reduces LLM token consumption)
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh

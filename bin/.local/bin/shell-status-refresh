@@ -340,6 +340,25 @@ if [[ -d "$HOME/applications" ]]; then
   done
 fi
 
+# --- tmux plugins (tpm) ---
+detail_tmux=()
+if [[ -d "$HOME/.tmux/plugins" ]]; then
+  for plugin_dir in "$HOME/.tmux/plugins"/*/; do
+    [[ -d "$plugin_dir/.git" ]] || continue
+    name=$(basename "$plugin_dir")
+    [[ "$name" == "tpm" ]] && continue
+    (
+      git -C "$plugin_dir" fetch --quiet 2>/dev/null || exit 0
+      local_head=$(git -C "$plugin_dir" rev-parse HEAD 2>/dev/null) || exit 0
+      remote_head=$(git -C "$plugin_dir" rev-parse '@{u}' 2>/dev/null) || exit 0
+      [[ "$local_head" == "$remote_head" ]] && exit 0
+      behind=$(git -C "$plugin_dir" rev-list --count HEAD..@{u} 2>/dev/null) || behind="?"
+      echo "  $name ($behind commits behind)"
+    ) > "$TMPDIR_PARALLEL/tmux-$name" 2>/dev/null &
+    bulk_pids+=($!)
+  done
+fi
+
 # ============================================================================
 # Wait for all parallel jobs, collect results
 # ============================================================================
@@ -378,13 +397,21 @@ for f in "$TMPDIR_PARALLEL"/apps-*; do
 done
 repo_count=${#detail_apps[@]}
 
+# tmux plugins → tmux_count + detail_tmux
+for f in "$TMPDIR_PARALLEL"/tmux-*; do
+  [[ -f "$f" ]] || continue
+  content=$(cat "$f")
+  [[ -n "$content" ]] && detail_tmux+=("$content")
+done
+tmux_count=${#detail_tmux[@]}
+
 # ============================================================================
 # Format summary line
 # ============================================================================
 
 tool_count=${#tool_entries[@]}
 manager_count=${#manager_entries[@]}
-update_total=$(( tool_count + manager_count + repo_count ))
+update_total=$(( tool_count + manager_count + repo_count + tmux_count ))
 
 if (( update_total > 0 )); then
   lines+=("$update_total upgrades available — run updates --apply|")
@@ -463,6 +490,13 @@ if (( repo_count > 0 )); then
   detail_out+=("${detail_apps[@]}")
 fi
 
+# --- tmux plugins section ---
+if (( tmux_count > 0 )); then
+  (( ${#detail_out[@]} > 0 )) && detail_out+=("")
+  detail_out+=("tmux plugins ($tmux_count behind):")
+  detail_out+=("${detail_tmux[@]}")
+fi
+
 # --- write commands file (tab-separated: label\tcmd) ---
 {
   for entry in "${tool_entries[@]}"; do
@@ -473,6 +507,9 @@ fi
     IFS='|' read -r name detail cmd <<< "$entry"
     printf '%s %s\t%s\n' "$name" "$detail" "$cmd"
   done
+  if (( tmux_count > 0 )); then
+    printf 'tmux plugins %d behind\t%s\n' "$tmux_count" "$HOME/.tmux/plugins/tpm/bin/update_plugins"
+  fi
 } > "$COMMANDS_FILE"
 
 # --- write files ---

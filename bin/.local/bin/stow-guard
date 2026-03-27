@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# stow-guard: restore stow symlinks that got replaced by regular files
+# Usage: called by systemd path unit when watched files change
+set -euo pipefail
+
+DOTFILES_DIR="$HOME/code/dotfiles"
+STOW_PKG="claude"
+STOW_SRC="$DOTFILES_DIR/$STOW_PKG"
+
+# Find all files in the stow source, check if the target is still a symlink
+find "$STOW_SRC" -type f | while read -r src; do
+  rel="${src#$STOW_SRC/}"
+  target="$HOME/$rel"
+
+  # Skip if target doesn't exist or is already a symlink
+  [[ -L "$target" ]] && continue
+  [[ ! -f "$target" ]] && continue
+
+  # Target is a regular file — a tool replaced our symlink
+  # Copy the (possibly updated) content back to dotfiles, then restore the link
+  cp "$target" "$src"
+  rm "$target"
+  ln -s "$(realpath --relative-to="$(dirname "$target")" "$src")" "$target"
+  echo "stow-guard: restored symlink $target -> $src"
+done

@@ -6,7 +6,7 @@
 
 When using external AI models via MCP:
 - **Gemini**: prefer `gemini-3.1-pro-preview` (latest and most capable; `gemini-3-pro-preview` was deprecated March 9 2026)
-- **OpenAI**: prefer `gpt-5.1` with thinking for complex tasks, `gpt-4o` for faster/cheaper tasks
+- **OpenAI**: prefer `gpt-5.4` with high reasoning effort for complex tasks, low reasoning effort for simple tasks
 
 ## Private config
 

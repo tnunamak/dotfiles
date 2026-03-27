@@ -12,25 +12,60 @@ DEVCONTAINER_SOURCE="$DOTFILES_DIR/devcontainer"
 REBUILD=false
 TOOL="shell"
 KNOWN_TOOLS="claude codex gemini kimi shell"
+TOOL_ARGS=()
 
 usage() {
     cat <<'EOF'
-Usage: devc [flags] [tool] [workspace]
+Usage: devc [flags] [tool] [workspace] [-- tool-args...]
 
 Tools: claude, codex, gemini, kimi, shell (default)
 
 Flags:
   --rebuild        Remove and rebuild the devcontainer
+  --status         Show all devcontainers with age and staleness
   -t TOOL          Specify an arbitrary command as the tool
   --help, -h       Show this help
 
 Examples:
   devc                                   # shell in current dir
   devc claude                            # claude in current dir
-  devc codex ~/code/myproject            # codex in ~/code/myproject
-  devc ~/code/myproject                  # shell in ~/code/myproject
+  devc claude ~/code/myproject           # claude in ~/code/myproject
+  devc claude -- --resume abc123         # claude with extra args
+  devc --status                          # show all devcontainers
   devc -t 'npm test' ~/code/myproject    # run arbitrary command
 EOF
+    exit 0
+}
+
+show_status() {
+    local now
+    now=$(date +%s)
+
+    printf "%-34s %5s %7s  %s\n" "Container" "Age" "Behind" "Status"
+    printf "%-34s %5s %7s  %s\n" "─────────" "───" "──────" "──────"
+
+    docker ps -a --filter "label=devcontainer.local_folder" --format '{{.Names}}\t{{.State}}' | sort | while IFS=$'\t' read -r cname cstate; do
+        build_iso=$(docker inspect -f '{{.Created}}' "$cname")
+        build_epoch=$(date -d "${build_iso}" +%s)
+        age_days=$(( (now - build_epoch) / 86400 ))
+
+        stale=$(git -C "$DEVCONTAINER_SOURCE" log --oneline --after="$build_iso" -- . 2>/dev/null || true)
+        stale_count=0
+        [[ -n "$stale" ]] && stale_count=$(echo "$stale" | wc -l | tr -d ' ')
+
+        if [[ "$cstate" == "running" ]]; then
+            sessions=$(docker exec "$cname" pgrep -c 'claude' 2>/dev/null || true)
+            sessions=${sessions:-0}
+            cstat="Up (${sessions} claude)"
+        else
+            cstat="Exited"
+        fi
+
+        behind="$stale_count"
+        [[ "$stale_count" -gt 0 ]] && behind="$stale_count ⚠"
+
+        printf "%-34s %3dd %7s  %s\n" "$cname" "$age_days" "$behind" "$cstat"
+    done
     exit 0
 }
 
@@ -38,8 +73,10 @@ EOF
 while [[ "${1:-}" == -* ]]; do
     case "$1" in
         --rebuild) REBUILD=true; shift ;;
+        --status) show_status ;;
         -t) TOOL="${2:?-t requires an argument}"; shift 2 ;;
         --help|-h) usage ;;
+        --) shift; TOOL_ARGS=("$@"); set --; break ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -49,7 +86,18 @@ if [[ -n "${1:-}" ]] && [[ " $KNOWN_TOOLS " == *" $1 "* ]]; then
     TOOL="$1"; shift
 fi
 
-WORKSPACE="${1:-$(pwd)}"
+# Next positional: workspace path (if it's a directory, not a flag)
+if [[ -n "${1:-}" ]] && [[ "$1" != "--" ]] && [[ -d "$1" ]]; then
+    WORKSPACE="$1"; shift
+else
+    WORKSPACE="$(pwd)"
+fi
+
+# Everything after -- is tool args
+if [[ "${1:-}" == "--" ]]; then
+    shift
+    TOOL_ARGS=("$@")
+fi
 
 # Resolve to absolute path first
 WORKSPACE=$(cd "$WORKSPACE" && pwd)
@@ -89,6 +137,22 @@ mkdir -p ~/.devcontainer-homes/"${WORKSPACE_NAME}"/.config \
          ~/.config/{git,gh,gcloud,posthog}
 touch ~/.claude/.credentials.json ~/.sentryclirc 2>/dev/null || true
 
+# Check if devcontainer image is stale relative to dotfiles
+CONTAINER="${WORKSPACE_NAME}-dev"
+if docker inspect "$CONTAINER" &>/dev/null && ! $REBUILD; then
+    BUILD_ISO=$(docker inspect -f '{{.Created}}' "$CONTAINER")
+    BUILD_DATE=${BUILD_ISO%%T*}
+    STALE_COMMITS=$(git -C "$DEVCONTAINER_SOURCE" log --oneline --after="$BUILD_ISO" -- . 2>/dev/null || true)
+    STALE_COUNT=0
+    [[ -n "$STALE_COMMITS" ]] && STALE_COUNT=$(echo "$STALE_COMMITS" | wc -l | tr -d ' ')
+    if [[ "$STALE_COUNT" -gt 0 ]]; then
+        AGE_DAYS=$(( ( $(date +%s) - $(date -d "$BUILD_DATE" +%s) ) / 86400 ))
+        echo "⚠ Image ${AGE_DAYS}d old, ${STALE_COUNT} devcontainer commit(s) behind:"
+        echo "$STALE_COMMITS"
+        echo "  → devc --rebuild $TOOL $WORKSPACE"
+    fi
+fi
+
 echo "Starting devcontainer for: $WORKSPACE_NAME"
 
 # Remove existing container if --rebuild was passed
@@ -126,13 +190,16 @@ if [[ -f "$WORKSPACE/.devport" ]]; then
 fi
 
 # Resolve tool command
+EXTRA_ARGS=""
+[[ ${#TOOL_ARGS[@]} -gt 0 ]] && printf -v EXTRA_ARGS ' %q' "${TOOL_ARGS[@]}"
+
 case "$TOOL" in
-    claude)  CMD='export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --dangerously-skip-permissions' ;;
-    codex)   CMD='codex --dangerously-bypass-approvals-and-sandbox' ;;
-    gemini)  CMD='gemini --yolo' ;;
-    kimi)    CMD='kimi --yolo' ;;
+    claude)  CMD="export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --dangerously-skip-permissions${EXTRA_ARGS}" ;;
+    codex)   CMD="codex --dangerously-bypass-approvals-and-sandbox${EXTRA_ARGS}" ;;
+    gemini)  CMD="gemini --yolo${EXTRA_ARGS}" ;;
+    kimi)    CMD="kimi --yolo${EXTRA_ARGS}" ;;
     shell)   CMD='exec bash -l' ;;
-    *)       CMD="$TOOL" ;;
+    *)       CMD="$TOOL${EXTRA_ARGS}" ;;
 esac
 
 echo "Running: $TOOL"
