@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Attach to an existing detached grouped session in the "main" group,
+# or create a new one. Race-safe via flock.
+# Falls back to a plain shell if tmux fails to start.
+set -euo pipefail
+
+# If tmux can't even start a server, fall back to plain shell
+if ! tmux start-server 2>/dev/null; then
+  echo "tmux failed to start — falling back to plain shell" >&2
+  exit 0  # return to calling shell (don't exec, don't exit 1)
+fi
+
+# Acquire exclusive lock (fd inherited by exec, released when process exits)
+exec {lockfd}>/tmp/tmux-attach-main.lock
+flock "$lockfd"
+
+# Ensure the main session exists
+if ! tmux has-session -t main 2>/dev/null; then
+  exec tmux new-session -s main
+fi
+
+# Find a detached grouped session in the main group
+# Use list-sessions filter (display-message returns empty outside tmux context)
+target=""
+target=$(tmux list-sessions -F '#{session_name}' \
+  -f '#{&&:#{==:#{session_group},main},#{==:#{session_attached},0}}' 2>/dev/null \
+  | head -1) || true
+
+if [[ -n "$target" ]]; then
+  exec tmux attach-session -t "=$target"
+else
+  exec tmux new-session -t main
+fi
