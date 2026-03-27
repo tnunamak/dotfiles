@@ -50,3 +50,6 @@ if command -v zoxide &>/dev/null; then
   export _ZO_DOCTOR=0  # suppress false positive in non-interactive shells (Claude Code)
   eval "$(zoxide init zsh --cmd cd)"
 fi
+
+# bun completions
+[ -s "/home/tnunamak/.bun/_bun" ] && source "/home/tnunamak/.bun/_bun"

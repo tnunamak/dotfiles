@@ -54,6 +54,7 @@
     "source=${localEnv:HOME}/.codex,target=/home/${localEnv:USER}/.codex,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.gemini,target=/home/${localEnv:USER}/.gemini,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.kimi,target=/home/${localEnv:USER}/.kimi,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.vana,target=/home/${localEnv:USER}/.vana,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/../,target=${localEnv:HOME}/code,type=bind",
     "source=${localEnv:HOME}/.gitconfig,target=/home/${localEnv:USER}/.gitconfig,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.gitconfig.local,target=/home/${localEnv:USER}/.gitconfig.local,type=bind,consistency=cached",
@@ -83,6 +84,8 @@
     "NGROK_AUTHTOKEN": "${localEnv:NGROK_AUTHTOKEN}",
     "SENTRY_AUTH_TOKEN": "${localEnv:SENTRY_AUTH_TOKEN}",
     "POSTHOG_PERSONAL_API_KEY": "${localEnv:POSTHOG_PERSONAL_API_KEY}",
+    "NEON_API_KEY": "${localEnv:NEON_API_KEY}",
+    "CLOUDFLARE_API_TOKEN": "${localEnv:CLOUDFLARE_API_TOKEN}",
     "HOST_HOME": "${localEnv:HOME}"
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=delegated",

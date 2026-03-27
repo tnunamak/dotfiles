@@ -26,7 +26,7 @@ case "$(uname)" in
   Linux)
     echo "Installing system packages (apt)..."
     sudo apt-get update
-    sudo apt-get install -y neovim git ripgrep curl zsh fzf stow xclip socat
+    sudo apt-get install -y neovim git ripgrep curl zsh fzf stow xclip socat tmux jq
 
     # Starship
     if ! command -v starship &>/dev/null; then
@@ -68,11 +68,11 @@ case "$(uname)" in
       exit 1
     fi
     echo "Installing system packages (brew)..."
-    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat 2>&1 | grep -v 'already installed'
+    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat tmux jq 2>&1 | grep -v 'already installed'
     for cask in kitty docker; do
       brew list --cask "$cask" &>/dev/null || brew install --cask "$cask"
     done
-    brew upgrade neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat 2>&1 | grep -v 'already.*latest'
+    brew upgrade neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat tmux jq 2>&1 | grep -v 'already.*latest'
     ;;
   *)
     echo "Unsupported platform: $(uname)"
@@ -83,13 +83,26 @@ esac
 # --- Cross-platform tool installs ---
 
 # Node.js (via nvm)
+if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck source=/dev/null
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+fi
+# Ensure global packages survive nvm install (node upgrades)
+cat > "$HOME/.nvm/default-packages" <<'NVMPKGS'
+@anthropic-ai/claude-code
+@devcontainers/cli
+@google/gemini-cli
+@openai/codex
+neonctl
+wrangler
+pnpm
+pyright
+typescript
+typescript-language-server
+NVMPKGS
 if ! command -v node &>/dev/null; then
-  if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-    export NVM_DIR="$HOME/.nvm"
-    # shellcheck source=/dev/null
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-  fi
   nvm install --lts
 fi
 
@@ -113,9 +126,17 @@ if ! command -v codex &>/dev/null; then
   npm install -g @openai/codex
 fi
 
-# Devcontainer CLI
+# Devcontainer CLI (used by devc)
 if ! command -v devcontainer &>/dev/null; then
   npm install -g @devcontainers/cli
+fi
+
+# LSPs for Claude Code plugins
+if ! command -v pyright &>/dev/null; then
+  npm install -g pyright
+fi
+if ! command -v typescript-language-server &>/dev/null; then
+  npm install -g typescript typescript-language-server
 fi
 
 # Kimi Code CLI
@@ -126,6 +147,16 @@ fi
 # rstring (code summarization for AI context)
 if ! command -v rstring &>/dev/null; then
   uv tool install rstring
+fi
+
+# Wrangler (Cloudflare Workers CLI)
+if ! command -v wrangler &>/dev/null; then
+  npm install -g wrangler
+fi
+
+# Neon CLI (serverless Postgres)
+if ! command -v neon &>/dev/null; then
+  npm install -g neonctl
 fi
 
 # rtk (CLI proxy that reduces LLM token consumption)
@@ -142,14 +173,26 @@ if [[ "$SHELL" != */zsh ]]; then
   sudo chsh -s "$(which zsh)" "$USER"
 fi
 
+# --- Claude MCP servers ---
+
+# Codex MCP: uses ChatGPT subscription auth (via Codex CLI), no API key needed
+if command -v claude &>/dev/null; then
+  claude mcp add codex-cli --scope user -- npx -y codex-mcp-server 2>/dev/null || true
+fi
+
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux)
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
 # --no-folding for bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
 NO_FOLD_PKGS=(bin nvim claude)
+
+# Remove files that tools create before stow can link them
+# (claude/rtk init write ~/.claude/settings.json as a regular file)
+[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]] && rm ~/.claude/settings.json
+
 for pkg in "${PACKAGES[@]}"; do
   extra_flags=()
   for nf in "${NO_FOLD_PKGS[@]}"; do
@@ -171,6 +214,11 @@ clone_if_missing() {
 }
 clone_if_missing https://github.com/zsh-users/zsh-autosuggestions "$ZSH_PLUGINS/zsh-autosuggestions"
 clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_PLUGINS/zsh-syntax-highlighting"
+
+# --- tmux plugins (tpm) ---
+
+clone_if_missing https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+~/.tmux/plugins/tpm/bin/install_plugins
 
 # --- Local config setup ---
 
