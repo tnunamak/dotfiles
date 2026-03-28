@@ -94,24 +94,18 @@ choose_normal_window() {
     fi
   done
 
-  # Otherwise pick the least-viewed
-  local best_idx="" best_count=""
-  for idx in "${windows[@]}"; do
-    local count="${counts[$idx]}"
-    if [[ -z "$best_count" ]] || (( count < best_count )); then
-      best_idx="$idx"
-      best_count="$count"
-    fi
-  done
-
-  [[ -n "$best_idx" ]] || return 1
-  printf '%s\n' "$best_idx"
+  # All windows are viewed — create a new one
+  tmux new-window -d -t =main -c "$HOME" -P -F '#{window_index}' 2>/dev/null
+  return $?
 }
 
 # Under lock: create a fresh grouped session and select the right window.
 target="$(
   (
     flock 9
+
+    # Wrap tmux so child processes don't inherit the lock fd
+    tmux() { command tmux "$@" 9>&-; }
 
     # Ensure main session exists
     tmux has-session -t =main 2>/dev/null || tmux new-session -d -s main
@@ -122,8 +116,15 @@ target="$(
       target_window="$(choose_normal_window || true)"
     fi
 
-    # Create a fresh grouped session
-    new_name="$(tmux new-session -dP -t =main -F '#{session_name}')"
+    # Find the lowest available session name (main-1, main-2, ...)
+    new_name=""
+    for i in $(seq 1 999); do
+      if ! tmux has-session -t "=main-$i" 2>/dev/null; then
+        new_name="main-$i"
+        break
+      fi
+    done
+    tmux new-session -d -s "$new_name" -t =main
 
     # Set the target window before anyone attaches
     if [[ -n "$target_window" ]]; then
@@ -135,7 +136,7 @@ target="$(
 )" || true
 
 if [[ -n "$target" ]]; then
-  exec tmux attach-session -t "=$target"
+  exec tmux attach-session -t "=$target" \; set-option destroy-unattached on
 fi
 
 # Last-resort fallback
