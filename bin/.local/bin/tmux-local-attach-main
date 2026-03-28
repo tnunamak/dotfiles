@@ -116,9 +116,9 @@ target="$(
       target_window="$(choose_normal_window || true)"
     fi
 
-    # Find the lowest available session name (main-1, main-2, ...)
+    # Find the lowest available session name (main-0, main-1, ...)
     new_name=""
-    for i in $(seq 1 999); do
+    for i in $(seq 0 999); do
       if ! tmux has-session -t "=main-$i" 2>/dev/null; then
         new_name="main-$i"
         break

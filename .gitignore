@@ -7,3 +7,6 @@
 
 # Session artifacts
 SESSION-NOTES.md
+
+# tmux plugins (installed by tpm at runtime)
+tmux/.config/tmux/plugins/
