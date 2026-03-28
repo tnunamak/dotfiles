@@ -41,9 +41,10 @@ Create machine-local configs as needed:
 | Editor | [neovim](https://neovim.io) | `nvim/.config/nvim/init.lua` |
 | Terminal | [kitty](https://sw.kovidgoyal.net/kitty/) | `kitty/.config/kitty/` |
 | Git | git | `git/.gitconfig` |
+| Multiplexer | [tmux](https://github.com/tmux/tmux) | `tmux/.config/tmux/` |
 | AI | [claude code](https://docs.anthropic.com/en/docs/claude-code) | `claude/.claude/` |
 | Devcontainer | docker | `devcontainer/` (synced from anthropics/claude-code) |
-| Scripts | devc, cursorc, claude-export | `bin/.local/bin/` |
+| Scripts | devc, tmux-local-attach-main, etc. | `bin/.local/bin/` |
 
 ### Key tools
 
@@ -64,27 +65,36 @@ To update the devcontainer config from upstream:
 # Review the diff, then commit if happy
 ```
 
-## Kitty + tmux
+## tmux (session persistence)
 
-**SSH** is aliased to `kitten ssh` when running in kitty. This automatically copies terminfo to remote hosts, fixing the `xterm-kitty: unknown terminal type` error that breaks tmux over SSH. Works transparently — just `ssh host` as normal.
+Every kitty window auto-attaches to tmux via grouped sessions. Each window gets an independent view of the same set of tmux windows. Sessions survive crashes, reboots, and are accessible from SSH (e.g., Termius on phone).
+
+**How it works:**
+- `tmux-local-attach-main` — race-safe script creates/reuses grouped sessions
+- `tmux-resurrect` + `tmux-continuum` — auto-save/restore layout across reboots
+- `tmux-assistant-resurrect` — auto-resumes Claude Code / Codex sessions
+- `continuum-boot` — starts tmux via systemd at login (before desktop)
+- Smart window selection — new kitty windows pick unviewed tmux windows, or create new ones
+
+**Prefix:** `Ctrl+Space` (desktop) or `Ctrl+a` (mobile/SSH fallback)
 
 **tmux essentials:**
-- `ctrl+b w` — tree view of all sessions/windows/panes (the "menu")
-- `ctrl+b c` — new window, `ctrl+b 0-9` — switch window
-- `ctrl+b %` — vertical split, `ctrl+b "` — horizontal split
-- `ctrl+b z` — zoom pane to fullscreen (toggle)
-- `ctrl+b ,` — rename window
-- `tmux new -s name` — named session, `tmux a -t name` — reattach
+- `prefix w` — tree view of all sessions/windows/panes
+- `prefix c` — new window, `prefix 0-9` — switch window
+- `prefix |` — vertical split, `prefix -` — horizontal split
+- `prefix h/j/k/l` — navigate panes (vim-style)
+- `prefix z` — zoom pane to fullscreen (toggle)
+- `prefix ,` — rename window
+- `prefix Ctrl-s` — save session, `prefix Ctrl-r` — restore session
 
-Note: tmux keybindings don't work inside Claude Code (it captures input). Use mouse mode (`set -g mouse on` in `.tmux.conf`) to click between tmux panes while Claude is running.
+**SSH:** Auto-attaches to `main` session. Skip with `NOTMUX=1`.
+
+**Escape hatch:** `NOTMUX=1 kitty` opens a plain terminal (for debugging tmux itself).
 
 **kitty essentials:**
-- `ctrl+shift+f1` — show all keyboard shortcuts
-- `ctrl+shift+f2` — open full config with docs
-- `ctrl+shift+f5` — reload config
-- `ctrl+shift+e` — clickable links/paths/hashes in terminal output
-- `ctrl+shift+t` — new tab, `ctrl+shift+right/left` — switch tabs
-- `ctrl+shift+enter` — new split (works as tmux alternative for local use)
+- `ctrl+shift+f5` — reload kitty config
+- `ctrl+click` — open URLs (works in tmux with grabbed mode)
+- Kitty is "just glass" — tmux handles all splits, tabs, and persistence
 
 ## Design decisions
 
