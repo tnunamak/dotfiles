@@ -5,7 +5,7 @@ if [[ -z "$NOTMUX" ]] && [[ $- == *i* ]] && [[ -z "$TMUX" ]] && command -v tmux 
   if [[ -n "$SSH_CONNECTION" ]]; then
     exec tmux new-session -A -s main
   else
-    tmux-local-attach-main
+    "$HOME/.local/bin/tmux-local-attach-main"
   fi
 fi
 
