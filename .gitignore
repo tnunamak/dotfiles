@@ -1,5 +1,7 @@
-# Claude Code runtime (repo root only, not the stow package)
-/.claude/
+# Claude Code runtime (repo root only, not the stow package).
+# Allow .claude/skills/ so project skills can be committed.
+/.claude/*
+!/.claude/skills/
 .nvimlog
 
 # Playwright MCP logs
