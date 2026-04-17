@@ -1,0 +1,19 @@
+# npm packages installed globally on both host and devcontainers.
+# One package per line. Comments and blank lines are ignored.
+# Consumed by: setup.sh, devcontainer/Dockerfile
+
+@fission-ai/openspec
+@google/gemini-cli
+@googleworkspace/cli
+@openai/codex
+@playwright/mcp
+@posthog/cli
+@sentry/cli
+neonctl
+pnpm
+prisma
+pyright
+typescript
+typescript-language-server
+vercel
+wrangler

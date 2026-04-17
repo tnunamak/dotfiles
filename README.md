@@ -28,7 +28,7 @@ cd ~/code/dotfiles
 Create machine-local configs as needed:
 
 - `~/.shell_local` — machine-specific PATH, tool init (nvm, conda, etc.). See `shell/.shell_local.example`.
-- `~/.shell_secrets` — API keys, tokens (never committed)
+- `~/.shell_secrets` — API keys, tokens (never committed). Put `LINEAR_API_KEY` here for the managed Linear MCP setup.
 - `~/.gitconfig.local` — signing key, email. Copied from example on first run.
 - `~/.claude/CLAUDE.local.md` — private context (infrastructure details, IPs, etc.)
 
@@ -64,6 +64,14 @@ To update the devcontainer config from upstream:
 ./sync-devcontainer.sh
 # Review the diff, then commit if happy
 ```
+
+To apply the dotfiles-managed MCP definitions to Claude and Codex:
+
+```bash
+./sync-mcps.sh
+```
+
+The shared MCP definitions live in `ai/mcp-servers.json`. `sync-mcps.sh` keeps the repo free of secrets: Codex reads `LINEAR_API_KEY` from the environment at runtime, while Claude writes the current bearer header into local `~/.claude.json`, so rerun the sync after rotating that key.
 
 ## tmux (session persistence)
 

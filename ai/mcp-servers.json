@@ -1,0 +1,51 @@
+{
+  "codex": {
+    "servers": {
+      "playwright": {
+        "url": "http://127.0.0.1:3100"
+      },
+      "linear": {
+        "url": "https://mcp.linear.app/mcp",
+        "bearer_token_env_var": "LINEAR_API_KEY"
+      }
+    }
+  },
+  "claude": {
+    "servers": {
+      "codex-cli": {
+        "scope": "user",
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "codex-mcp-server"
+        ]
+      },
+      "linear": {
+        "scope": "user",
+        "transport": "http",
+        "url": "https://mcp.linear.app/mcp",
+        "header_env_var": "LINEAR_API_KEY"
+      }
+    }
+  },
+  "gemini": {
+    "servers": {
+      "codex-cli": {
+        "scope": "user",
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "codex-mcp-server"
+        ]
+      },
+      "linear": {
+        "scope": "user",
+        "transport": "http",
+        "url": "https://mcp.linear.app/mcp",
+        "header_env_var": "LINEAR_API_KEY"
+      }
+    }
+  }
+}

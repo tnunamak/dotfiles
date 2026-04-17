@@ -172,25 +172,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     $CARGO_HOME/bin/rustc --version && \
     $CARGO_HOME/bin/cargo --version
 
-# Install pnpm
-RUN npm install -g pnpm
-
-# Install LSP language servers for Claude Code intelligence
-RUN npm install -g typescript-language-server typescript pyright
-
-# Install Playwright MCP server (browser already installed above)
-RUN npm install -g @playwright/mcp
+# Install shared npm global packages (single source of truth: npm-global-packages.txt)
+COPY npm-global-packages.txt /tmp/npm-global-packages.txt
+RUN grep -v '^\s*#' /tmp/npm-global-packages.txt | grep -v '^\s*$' | xargs npm install -g && \
+    rm /tmp/npm-global-packages.txt
 
 # Install Claude Code (native installer puts it in ~/.local which gets
 # shadowed by the home dir bind mount — copied to /usr/local/bin below)
 RUN curl -fsSL https://claude.ai/install.sh | bash
-
-# Install gemini-cli (auto-update disabled via settings — it breaks npm-global
-# installs inside containers because the restarted process can't resolve its module)
-RUN npm install -g @google/gemini-cli
-
-# Install codex-cli
-RUN npm install -g @openai/codex
 
 # Install kimi-cli (Moonshot AI) — needs Python >=3.12 but Bookworm ships 3.11.
 # uv downloads a standalone Python 3.12 and creates an isolated venv.
@@ -201,24 +190,6 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 
     /root/.local/bin/uv tool install kimi-cli --python 3.12 && \
     chmod -R o+rX /opt/uv-tools /opt/uv-python
 USER $DEV_USER
-
-# Install Vercel CLI
-RUN npm install -g vercel
-
-# Install Prisma CLI
-RUN npm install -g prisma
-
-# Install Sentry CLI
-RUN npm install -g @sentry/cli
-
-# Install PostHog CLI
-RUN npm install -g @posthog/cli
-
-# Install Cloudflare Wrangler CLI
-RUN npm install -g wrangler
-
-# Install Neon CLI (Postgres)
-RUN npm install -g neonctl
 
 # Install rtk (CLI proxy that reduces LLM token consumption)
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
@@ -246,7 +217,7 @@ RUN mkdir -p /home/$DEV_USER/.gemini && \
   echo '{"general":{"disableAutoUpdate":true}}' > /home/$DEV_USER/.gemini/settings.json
 
 # Copy and set up firewall script
-COPY init-firewall.sh /usr/local/bin/
+COPY devcontainer/init-firewall.sh /usr/local/bin/
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh && \
   echo "$DEV_USER ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/dev-firewall && \

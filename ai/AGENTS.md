@@ -63,6 +63,14 @@ Or link manually: `link-devcontainer` / `unlink-devcontainer`.
 1. Be skeptical: after building something, test the full user journey yourself. When you identity the root cause of a bug, test your hypothesis. You are trusted to a point, but act as if you're not trusted and require proving important changes are valid before making them. After you identify an explanation for a problem, review whether it squares with everything you know and watch out for logical inconsistencies.
 2. When you have to design something, research prior art. E.g. how do leading modern dev shops like Stripe build a volume slider?
 3. Be willing to build AI-friendly interfaces to the black boxes you build to maxmimize the amount of code you can efficiently put under test and minimize the time you or Tim spends in the browser.
+4. After any naming, semantic, or cleanup task: BEFORE reporting done, grep all affected files for the old name/pattern and read every file you touched to verify consistency. Do not say the work is complete until you have done this check yourself — do not wait to be asked.
+
+# Skills
+
+Two mechanisms, managed by `setup.sh`:
+
+- **Upstream suites** (`pbakaus/impeccable`, `forrestchang/andrej-karpathy-skills`, etc.) are installed via `npx skills add -g` and pinned in `~/.agents/.skill-lock.json`. Update with `npx skills update -g`. When vercel-labs/skills#729 ships, the list in `setup.sh` migrates to a committed Skillfile.
+- **Locally-authored skills** live under `ai/skills/local/*/` and are directly symlinked into `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills` so edits in dotfiles propagate live. Don't route these through `npx skills` — it copies instead of symlinks and doesn't track local paths in the lockfile.
 
 # Resources
 2026-Vana-Corporate-Strategy.md is a two page doc in which Vana execs have written up this year's company strategy.

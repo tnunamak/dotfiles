@@ -2,7 +2,8 @@
   "name": "Claude Code Sandbox",
   "initializeCommand": "mkdir -p ~/.devcontainer-homes/${localWorkspaceFolderBasename}/{.config,.local/share,.cache} ~/.claude ~/.codex ~/.gemini ~/.kimi ~/.config/{git,gh,gcloud,posthog} ~/.npm ~/.local/share/pnpm ~/.cache/pip ~/.bun/install/cache && touch ~/.claude/.credentials.json ~/.sentryclirc",
   "build": {
-    "dockerfile": "Dockerfile",
+    "context": "..",
+    "dockerfile": "devcontainer/Dockerfile",
     "args": {
       "TZ": "${localEnv:TZ:America/Chicago}",
       "GIT_DELTA_VERSION": "0.18.2",
@@ -81,6 +82,7 @@
     "VISUAL": "${localEnv:VISUAL:vim}",
     "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}",
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "LINEAR_API_KEY": "${localEnv:LINEAR_API_KEY}",
     "KIMI_CODE_API_KEY": "${localEnv:KIMI_CODE_API_KEY}",
     "NGROK_AUTHTOKEN": "${localEnv:NGROK_AUTHTOKEN}",
     "SENTRY_AUTH_TOKEN": "${localEnv:SENTRY_AUTH_TOKEN}",

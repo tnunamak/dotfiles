@@ -89,19 +89,14 @@ if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
   # shellcheck source=/dev/null
   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 fi
-# Ensure global packages survive nvm install (node upgrades)
-cat > "$HOME/.nvm/default-packages" <<'NVMPKGS'
-@anthropic-ai/claude-code
-@devcontainers/cli
-@google/gemini-cli
-@openai/codex
-neonctl
-wrangler
-pnpm
-pyright
-typescript
-typescript-language-server
-NVMPKGS
+# Ensure global npm packages survive nvm install (node upgrades).
+# Shared list lives in npm-global-packages.txt; host-only extras appended here.
+# NOTE: @anthropic-ai/claude-code is intentionally NOT listed — Claude Code
+# migrated from npm to a native installer (installs to ~/.local/bin/claude).
+{
+  grep -v '^\s*#' "$DOTFILES_DIR/npm-global-packages.txt" | grep -v '^\s*$'
+  echo "@devcontainers/cli"
+} > "$HOME/.nvm/default-packages"
 if ! command -v node &>/dev/null; then
   nvm install --lts
 fi
@@ -111,32 +106,28 @@ if ! command -v uv &>/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-# Claude Code
-if ! command -v claude &>/dev/null; then
-  npm install -g @anthropic-ai/claude-code
+# Claude Code (native installer — no longer distributed via npm)
+# If an old npm-global copy exists in the nvm bin dir, remove it so the native
+# binary at ~/.local/bin/claude takes precedence.
+if npm ls -g --depth=0 @anthropic-ai/claude-code &>/dev/null; then
+  npm uninstall -g @anthropic-ai/claude-code
+fi
+if ! [[ -x "$HOME/.local/bin/claude" ]]; then
+  curl -fsSL https://claude.ai/install.sh | bash
 fi
 
-# Gemini CLI
-if ! command -v gemini &>/dev/null; then
-  npm install -g @google/gemini-cli
-fi
+# Install shared npm global packages (from npm-global-packages.txt)
+echo "Installing shared npm global packages..."
+while IFS= read -r pkg; do
+  [[ -z "$pkg" || "$pkg" =~ ^[[:space:]]*# ]] && continue
+  if ! npm ls -g --depth=0 "$pkg" &>/dev/null; then
+    npm install -g "$pkg"
+  fi
+done < "$DOTFILES_DIR/npm-global-packages.txt"
 
-# Codex CLI
-if ! command -v codex &>/dev/null; then
-  npm install -g @openai/codex
-fi
-
-# Devcontainer CLI (used by devc)
+# Devcontainer CLI (host-only — not needed inside containers)
 if ! command -v devcontainer &>/dev/null; then
   npm install -g @devcontainers/cli
-fi
-
-# LSPs for Claude Code plugins
-if ! command -v pyright &>/dev/null; then
-  npm install -g pyright
-fi
-if ! command -v typescript-language-server &>/dev/null; then
-  npm install -g typescript typescript-language-server
 fi
 
 # Kimi Code CLI
@@ -147,16 +138,6 @@ fi
 # rstring (code summarization for AI context)
 if ! command -v rstring &>/dev/null; then
   uv tool install rstring
-fi
-
-# Wrangler (Cloudflare Workers CLI)
-if ! command -v wrangler &>/dev/null; then
-  npm install -g wrangler
-fi
-
-# Neon CLI (serverless Postgres)
-if ! command -v neon &>/dev/null; then
-  npm install -g neonctl
 fi
 
 # rtk (CLI proxy that reduces LLM token consumption)
@@ -171,13 +152,6 @@ fi
 # Set zsh as default shell
 if [[ "$SHELL" != */zsh ]]; then
   sudo chsh -s "$(which zsh)" "$USER"
-fi
-
-# --- Claude MCP servers ---
-
-# Codex MCP: uses ChatGPT subscription auth (via Codex CLI), no API key needed
-if command -v claude &>/dev/null; then
-  claude mcp add codex-cli --scope user -- npx -y codex-mcp-server 2>/dev/null || true
 fi
 
 # --- Stow ---
@@ -226,6 +200,43 @@ touch ~/.shell_local
 touch ~/.shell_secrets
 mkdir -p ~/.claude
 touch ~/.claude/CLAUDE.local.md
+
+# --- Managed MCP servers ---
+
+chmod +x "$DOTFILES_DIR/sync-mcps.sh"
+"$DOTFILES_DIR/sync-mcps.sh"
+
+# --- Shared skills ---
+# Two mechanisms, one per category:
+#
+# 1. Upstream skill suites: installed via `npx skills`. Pinned by
+#    ~/.agents/.skill-lock.json, updatable with `npx skills update -g`.
+#    Migrate this list to a committed Skillfile once vercel-labs/skills#729 lands.
+#
+# 2. Locally-authored skills under ai/skills/local/*/: direct symlinks so
+#    edits propagate live. `npx skills` would copy instead of symlink here,
+#    breaking the edit-in-dotfiles workflow, and local paths aren't tracked
+#    in the lockfile anyway.
+echo ""
+echo "Installing upstream skills via npx skills..."
+UPSTREAM_SKILLS=(
+  pbakaus/impeccable
+  forrestchang/andrej-karpathy-skills
+)
+for src in "${UPSTREAM_SKILLS[@]}"; do
+  npx -y skills add "$src" -g -a claude-code -a codex -a gemini-cli --skill '*' -y
+done
+
+echo ""
+echo "Symlinking locally-authored skills..."
+for agent_dir in ~/.claude ~/.codex ~/.gemini; do
+  mkdir -p "$agent_dir/skills"
+  for skill in "$DOTFILES_DIR"/ai/skills/local/*/; do
+    [[ -d "$skill" ]] || continue
+    skill_name=$(basename "$skill")
+    ln -sfn "${skill%/}" "$agent_dir/skills/$skill_name"
+  done
+done
 
 # Git local config (only on first run)
 if [[ ! -f ~/.gitconfig.local ]]; then

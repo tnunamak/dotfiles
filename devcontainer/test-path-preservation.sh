@@ -26,6 +26,7 @@ echo "Environment:"
 check "HOST_HOME is set" [ -n "${HOST_HOME:-}" ]
 check "HOST_HOME is not /home/node" [ "${HOST_HOME:-}" != "/home/node" ]
 check "DEVCONTAINER is set" [ "${DEVCONTAINER:-}" = "true" ]
+check "LINEAR_API_KEY is set" [ -n "${LINEAR_API_KEY:-}" ]
 
 echo ""
 

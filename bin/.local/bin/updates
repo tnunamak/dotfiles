@@ -17,6 +17,9 @@ case "${1:-}" in
     exec "$0"
     ;;
   --apply)
+    # Cache sudo credentials upfront so upgrades don't prompt mid-run
+    sudo -v
+
     if [[ ! -f "$COMMANDS_FILE" ]] || [[ ! -s "$COMMANDS_FILE" ]]; then
       echo "Nothing to upgrade. Run 'updates --refresh' to re-scan."
       exit 0
