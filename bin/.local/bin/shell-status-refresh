@@ -256,7 +256,7 @@ individual_tools=(
   "zoxide;zoxide --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/ajeetdsouza/zoxide/releases/latest --jq .tag_name;curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh"
   "uv;uv --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/astral-sh/uv/releases/latest --jq .tag_name;curl -LsSf https://astral.sh/uv/install.sh | sh"
   "bun;bun --version 2>/dev/null | head -1;gh api repos/oven-sh/bun/releases/latest --jq .tag_name;bun upgrade"
-  "immich-go;immich-go version 2>/dev/null | awk '{print \$2}' | sed 's/version://' | grep -v '^dev\$';gh api repos/simulot/immich-go/releases/latest --jq .tag_name;go install github.com/simulot/immich-go@latest"
+  "immich-go;go version -m \"\$(command -v immich-go)\" 2>/dev/null | awk '\$1 == \"mod\" && \$2 == \"github.com/simulot/immich-go\" {print \$3}';gh api repos/simulot/immich-go/releases/latest --jq .tag_name;go install github.com/simulot/immich-go@latest"
   "clawmeter;clawmeter --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/tnunamak/clawmeter/releases/latest --jq .tag_name;go install github.com/tnunamak/clawmeter/cmd/clawmeter@latest"
   # .deb from GitHub releases
   "sunshine;dpkg-query -W -f='\${Version}' sunshine 2>/dev/null;gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name | ltrimstr(\"v\")';TAG=\$(gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name') && gh release download \$TAG --repo LizardByte/Sunshine --pattern 'sunshine-debian-trixie-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/sunshine-debian-trixie-amd64.deb"
