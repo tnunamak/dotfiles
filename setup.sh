@@ -165,8 +165,11 @@ PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmu
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
-# --no-folding for bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
-NO_FOLD_PKGS=(bin nvim claude)
+# --no-folding:
+# - bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
+# - tmux: systemd drop-in dirs (e.g. tmux.service.d) must be real dirs,
+#   not symlinks — systemd does not follow directory symlinks for drop-ins.
+NO_FOLD_PKGS=(bin nvim claude tmux)
 
 # Remove files that tools create before stow can link them
 # (claude/rtk init write ~/.claude/settings.json as a regular file)
