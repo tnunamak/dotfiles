@@ -7,6 +7,10 @@
       "linear": {
         "url": "https://mcp.linear.app/mcp",
         "bearer_token_env_var": "LINEAR_API_KEY"
+      },
+      "vana-knowledge-base": {
+        "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
+        "bearer_token_env_var": "VANA_KB_TOKEN"
       }
     }
   },
@@ -26,6 +30,12 @@
         "transport": "http",
         "url": "https://mcp.linear.app/mcp",
         "header_env_var": "LINEAR_API_KEY"
+      },
+      "vana-knowledge-base": {
+        "scope": "user",
+        "transport": "http",
+        "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
+        "header_env_var": "VANA_KB_TOKEN"
       }
     }
   },
@@ -45,6 +55,12 @@
         "transport": "http",
         "url": "https://mcp.linear.app/mcp",
         "header_env_var": "LINEAR_API_KEY"
+      },
+      "vana-knowledge-base": {
+        "scope": "user",
+        "transport": "http",
+        "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
+        "header_env_var": "VANA_KB_TOKEN"
       }
     }
   }
