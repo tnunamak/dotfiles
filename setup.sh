@@ -202,6 +202,18 @@ clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_PLUG
 clone_if_missing https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 ~/.tmux/plugins/tpm/bin/install_plugins
 
+# Patch tmux-assistant-resurrect's extract_cli_args regex. Upstream requires
+# `[= ]` after --resume, which fails to strip a bare trailing --resume and
+# causes a doubled --resume at restore time. That crashed Bun 1.3.13 (and
+# took tmux with it) on 2026-04-22. Re-applied on every setup run so TPM
+# updates don't silently revert it.
+# Upstream: github.com/timvw/tmux-assistant-resurrect — remove once merged.
+ASSISTANT_SAVE="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
+if [[ -f "$ASSISTANT_SAVE" ]] && grep -qF "'s/--resume[= ] *[^ ]*//'" "$ASSISTANT_SAVE"; then
+  sed -i "s|'s/--resume\[= \] \*\[^ \]\*//'|'s/--resume(=[^ ]*)?( +[^ -][^ ]*)?//'|" "$ASSISTANT_SAVE"
+  echo "Patched tmux-assistant-resurrect: bare-trailing --resume regex"
+fi
+
 # Enable tmux-restore.service (Linux only — stowed by the `tmux` package).
 # Replaces tmux-continuum's boot-time restore, which races against its own
 # auto-save and the first kitty attach. See CLAUDE.md for the debugging
