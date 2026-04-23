@@ -140,6 +140,11 @@ if ! command -v rstring &>/dev/null; then
   uv tool install rstring
 fi
 
+# gog (Google Workspace CLI)
+if ! command -v gog &>/dev/null; then
+  go install github.com/steipete/gogcli/cmd/gog@latest
+fi
+
 # rtk (CLI proxy that reduces LLM token consumption)
 if ! command -v rtk &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
