@@ -1,17 +1,19 @@
 [Unit]
-Description=tmux-resurrect boot-time restore (bypasses continuum race)
+Description=tmux-resurrect restore (bypasses continuum race)
 Documentation=file:///home/tnunamak/code/dotfiles/CLAUDE.md
 After=tmux.service
-Wants=tmux.service
-# Only run on boot — not on every restart of tmux.service
-ConditionPathExists=!/run/user/%U/tmux-restore-done
+# BindsTo + PartOf so this unit is re-activated whenever tmux.service
+# (re)starts — including the Restart=on-failure cycle, so a crashed tmux
+# comes back populated instead of empty. The script itself decides whether
+# restoring is appropriate (fresh empty tmux? restore. tmux with in-flight
+# sessions? skip) — no time-based gating.
+BindsTo=tmux.service
+PartOf=tmux.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
+RemainAfterExit=no
 ExecStart=/home/tnunamak/.config/tmux/scripts/systemd-restore.sh
-ExecStartPost=/bin/mkdir -p /run/user/%U
-ExecStartPost=/bin/touch /run/user/%U/tmux-restore-done
 
 [Install]
-WantedBy=default.target
+WantedBy=tmux.service
