@@ -136,7 +136,10 @@ target="$(
 )" || true
 
 if [[ -n "$target" ]]; then
-  exec tmux attach-session -t "=$target" \; set-option destroy-unattached on
+  # Do NOT set destroy-unattached: SDDM/Wayland restarts detach clients, and
+  # destroy-unattached would then kill the session. Sessions must survive
+  # display-server hiccups. See 2026-04-22 post-mortem in git log.
+  exec tmux attach-session -t "=$target"
 fi
 
 # Last-resort fallback
