@@ -223,6 +223,57 @@ if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   systemctl --user enable tmux-restore.service 2>/dev/null || true
 fi
 
+# Patch koboldcpp's environment.yaml. The upstream file has three problems for
+# a headless CUDA 13.x build against an NVIDIA 590.x driver on Ubuntu 25.10:
+#
+#   1. gxx=10 is too old for CUDA 13.x. Conda-forge's nvcc 13.x + gcc 10
+#      triggers intermittent `cicc` segfaults on ggml flash-attention template
+#      instantiations. Bumping to gxx=13 (CUDA 13.x-supported) fixes it.
+#   2. ocl-icd-system's post-link script fails on this machine because the
+#      destination dir isn't created before it symlinks /etc/OpenCL/vendors
+#      into the conda prefix. Removing it is safe — OpenCL isn't used in the
+#      CUDA build path.
+#   3. customtkinter is a pip-installed GUI dep that pulls python-tk pieces.
+#      The build breaks mid-install; not needed for headless server use.
+#
+# Driver 590.x supports up to CUDA 13.1 runtime, so you must build with
+# `KCPP_CUDA=13.1.1 ARCHES_CU13=1 ./koboldcpp.sh rebuild`. CUDA 13.2.x
+# compiles fine but produces PTX the driver rejects at load time.
+#
+# Also patches Makefile to remove /usr/local/cuda and /opt/cuda includes
+# which mix system headers with the conda env's headers and fail CCCL
+# compatibility checks.
+#
+# Re-applied on every setup run so `git pull` in koboldcpp doesn't silently
+# revert either patch.
+# Upstream: github.com/LostRuins/koboldcpp — remove once these are merged.
+KCPP_DIR="$HOME/applications/koboldcpp"
+KCPP_ENV="$KCPP_DIR/environment.yaml"
+KCPP_MK="$KCPP_DIR/Makefile"
+if [[ -f "$KCPP_ENV" ]]; then
+  if grep -qF "gxx=10" "$KCPP_ENV"; then
+    sed -i 's|gxx=10|gxx=13|' "$KCPP_ENV"
+    echo "Patched koboldcpp environment.yaml: gxx 10 -> 13"
+  fi
+  if grep -qE "^\s*-\s*ocl-icd-system\s*$" "$KCPP_ENV"; then
+    sed -i '/^\s*-\s*ocl-icd-system\s*$/d' "$KCPP_ENV"
+    echo "Patched koboldcpp environment.yaml: removed ocl-icd-system"
+  fi
+  if grep -qE "^\s*-\s*customtkinter\s*$" "$KCPP_ENV"; then
+    # Drop customtkinter and the now-empty `- pip:` section header.
+    sed -i '/^\s*-\s*customtkinter\s*$/d' "$KCPP_ENV"
+    # Remove trailing empty `- pip:` if it's the last line.
+    if [[ "$(tail -n 1 "$KCPP_ENV")" =~ ^[[:space:]]*-[[:space:]]*pip:[[:space:]]*$ ]]; then
+      sed -i '$d' "$KCPP_ENV"
+    fi
+    echo "Patched koboldcpp environment.yaml: removed customtkinter"
+  fi
+fi
+if [[ -f "$KCPP_MK" ]] && grep -qF "-I/usr/local/cuda/include -I/opt/cuda/include" "$KCPP_MK"; then
+  sed -i 's|-DSD_USE_CUDA -I/usr/local/cuda/include -I/opt/cuda/include|-DSD_USE_CUDA|; s|-L/usr/local/cuda/lib64 -L/opt/cuda/lib64||' "$KCPP_MK"
+  echo "Patched koboldcpp Makefile: stripped system CUDA include/lib paths"
+fi
+
 # --- Local config setup ---
 
 touch ~/.shell_local
