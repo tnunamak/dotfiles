@@ -508,7 +508,7 @@ fi
     printf '%s %s\t%s\n' "$name" "$detail" "$cmd"
   done
   if (( tmux_count > 0 )); then
-    printf 'tmux plugins %d behind\t%s\n' "$tmux_count" "$HOME/.tmux/plugins/tpm/bin/update_plugins"
+    printf 'tmux plugins %d behind\t%s\n' "$tmux_count" "$HOME/.tmux/plugins/tpm/bin/update_plugins all"
   fi
 } > "$COMMANDS_FILE"
 
