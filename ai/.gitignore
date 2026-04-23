@@ -1,1 +1,8 @@
 .nocommit
+# Everything inside ai/nocommit/ is off-limits for commit (private docs,
+# corporate strategy notes, drafts). Content stays local to the working tree.
+nocommit/
+# Corporate strategy doc — kept out of the repo entirely. History was
+# rewritten on 2026-04-22 to drop an earlier accidental commit of this file;
+# pinning the path here prevents a re-introduction.
+2026-Vana-Corporate-Strategy.md
