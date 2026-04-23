@@ -202,6 +202,15 @@ clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_PLUG
 clone_if_missing https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 ~/.tmux/plugins/tpm/bin/install_plugins
 
+# Enable tmux-restore.service (Linux only — stowed by the `tmux` package).
+# Replaces tmux-continuum's boot-time restore, which races against its own
+# auto-save and the first kitty attach. See CLAUDE.md for the debugging
+# history that led to this decision.
+if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
+  systemctl --user daemon-reload
+  systemctl --user enable tmux-restore.service 2>/dev/null || true
+fi
+
 # --- Local config setup ---
 
 touch ~/.shell_local

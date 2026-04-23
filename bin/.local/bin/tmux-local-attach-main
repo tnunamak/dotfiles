@@ -18,6 +18,25 @@ if ! tmux start-server 2>/dev/null; then
   exit 0
 fi
 
+# Wait for systemd boot-restore to complete before we create grouped sessions.
+# Without this, we race against tmux-restore.service: we might create `main`
+# fresh below (via `has-session`) before restore.sh populates it, clobbering
+# the restore.
+#
+# The sentinel path is on tmpfs (/run/user/$UID) so it clears on reboot.
+# We only wait if the restore unit is actually active/activating — no wait
+# if it's not enabled, already finished, or failed.
+if command -v systemctl >/dev/null 2>&1; then
+  unit_state="$(systemctl --user is-active tmux-restore.service 2>/dev/null || true)"
+  if [[ "$unit_state" == "activating" ]]; then
+    for _ in $(seq 1 40); do
+      sleep 0.5
+      unit_state="$(systemctl --user is-active tmux-restore.service 2>/dev/null || true)"
+      [[ "$unit_state" != "activating" ]] && break
+    done
+  fi
+fi
+
 window_exists() {
   tmux list-windows -t =main -F '#{window_index}' 2>/dev/null | grep -Fxq -- "$1"
 }

@@ -1,0 +1,17 @@
+[Unit]
+Description=tmux-resurrect boot-time restore (bypasses continuum race)
+Documentation=file:///home/tnunamak/code/dotfiles/CLAUDE.md
+After=tmux.service
+Wants=tmux.service
+# Only run on boot — not on every restart of tmux.service
+ConditionPathExists=!/run/user/%U/tmux-restore-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/tnunamak/.config/tmux/scripts/systemd-restore.sh
+ExecStartPost=/bin/mkdir -p /run/user/%U
+ExecStartPost=/bin/touch /run/user/%U/tmux-restore-done
+
+[Install]
+WantedBy=default.target
