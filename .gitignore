@@ -12,3 +12,6 @@ SESSION-NOTES.md
 
 # tmux plugins (installed by tpm at runtime)
 tmux/.config/tmux/plugins/
+
+# Local-only: NVIDIA 595 availability watcher (delete after 595 is installed)
+/nvidia-watch/
