@@ -174,8 +174,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 
 # Install shared npm global packages (single source of truth: npm-global-packages.txt)
 COPY npm-global-packages.txt /tmp/npm-global-packages.txt
-RUN grep -v '^\s*#' /tmp/npm-global-packages.txt | grep -v '^\s*$' | xargs npm install -g && \
-    rm /tmp/npm-global-packages.txt
+RUN grep -v '^\s*#' /tmp/npm-global-packages.txt | grep -v '^\s*$' | xargs npm install -g
 
 # Install Claude Code (native installer puts it in ~/.local which gets
 # shadowed by the home dir bind mount — copied to /usr/local/bin below)
