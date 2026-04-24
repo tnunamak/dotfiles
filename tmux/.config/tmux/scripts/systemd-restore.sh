@@ -46,6 +46,26 @@ if [ ! -x "$RESTORE_SCRIPT" ]; then
   exit 1
 fi
 
+if [ -L "$RESURRECT_DIR/last" ] && [ ! -f "$RESURRECT_DIR/last" ]; then
+  fallback_save=$(
+    find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@ %p\n' 2>/dev/null |
+      sort -nr |
+      awk 'NR == 1 { sub(/^[^ ]+ /, ""); print; exit }'
+  )
+
+  if [ -z "$fallback_save" ] && [ -f "$RESURRECT_DIR/backups/best.txt" ]; then
+    fallback_save="$RESURRECT_DIR/backups/best.txt"
+  fi
+
+  if [ -n "$fallback_save" ]; then
+    ln -sf "$fallback_save" "$RESURRECT_DIR/last"
+    log "last symlink was dangling; repointed to fallback save $fallback_save"
+  else
+    log "last symlink was dangling and no fallback save exists; nothing to do"
+    exit 0
+  fi
+fi
+
 if [ ! -f "$RESURRECT_DIR/last" ]; then
   log "no resurrect save to restore ($RESURRECT_DIR/last missing); nothing to do"
   exit 0
