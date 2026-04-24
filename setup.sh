@@ -214,6 +214,25 @@ if [[ -f "$ASSISTANT_SAVE" ]] && grep -qF "'s/--resume[= ] *[^ ]*//'" "$ASSISTAN
   echo "Patched tmux-assistant-resurrect: bare-trailing --resume regex"
 fi
 
+# Patch tmux-assistant-resurrect to save pane targets using the grouped
+# session's base name. tmux-local-attach-main creates ephemeral grouped
+# sessions (main-0, main-1, ...), but restore only recreates the canonical
+# session, so assistant pane IDs must be saved against that base session.
+if [[ -f "$ASSISTANT_SAVE" ]] &&
+   ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE" &&
+   grep -qF 'tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_path}" >"$PANE_FILE"' "$ASSISTANT_SAVE"; then
+  sed -i '/tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_path}" >"$PANE_FILE"/c\
+	>"$PANE_FILE"\
+	while IFS='\''|'\'' read -r session_name window_index pane_index pane_pid pane_cwd; do\
+		session_group=$(tmux display-message -t "$session_name" -p '\''#{session_group}'\'' 2>/dev/null || true)\
+		if [ -n "$session_group" ]; then\
+			session_name="$session_group"\
+		fi\
+		printf '\''%s:%s.%s|%s|%s\\n'\'' "$session_name" "$window_index" "$pane_index" "$pane_pid" "$pane_cwd" >>"$PANE_FILE"\
+	done < <(tmux list-panes -a -F "#{session_name}|#{window_index}|#{pane_index}|#{pane_pid}|#{pane_current_path}")' "$ASSISTANT_SAVE"
+  echo "Patched tmux-assistant-resurrect: grouped session pane targets"
+fi
+
 # Enable tmux-restore.service (Linux only — stowed by the `tmux` package).
 # Replaces tmux-continuum's boot-time restore, which races against its own
 # auto-save and the first kitty attach. See CLAUDE.md for the debugging
