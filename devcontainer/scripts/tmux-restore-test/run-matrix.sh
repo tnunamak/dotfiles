@@ -16,10 +16,20 @@ SCENARIOS=(
   many-old-saves-good-best
   prev-target-only-in-backups
   double-crash
+  assistant-grouped-naming
+  assistant-grouped-naming-unpatched
+  assistant-tpm-wipe-recovery
 )
 VERSIONS=(
   fixed
   old
+)
+# Negative scenarios: must FAIL on both versions to count as PASS.
+# These prove a bug exists in upstream (independent of which fix-version is
+# in play). Listed as "expected fail" — flipping their outcome would be a
+# silent regression that leaves us thinking the bug was caught when it wasn't.
+NEGATIVE_SCENARIOS=(
+  assistant-grouped-naming-unpatched
 )
 
 # Build once
@@ -50,46 +60,64 @@ for ver in "${VERSIONS[@]}"; do
   done
 done
 
+is_negative() {
+  local scenario="$1"
+  for neg in "${NEGATIVE_SCENARIOS[@]}"; do
+    [[ "$neg" == "$scenario" ]] && return 0
+  done
+  return 1
+}
+
 echo ""
 echo "============================================"
 echo "MATRIX RESULTS"
 echo "============================================"
-printf '%-20s' "scenario"
+printf '%-36s' "scenario"
 for ver in "${VERSIONS[@]}"; do printf ' %-8s' "$ver"; done
 echo ""
 echo "---"
 for sc in "${SCENARIOS[@]}"; do
-  printf '%-20s' "$sc"
+  marker=""
+  is_negative "$sc" && marker=" [neg]"
+  printf '%-36s' "${sc}${marker}"
   for ver in "${VERSIONS[@]}"; do
     printf ' %-8s' "${RESULTS["${ver}/${sc}"]:-?}"
   done
   echo ""
 done
 echo "============================================"
-echo "TOTAL: $pass_runs/$total_runs passed"
+echo "TOTAL raw: $pass_runs/$total_runs passed"
+echo "(negative scenarios are expected to fail; raw count above is misleading for them — see analysis below)"
 echo ""
 
-# Discrimination check: at least one scenario where fixed PASSES and old FAILS
+# Analysis:
+# - For positive scenarios: fixed must PASS. discriminator if old FAILS.
+# - For negative scenarios: BOTH fixed and old must FAIL (otherwise the bug
+#   the scenario is supposed to expose isn't being exposed).
 discriminating=0
-for sc in "${SCENARIOS[@]}"; do
-  if [[ "${RESULTS["fixed/${sc}"]:-?}" == "PASS" && "${RESULTS["old/${sc}"]:-?}" == "FAIL" ]]; then
-    discriminating=$((discriminating + 1))
-  fi
-done
-echo "Discriminating scenarios (fixed PASS, old FAIL): $discriminating"
-
-# All-fixed-pass check
 fixed_fail=0
+negative_misbehavior=0
 for sc in "${SCENARIOS[@]}"; do
-  if [[ "${RESULTS["fixed/${sc}"]:-?}" != "PASS" ]]; then
-    fixed_fail=$((fixed_fail + 1))
+  if is_negative "$sc"; then
+    if [[ "${RESULTS["fixed/${sc}"]:-?}" != "FAIL" || "${RESULTS["old/${sc}"]:-?}" != "FAIL" ]]; then
+      negative_misbehavior=$((negative_misbehavior + 1))
+      echo "  WARN: negative scenario '$sc' should FAIL on both versions (got fixed=${RESULTS["fixed/${sc}"]:-?} old=${RESULTS["old/${sc}"]:-?})"
+    fi
+  else
+    [[ "${RESULTS["fixed/${sc}"]:-?}" != "PASS" ]] && fixed_fail=$((fixed_fail + 1))
+    if [[ "${RESULTS["fixed/${sc}"]:-?}" == "PASS" && "${RESULTS["old/${sc}"]:-?}" == "FAIL" ]]; then
+      discriminating=$((discriminating + 1))
+    fi
   fi
 done
-echo "Fixed-script regressions: $fixed_fail"
 
-if (( fixed_fail == 0 && discriminating > 0 )); then
+echo "Discriminating positive scenarios (fixed PASS, old FAIL): $discriminating"
+echo "Fixed-script regressions on positive scenarios: $fixed_fail"
+echo "Negative scenarios behaving correctly: $((${#NEGATIVE_SCENARIOS[@]} - negative_misbehavior))/${#NEGATIVE_SCENARIOS[@]}"
+
+if (( fixed_fail == 0 && discriminating > 0 && negative_misbehavior == 0 )); then
   echo ""
-  echo "RESULT: fix is validated — new scripts pass everything, old scripts fail at least one case."
+  echo "RESULT: fix is validated — new scripts pass everything, old scripts fail at least one case, negative scenarios behave as expected."
   exit 0
 else
   echo ""

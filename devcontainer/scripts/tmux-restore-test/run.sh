@@ -124,7 +124,14 @@ sleep 1
 wait_for_user_systemd
 
 echo ">>> install dotfiles"
-user_exec "$CONTAINER_NAME" bash /opt/harness/install-dotfiles.sh
+# INSTALL_VARS lets a scenario tweak install-dotfiles.sh (e.g., disable
+# patches to prove the bug exists in upstream).
+INSTALL_VARS=()
+case "$SCENARIO" in
+  assistant-grouped-naming-unpatched)
+    INSTALL_VARS+=(-e PATCH_PLUGIN=0) ;;
+esac
+user_exec "${INSTALL_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/install-dotfiles.sh
 
 echo ">>> start tmux.service"
 user_exec "$CONTAINER_NAME" systemctl --user start tmux.service
@@ -135,6 +142,10 @@ echo ">>> populate state and simulate crash (scenario=$SCENARIO)"
 SCENARIO_VARS=(-e SCENARIO="$SCENARIO" -e WINDOW_COUNT=8)
 # DOUBLE_CRASH=1 triggers a second populate+reboot cycle after the first.
 DOUBLE_CRASH=0
+# EXPECTED_ASSISTANTS=N tells the assertion script to also verify N assistant
+# sessions in the JSON and that they restored cleanly. 0 = skip checks.
+EXPECTED_ASSISTANTS=0
+CHECK_PATCH_PRESENT=0
 case "$SCENARIO" in
   dangling-symlink)
     # Baseline: 4 saves, then delete the live copy of the most recent.
@@ -182,6 +193,38 @@ case "$SCENARIO" in
     # restored-then-shrunken state from burying the good save.
     SCENARIO_VARS+=(-e SAVES_BEFORE=4 -e DELETE_LIVE_LAST=1)
     DOUBLE_CRASH=1 ;;
+  assistant-grouped-naming)
+    # Validates the grouped-session canonicalization patch in
+    # tmux-assistant-resurrect's save script. Launches 3 fake claude stubs
+    # and creates 2 grouped clones (mimics kitty's tmux-local-attach-main).
+    # With the PATCHED plugin (default), the JSON saves pane addresses as
+    # 'main:N.0'. Without the patch, panes are saved as 'main-N:N.0' and
+    # restore-time lookup of 'main-N' fails, yielding "restored 0 of N".
+    SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2)
+    EXPECTED_ASSISTANTS=3 ;;
+  assistant-grouped-naming-unpatched)
+    # Same as assistant-grouped-naming but with PATCH_PLUGIN=0 set in
+    # INSTALL_VARS. Proves the bug exists in vanilla upstream — assertion
+    # checks the JSON contains 'main-N:' addresses and the restore log
+    # shows "restored 0 of N". Used to validate the discriminator works
+    # regardless of which version of systemd-restore.sh / post-save-backup
+    # is in play (those are orthogonal to this bug).
+    SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2)
+    EXPECTED_ASSISTANTS=3 ;;
+  assistant-tpm-wipe-recovery)
+    # The "TPM auto-update wiped the patch" durability scenario. Setup:
+    #   1. Install + patch the plugin normally
+    #   2. Launch assistants, populate, save (good addresses go into JSON)
+    #   3. Revert the plugin via `git checkout` (mimics TPM auto-update)
+    #   4. Reboot
+    # tmux-restore.service's ExecStartPre re-applies the patch before any
+    # new save fires, so the post-reboot state should still resolve cleanly.
+    # Validates the durability mechanism, not just the patch itself —
+    # CHECK_PATCH_PRESENT=1 also triggers a post-restore save and verifies
+    # IT produces canonical addresses.
+    SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2 -e UNPATCH_PLUGIN_AFTER_SAVE=1)
+    EXPECTED_ASSISTANTS=3
+    CHECK_PATCH_PRESENT=1 ;;
   *)
     echo "WARN: unknown scenario '$SCENARIO', using defaults"
     SCENARIO_VARS+=(-e SAVES_BEFORE=4 -e DELETE_LIVE_LAST=1) ;;
@@ -251,7 +294,12 @@ fi
 echo ""
 echo ">>> phase 3: assertions"
 EXPECTED_WINDOWS=8
-user_exec -e EXPECTED_WINDOWS="$EXPECTED_WINDOWS" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
+ASSERT_VARS=(
+  -e EXPECTED_WINDOWS="$EXPECTED_WINDOWS"
+  -e EXPECTED_ASSISTANTS="$EXPECTED_ASSISTANTS"
+  -e CHECK_PATCH_PRESENT="$CHECK_PATCH_PRESENT"
+)
+user_exec "${ASSERT_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
 exit_code=$?
 
 echo ""

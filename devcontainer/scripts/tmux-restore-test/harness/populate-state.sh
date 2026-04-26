@@ -30,6 +30,19 @@ DELETE_LIVE_LAST="${DELETE_LIVE_LAST:-1}"
 DELETE_LIVE_ALL="${DELETE_LIVE_ALL:-0}"
 DELETE_BACKUPS="${DELETE_BACKUPS:-0}"
 DELETE_BEST="${DELETE_BEST:-0}"
+# LAUNCH_ASSISTANTS=N starts N fake claude processes in the first N
+# windows after they're created. Used by scenarios that exercise the
+# tmux-assistant-resurrect save+restore path.
+LAUNCH_ASSISTANTS="${LAUNCH_ASSISTANTS:-0}"
+# GROUPED_CLONES=N uses tmux new-session -t to create N grouped session
+# clones (mimics tmux-local-attach-main creating main-0, main-1, ...).
+# Required for repro of the canonical-naming bug.
+GROUPED_CLONES="${GROUPED_CLONES:-0}"
+# UNPATCH_PLUGIN_AFTER_SAVE=1 reverts the assistant-resurrect patch AFTER the
+# initial saves but BEFORE the crash. Mimics a TPM auto-update that wipes
+# the patch between user sessions. The next boot's ExecStartPre should
+# re-apply it before any new save fires.
+UNPATCH_PLUGIN_AFTER_SAVE="${UNPATCH_PLUGIN_AFTER_SAVE:-0}"
 PHASE="${PHASE:-first}"
 # ADD_OLD_SAVES creates N synthetic timestamped save files beyond what
 # save.sh produces, to ensure the OLD systemd-restore.sh's `find | sort | awk
@@ -50,6 +63,9 @@ tmux list-sessions >/dev/null 2>&1 || { echo "[populate] tmux not running"; exit
 tmux rename-session -t '$0' main 2>/dev/null || true
 SESSION="$(tmux list-sessions -F '#{session_name}' | head -1)"
 echo "[populate:$SCENARIO] using session: $SESSION"
+
+# Make ~/.local/bin (where the claude/codex stubs live) reachable inside panes
+tmux set-environment -g PATH "$HOME/.local/bin:$PATH"
 
 create_windows() {
   local target_count="$1"
@@ -84,6 +100,38 @@ run_saves() {
 
 # --- Phase A: populate up to WINDOW_COUNT and save N times ---
 create_windows "$WINDOW_COUNT"
+
+# Launch fake assistants in the first N windows. Use respawn-window so the
+# pane's literal process is `claude` (avoids racing the shell). Pass a fake
+# --resume <UUID> so the assistant-resurrect plugin's "Method 2" detector
+# extracts a session_id from argv. Without an ID the plugin logs "detected
+# claude but no session ID available" and skips the entry.
+if (( LAUNCH_ASSISTANTS > 0 )); then
+  for i in $(seq 0 $((LAUNCH_ASSISTANTS - 1))); do
+    if (( i >= WINDOW_COUNT )); then break; fi
+    fake_id="00000000-0000-0000-0000-00000000000$((i+1))"
+    tmux respawn-window -k -t "$SESSION:$i" "$HOME/.local/bin/claude --resume $fake_id"
+  done
+  sleep 1
+  echo "[populate:$SCENARIO] launched $LAUNCH_ASSISTANTS claude stubs"
+  for i in $(seq 0 $((LAUNCH_ASSISTANTS - 1))); do
+    if (( i >= WINDOW_COUNT )); then break; fi
+    cmd=$(tmux display-message -t "$SESSION:$i" -p '#{pane_current_command}')
+    echo "[populate:$SCENARIO]   pane $i runs: $cmd"
+  done
+fi
+
+# Create grouped session clones (mimics kitty's tmux-local-attach-main).
+# The plugin captures the canonical name only after our patch is applied;
+# without the patch, panes are saved under the most recent grouped clone.
+if (( GROUPED_CLONES > 0 )); then
+  for i in $(seq 0 $((GROUPED_CLONES - 1))); do
+    tmux new-session -d -t "$SESSION" -s "${SESSION}-$i"
+  done
+  echo "[populate:$SCENARIO] created $GROUPED_CLONES grouped clones"
+  tmux list-sessions
+fi
+
 run_saves "$SAVES_BEFORE"
 echo "[populate:$SCENARIO] phase A: ran $SAVES_BEFORE saves with $WINDOW_COUNT windows"
 
@@ -149,6 +197,23 @@ fi
 if (( DELETE_BEST )); then
   rm -f "$RESURRECT_DIR/backups/best.txt"
   echo "[populate:$SCENARIO] CRASH: removed best.txt only"
+fi
+
+# Simulate a TPM auto-update wiping our patch. Re-clone the plugin from
+# scratch (the same thing TPM's update_plugins does). The next save would
+# produce broken pane addresses unless something re-applies the patch.
+if (( UNPATCH_PLUGIN_AFTER_SAVE )); then
+  PLUGIN_DIR="$HOME/.tmux/plugins/tmux-assistant-resurrect"
+  if [[ -e "$PLUGIN_DIR" && ! -L "$PLUGIN_DIR" ]]; then
+    cd "$PLUGIN_DIR"
+    git checkout -- scripts/save-assistant-sessions.sh 2>/dev/null || true
+    cd "$HOME"
+    echo "[populate:$SCENARIO] CRASH: reverted plugin patch via 'git checkout' (mimics TPM update)"
+  else
+    # Plugin is symlinked (host dotfiles dev); just rewrite the file content
+    # from the upstream version. Skip — host doesn't normally use this scenario.
+    echo "[populate:$SCENARIO] CRASH: plugin is symlinked, can't safely revert"
+  fi
 fi
 
 echo "[populate:$SCENARIO] DONE"

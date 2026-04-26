@@ -13,6 +13,12 @@ PartOf=tmux.service
 [Service]
 Type=oneshot
 RemainAfterExit=no
+# Re-apply patches to tmux-assistant-resurrect's save script before restore
+# runs. TPM auto-updates of the plugin can wipe these in-place sed patches,
+# and without them the next continuum save records pane addresses against
+# ephemeral grouped session names (main-N:N.0) that won't resolve at restore
+# time. Idempotent — exits cleanly if patches are already applied.
+ExecStartPre=-/home/tnunamak/.config/tmux/scripts/patch-assistant-resurrect.sh
 ExecStart=/home/tnunamak/.config/tmux/scripts/systemd-restore.sh
 
 [Install]

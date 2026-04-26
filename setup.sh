@@ -202,35 +202,12 @@ clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_PLUG
 clone_if_missing https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 ~/.tmux/plugins/tpm/bin/install_plugins
 
-# Patch tmux-assistant-resurrect's extract_cli_args regex. Upstream requires
-# `[= ]` after --resume, which fails to strip a bare trailing --resume and
-# causes a doubled --resume at restore time. That crashed Bun 1.3.13 (and
-# took tmux with it) on 2026-04-22. Re-applied on every setup run so TPM
-# updates don't silently revert it.
-# Upstream: github.com/timvw/tmux-assistant-resurrect — remove once merged.
-ASSISTANT_SAVE="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
-if [[ -f "$ASSISTANT_SAVE" ]] && grep -qF "'s/--resume[= ] *[^ ]*//'" "$ASSISTANT_SAVE"; then
-  sed -i "s|'s/--resume\[= \] \*\[^ \]\*//'|'s/--resume(=[^ ]*)?( +[^ -][^ ]*)?//'|" "$ASSISTANT_SAVE"
-  echo "Patched tmux-assistant-resurrect: bare-trailing --resume regex"
-fi
-
-# Patch tmux-assistant-resurrect to save pane targets using the grouped
-# session's base name. tmux-local-attach-main creates ephemeral grouped
-# sessions (main-0, main-1, ...), but restore only recreates the canonical
-# session, so assistant pane IDs must be saved against that base session.
-if [[ -f "$ASSISTANT_SAVE" ]] &&
-   ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE" &&
-   grep -qF 'tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_path}" >"$PANE_FILE"' "$ASSISTANT_SAVE"; then
-  sed -i '/tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_path}" >"$PANE_FILE"/c\
-	>"$PANE_FILE"\
-	while IFS='\''|'\'' read -r session_name window_index pane_index pane_pid pane_cwd; do\
-		session_group=$(tmux display-message -t "$session_name" -p '\''#{session_group}'\'' 2>/dev/null || true)\
-		if [ -n "$session_group" ]; then\
-			session_name="$session_group"\
-		fi\
-		printf '\''%s:%s.%s|%s|%s\\n'\'' "$session_name" "$window_index" "$pane_index" "$pane_pid" "$pane_cwd" >>"$PANE_FILE"\
-	done < <(tmux list-panes -a -F "#{session_name}|#{window_index}|#{pane_index}|#{pane_pid}|#{pane_current_path}")' "$ASSISTANT_SAVE"
-  echo "Patched tmux-assistant-resurrect: grouped session pane targets"
+# Re-apply patches to tmux-assistant-resurrect's save script. TPM auto-updates
+# can wipe in-place sed patches; the script is idempotent and also runs at
+# every tmux-restore.service start as ExecStartPre, so this is belt+suspenders.
+PATCH_SCRIPT="$HOME/.config/tmux/scripts/patch-assistant-resurrect.sh"
+if [[ -x "$PATCH_SCRIPT" ]]; then
+  "$PATCH_SCRIPT" || true
 fi
 
 # Enable tmux-restore.service (Linux only — stowed by the `tmux` package).

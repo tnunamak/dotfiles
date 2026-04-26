@@ -51,6 +51,43 @@ for attempt in 1 2 3; do
 done
 echo "[install] tpm plugins installed"
 
+# --- Apply tmux-assistant-resurrect patches via the shared idempotent
+# patch script. Same code path as setup.sh and tmux-restore.service's
+# ExecStartPre on the host, so the harness validates the real flow.
+# PATCH_PLUGIN=0 skips patches — used by negative scenarios that verify
+# the bug exists in vanilla upstream.
+PATCH_PLUGIN="${PATCH_PLUGIN:-1}"
+PATCH_SCRIPT="$HOME/.config/tmux/scripts/patch-assistant-resurrect.sh"
+if (( PATCH_PLUGIN )) && [[ -x "$PATCH_SCRIPT" ]]; then
+  "$PATCH_SCRIPT" || true
+  echo "[install] ran patch-assistant-resurrect.sh"
+fi
+
+# --- Install fake claude/codex stubs so the assistant detector has something
+# to find. Real CLIs aren't needed (no API calls); the plugin just needs a
+# process literally named 'claude' or 'codex' in a pane's process tree.
+# Stubs run a bash builtin loop that preserves the script name in `comm` —
+# `exec sleep` would replace the process name with 'sleep' and the plugin
+# would miss it.
+mkdir -p "$HOME/.local/bin"
+# Stubs use `exec -a NAME bash -c ...` to set argv[0] without launching the
+# actual claude binary. uutils coreutils 0.2.2 (Ubuntu 25.10's default) blocks
+# the more obvious `exec -a claude sleep` with a security check, but bash
+# itself is fine.
+# Pass through args (e.g. --resume <id>) so the plugin's argv-based
+# session-id detector finds them. exec -a NAME bash -c also keeps the
+# program name in argv[0], satisfying the plugin's regex match.
+cat > "$HOME/.local/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+exec -a "claude $*" bash -c 'while :; do sleep 3600 & wait; done'
+EOF
+cat > "$HOME/.local/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+exec -a "codex $*" bash -c 'while :; do sleep 3600 & wait; done'
+EOF
+chmod +x "$HOME/.local/bin/claude" "$HOME/.local/bin/codex"
+echo "[install] installed claude/codex stubs at ~/.local/bin"
+
 # --- The user's personal tmux-assistant-resurrect plugin ---
 # Lives under tmux/.config/tmux/plugins/tmux-assistant-resurrect/ in dotfiles.
 # It's gitignored at runtime via plugins/, but for the test we want it present.
@@ -89,6 +126,13 @@ RestartSec=2
 EOF
 
 # tmux-restore.service: like the dotfiles version but with this user's path.
+# ExecStartPre runs the patch script every boot (same as host) UNLESS the
+# scenario explicitly wants the plugin unpatched (PATCH_PLUGIN=0 also
+# disables the durability mechanism).
+EXEC_START_PRE_LINE="ExecStartPre=-$HOME/.config/tmux/scripts/patch-assistant-resurrect.sh"
+if (( ! PATCH_PLUGIN )); then
+  EXEC_START_PRE_LINE="# ExecStartPre disabled by PATCH_PLUGIN=0"
+fi
 cat > "$HOME/.config/systemd/user/tmux-restore.service" <<EOF
 [Unit]
 Description=tmux-resurrect restore (bypasses continuum race)
@@ -100,6 +144,7 @@ PartOf=tmux.service
 [Service]
 Type=oneshot
 RemainAfterExit=no
+$EXEC_START_PRE_LINE
 ExecStart=$HOME/.config/tmux/scripts/systemd-restore.sh
 
 [Install]
