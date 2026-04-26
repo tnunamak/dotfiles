@@ -47,49 +47,21 @@ if [ ! -x "$RESTORE_SCRIPT" ]; then
 fi
 
 if [ -L "$RESURRECT_DIR/last" ] && [ ! -f "$RESURRECT_DIR/last" ]; then
-  # Hunt for the newest non-trivial save across both the live dir and backups/.
-  # An unclean shutdown can leave the most recent save unsynced to disk while
-  # the post-save-backup hook's copy in backups/ survives, so backups/ must be
-  # part of the search. We pick the newest save with ≥3 panes — anything
-  # smaller is likely the post-crash empty state we're trying to escape.
-  #
-  # Implementation note: pipefail + `awk ... exit` causes SIGPIPE on the
-  # upstream `sort` and aborts the script under set -e, so we read the find
-  # output into an array via mapfile and pick the best entry in pure bash.
-  fallback_save=""
-  fallback_panes=0
-  while IFS=$'\t' read -r mtime path; do
-    [ -z "$path" ] && continue
-    panes=$(grep -c '^pane' "$path" 2>/dev/null || echo 0)
-    if (( panes >= 3 )); then
-      fallback_save="$path"
-      fallback_panes=$panes
-      break
-    fi
-  done < <(
-    {
-      find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null
-      find "$RESURRECT_DIR/backups" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null
-    } | sort -rn 2>/dev/null
+  fallback_save=$(
+    find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@ %p\n' 2>/dev/null |
+      sort -nr |
+      awk 'NR == 1 { sub(/^[^ ]+ /, ""); print; exit }'
   )
 
   if [ -z "$fallback_save" ] && [ -f "$RESURRECT_DIR/backups/best.txt" ]; then
     fallback_save="$RESURRECT_DIR/backups/best.txt"
-    fallback_panes=$(grep -c '^pane' "$fallback_save" 2>/dev/null || echo 0)
   fi
 
   if [ -n "$fallback_save" ]; then
-    # Copy into the live dir so cliff guard's `${RESURRECT_DIR}/${prev_name}`
-    # check finds the file on the next continuum save. Symlink at a path
-    # outside RESURRECT_DIR breaks that lookup.
-    fallback_name="$(basename "$fallback_save")"
-    if [ "$(dirname "$fallback_save")" != "$RESURRECT_DIR" ]; then
-      cp "$fallback_save" "$RESURRECT_DIR/$fallback_name"
-    fi
-    ln -sfn "$fallback_name" "$RESURRECT_DIR/last"
-    log "last symlink was dangling; repointed to fallback save $fallback_name ($fallback_panes panes)"
+    ln -sf "$fallback_save" "$RESURRECT_DIR/last"
+    log "last symlink was dangling; repointed to fallback save $fallback_save"
   else
-    log "last symlink was dangling and no usable fallback save exists; nothing to do"
+    log "last symlink was dangling and no fallback save exists; nothing to do"
     exit 0
   fi
 fi
