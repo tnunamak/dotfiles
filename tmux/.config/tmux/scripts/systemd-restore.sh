@@ -102,8 +102,19 @@ fi
 # State-aware gate: only restore if tmux looks fresh-empty. "Fresh-empty"
 # means the total live pane count across all sessions is ≤ 2 (systemd's
 # default `new-session -d` plus at most one attached kitty session).
-live_panes=$(tmux list-panes -a 2>/dev/null | wc -l || echo 0)
-save_panes=$(grep -c '^pane' "$(readlink -f "$RESURRECT_DIR/last")" 2>/dev/null || echo 0)
+# Count panes defensively: command substitution can produce "0\n0" when the
+# inner command both prints "0" AND falls through to `|| echo 0` (e.g. grep -c
+# on a dangling readlink target). Multiline values then break `(( var <= 1 ))`
+# with "syntax error in expression". Pipe through head -1 + a fallback echo.
+live_panes=$(tmux list-panes -a 2>/dev/null | wc -l 2>/dev/null | head -1)
+[[ -z "$live_panes" ]] && live_panes=0
+save_target="$(readlink -f "$RESURRECT_DIR/last" 2>/dev/null || true)"
+if [[ -n "$save_target" && -f "$save_target" ]]; then
+  save_panes=$(grep -c '^pane' "$save_target" 2>/dev/null | head -1)
+else
+  save_panes=0
+fi
+[[ -z "$save_panes" ]] && save_panes=0
 log "state: live_panes=$live_panes save_panes=$save_panes"
 
 if (( live_panes > 2 )); then
