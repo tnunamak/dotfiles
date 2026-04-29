@@ -48,6 +48,8 @@ fi
 # the addresses don't resolve and 'restored 0 of N assistant sessions' is
 # logged. Fix resolves #{session_group} and uses the base name when
 # non-empty.
+# Patch 2a: canonicalize. Replaces the upstream single-line list-panes call with
+# a per-pane loop that resolves #{session_group} and substitutes the base name.
 if ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE" &&
    grep -qF 'tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_path}" >"$PANE_FILE"' "$ASSISTANT_SAVE"; then
   sed -i '/tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_path}" >"$PANE_FILE"/c\
@@ -59,7 +61,21 @@ if ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSIST
 		fi\
 		printf '\''%s:%s.%s|%s|%s\\n'\'' "$session_name" "$window_index" "$pane_index" "$pane_pid" "$pane_cwd" >>"$PANE_FILE"\
 	done < <(tmux list-panes -a -F "#{session_name}|#{window_index}|#{pane_index}|#{pane_pid}|#{pane_current_path}")' "$ASSISTANT_SAVE"
-  log "applied patch 2: canonicalize grouped session pane addresses"
+  log "applied patch 2a: canonicalize grouped session pane addresses"
+  applied=$((applied + 1))
+fi
+
+# Patch 2b: dedup. After canonicalization, the same physical pane appears once
+# per grouped session clone (main, main-0, main-1, ...) all rewritten to
+# 'main:N.0' — N copies of an identical line. Restore then attempts the
+# resume command N times. Add `sort -u -o "$PANE_FILE" "$PANE_FILE"` right
+# after the canonicalize loop so $PANE_FILE has at most one entry per pane.
+if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE" &&
+   ! grep -qF 'sort -u -o "$PANE_FILE" "$PANE_FILE"' "$ASSISTANT_SAVE"; then
+  # Insert right after the `done < <(tmux list-panes -a -F "#{session_name}|...")` line
+  sed -i '/done < <(tmux list-panes -a -F "#{session_name}|#{window_index}|#{pane_index}|#{pane_pid}|#{pane_current_path}")/a\
+	sort -u -o "$PANE_FILE" "$PANE_FILE"' "$ASSISTANT_SAVE"
+  log "applied patch 2b: dedup pane file"
   applied=$((applied + 1))
 fi
 

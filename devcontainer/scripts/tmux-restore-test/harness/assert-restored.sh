@@ -120,6 +120,17 @@ if (( EXPECTED_ASSISTANTS > 0 )); then
     else
       pass "assistant-sessions.json uses canonical session names"
     fi
+    # Reject duplicate (pane, session_id) pairs. Without the dedup patch,
+    # canonicalization rewrites every grouped-clone entry to the same 'main:'
+    # name, producing N copies per pane. Restore then runs the resume command
+    # N times — heavy load for nothing.
+    total=$(jq '.sessions | length' "$JSON" 2>/dev/null || echo 0)
+    unique=$(jq -r '.sessions[] | "\(.pane)|\(.session_id)"' "$JSON" 2>/dev/null | sort -u | wc -l)
+    if (( total > unique )); then
+      fail "assistant-sessions.json has $total entries but only $unique unique (pane, session_id) — dedup patch missing"
+    else
+      pass "assistant-sessions.json has no duplicate entries"
+    fi
   fi
 
   # Check the restore log for "restored N of N" success
