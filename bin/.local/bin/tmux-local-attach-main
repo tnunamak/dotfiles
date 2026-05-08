@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Attach local terminals to fresh grouped tmux sessions in the "main" group.
-# Restored grouped-session focus is consumed from a short-lived queue written by
-# the post-restore hook. Normal launches pick an unused or least-viewed window.
+# Attach local terminals to fresh grouped tmux sessions in the user's "main"
+# work group. Restored grouped-session focus is consumed from a short-lived
+# queue written by the post-restore hook. Normal launches pick an unused or
+# least-viewed window.
+#
+# Group-aware: tmux groups are named after whichever session was first in the
+# group, so after a crash + rename the group can drift to a name like
+# "main-10" with no session literally called "main". The script discovers the
+# real target group at runtime instead of binding to a literal name.
 set -euo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
@@ -20,8 +26,7 @@ fi
 
 # Wait for systemd boot-restore to complete before we create grouped sessions.
 # Without this, we race against tmux-restore.service: we might create `main`
-# fresh below (via `has-session`) before restore.sh populates it, clobbering
-# the restore.
+# fresh below before restore.sh populates it, clobbering the restore.
 #
 # The sentinel path is on tmpfs (/run/user/$UID) so it clears on reboot.
 # We only wait if the restore unit is actually active/activating — no wait
@@ -37,12 +42,90 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
-window_exists() {
-  tmux list-windows -t =main -F '#{window_index}' 2>/dev/null | grep -Fxq -- "$1"
+# Discover the user's work group.
+#
+# A group named "main" is preferred (canonical). A group whose name starts
+# with "main-" (drift from a crash + first-session rename) is also accepted.
+# When multiple candidates exist (e.g. an empty `main` plus a populated
+# `main-10`), prefer the one with the most windows; tie-break by most
+# attached clones; tie-break again by alphabetical name for determinism.
+#
+# Output: one line "group_name|seed_session|window_count|attached_count" or
+# nothing if no usable group exists.
+find_target_group() {
+  # list-sessions format gives us per-session group info. Sessions outside any
+  # group emit an empty session_group field — we ignore those.
+  local raw
+  raw=$(tmux list-sessions -F '#{session_group}|#{session_name}|#{session_windows}|#{session_attached}' 2>/dev/null || true)
+  [[ -n "$raw" ]] || return 1
+
+  declare -A group_seed=()
+  declare -A group_windows=()
+  declare -A group_attached=()
+
+  while IFS='|' read -r grp sess wins attached; do
+    [[ -n "$grp" ]] || continue
+    case "$grp" in
+      main|main-*) ;;
+      *) continue ;;
+    esac
+
+    # Window count is per-group (all members share windows), so any session in
+    # the group reports the same number. Take the first we see.
+    if [[ -z "${group_windows[$grp]+x}" ]]; then
+      group_windows["$grp"]="$wins"
+      group_seed["$grp"]="$sess"
+      group_attached["$grp"]=0
+    fi
+    group_attached["$grp"]=$(( group_attached["$grp"] + (attached > 0 ? 1 : 0) ))
+
+    # Prefer the literal session named "main" as the seed if one exists in the
+    # group — it gives `tmux new-session -t =main` style commands a stable
+    # anchor when callers (or the restore hook) reference the group by name.
+    if [[ "$sess" == "main" ]]; then
+      group_seed["$grp"]="$sess"
+    fi
+  done <<< "$raw"
+
+  (( ${#group_windows[@]} > 0 )) || return 1
+
+  # Rank candidates: prefer a group literally named "main" first (only when it
+  # has windows beyond a freshly-spawned default), then by window count, then
+  # by attached count, then alphabetical.
+  local best=""
+  local best_wins=-1
+  local best_att=-1
+  for grp in "${!group_windows[@]}"; do
+    local wins="${group_windows[$grp]}"
+    local att="${group_attached[$grp]}"
+    local replace=0
+    if [[ -z "$best" ]]; then
+      replace=1
+    elif (( wins > best_wins )); then
+      replace=1
+    elif (( wins == best_wins )); then
+      if (( att > best_att )); then
+        replace=1
+      elif (( att == best_att )) && [[ "$grp" < "$best" ]]; then
+        replace=1
+      fi
+    fi
+    if (( replace )); then
+      best="$grp"; best_wins="$wins"; best_att="$att"
+    fi
+  done
+
+  printf '%s|%s|%s|%s\n' "$best" "${group_seed[$best]}" "$best_wins" "$best_att"
+}
+
+window_exists_in() {
+  local seed="$1" idx="$2"
+  tmux list-windows -t "=$seed" -F '#{window_index}' 2>/dev/null | grep -Fxq -- "$idx"
 }
 
 # Pop a window index from the restore queue (if it's fresh and valid).
 pop_restore_window() {
+  local seed="$1"
   # Check timestamp — expire after RESTORE_TTL seconds
   if [[ -f "$RESTORE_STAMP_FILE" ]]; then
     local stamp now age
@@ -73,7 +156,7 @@ pop_restore_window() {
       rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
     fi
 
-    if [[ "$window" =~ ^[0-9]+$ ]] && window_exists "$window"; then
+    if [[ "$window" =~ ^[0-9]+$ ]] && window_exists_in "$seed" "$window"; then
       printf '%s\n' "$window"
       return 0
     fi
@@ -83,25 +166,27 @@ pop_restore_window() {
   return 1
 }
 
-# Pick a window not currently viewed by any attached session, or the least-viewed.
+# Pick a window not currently viewed by any attached session in the target
+# group, or the least-viewed. Filter is built from $group, not hardcoded.
 choose_normal_window() {
+  local group="$1" seed="$2"
   local -a windows=()
   local -A counts=()
 
-  mapfile -t windows < <(tmux list-windows -t =main -F '#{window_index}' 2>/dev/null)
+  mapfile -t windows < <(tmux list-windows -t "=$seed" -F '#{window_index}' 2>/dev/null)
   (( ${#windows[@]} > 0 )) || return 1
 
   for idx in "${windows[@]}"; do
     counts["$idx"]=0
   done
 
-  # Count how many attached sessions are viewing each window
+  # Count how many attached sessions in the target group are viewing each window
   while IFS= read -r idx; do
     [[ -n "${counts[$idx]+x}" ]] || continue
     counts["$idx"]=$(( counts["$idx"] + 1 ))
   done < <(
     tmux list-sessions -F '#{window_index}' \
-      -f '#{&&:#{==:#{session_group},main},#{!=:#{session_attached},0}}' \
+      -f "#{&&:#{==:#{session_group},${group}},#{!=:#{session_attached},0}}" \
       2>/dev/null || true
   )
 
@@ -114,11 +199,12 @@ choose_normal_window() {
   done
 
   # All windows are viewed — create a new one
-  tmux new-window -d -t =main -c "$HOME" -P -F '#{window_index}' 2>/dev/null
+  tmux new-window -d -t "=$seed" -c "$HOME" -P -F '#{window_index}' 2>/dev/null
   return $?
 }
 
-# Under lock: create a fresh grouped session and select the right window.
+# Under lock: discover/create the target group, choose a window, create a
+# fresh grouped session clone for this client.
 target="$(
   (
     flock 9
@@ -126,24 +212,64 @@ target="$(
     # Wrap tmux so child processes don't inherit the lock fd
     tmux() { command tmux "$@" 9>&-; }
 
-    # Ensure main session exists
-    tmux has-session -t =main 2>/dev/null || tmux new-session -d -s main
-
-    # Pick a window: restore queue first, then smart selection
-    target_window="$(pop_restore_window || true)"
-    if [[ -z "$target_window" ]]; then
-      target_window="$(choose_normal_window || true)"
+    # Find or create the target group.
+    group_info="$(find_target_group || true)"
+    group=""; seed=""
+    if [[ -n "$group_info" ]]; then
+      IFS='|' read -r group seed _ _ <<< "$group_info"
     fi
 
-    # Find the lowest available session name (main-0, main-1, ...)
+    if [[ -z "$group" ]]; then
+      # No usable group exists — bootstrap a fresh "main" group.
+      tmux new-session -d -s main 2>/dev/null || true
+      group="main"
+      seed="main"
+    fi
+
+    # Clean up empty stray "main" group when a populated drifted group is the
+    # real winner. Only kill if it has exactly 1 window AND no attached
+    # clients AND it's NOT the chosen group.
+    if [[ "$group" != "main" ]]; then
+      stray_info=$(tmux list-sessions -F '#{session_group}|#{session_name}|#{session_windows}|#{session_attached}' 2>/dev/null \
+        | awk -F'|' -v g="main" '$1==g {print}')
+      if [[ -n "$stray_info" ]]; then
+        # Drop the stray only if every member is unattached and group has 1 window
+        stray_total_attached=0
+        stray_windows=""
+        stray_members=()
+        while IFS='|' read -r _ s_name s_wins s_att; do
+          stray_windows="$s_wins"
+          stray_members+=("$s_name")
+          stray_total_attached=$(( stray_total_attached + (s_att > 0 ? 1 : 0) ))
+        done <<< "$stray_info"
+        if [[ "$stray_windows" == "1" ]] && (( stray_total_attached == 0 )); then
+          for m in "${stray_members[@]}"; do
+            tmux kill-session -t "=$m" 2>/dev/null || true
+          done
+        fi
+      fi
+    fi
+
+    # Pick a window: restore queue first, then smart selection
+    target_window="$(pop_restore_window "$seed" || true)"
+    if [[ -z "$target_window" ]]; then
+      target_window="$(choose_normal_window "$group" "$seed" || true)"
+    fi
+
+    # Find the lowest available session name (main-0, main-1, ...) — note we
+    # always name new clones with the "main-N" prefix regardless of the group's
+    # internal name, so user-visible session names stay consistent.
     new_name=""
     for i in $(seq 0 999); do
-      if ! tmux has-session -t "=main-$i" 2>/dev/null; then
-        new_name="main-$i"
+      candidate="main-$i"
+      # Skip if the seed itself happens to be main-N, or any existing session
+      if [[ "$candidate" == "$seed" ]]; then continue; fi
+      if ! tmux has-session -t "=$candidate" 2>/dev/null; then
+        new_name="$candidate"
         break
       fi
     done
-    tmux new-session -d -s "$new_name" -t =main
+    tmux new-session -d -s "$new_name" -t "=$seed"
 
     # Set the target window before anyone attaches
     if [[ -n "$target_window" ]]; then

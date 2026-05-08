@@ -142,6 +142,11 @@ echo ">>> populate state and simulate crash (scenario=$SCENARIO)"
 SCENARIO_VARS=(-e SCENARIO="$SCENARIO" -e WINDOW_COUNT=8)
 # DOUBLE_CRASH=1 triggers a second populate+reboot cycle after the first.
 DOUBLE_CRASH=0
+# SECOND_SERVICE_RESTART=1: after first-boot restore succeeds, do a
+# `systemctl restart tmux.service` inside the container (no full reboot) and
+# run assert-restored.sh a second time. Reproduces the production bug where
+# the second tmux-restore.service invocation exits 1 while sessions are live.
+SECOND_SERVICE_RESTART=0
 # EXPECTED_ASSISTANTS=N tells the assertion script to also verify N assistant
 # sessions in the JSON and that they restored cleanly. 0 = skip checks.
 EXPECTED_ASSISTANTS=0
@@ -225,6 +230,18 @@ case "$SCENARIO" in
     SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2 -e UNPATCH_PLUGIN_AFTER_SAVE=1)
     EXPECTED_ASSISTANTS=3
     CHECK_PATCH_PRESENT=1 ;;
+  second-boot-restore-failure)
+    # Reproduces a production bug: after a successful first-boot restore,
+    # a forced `systemctl restart tmux.service` (second run of tmux-restore.service)
+    # exits 1 with only "systemd-restore.sh invoked" in the log — nothing after,
+    # not even a "state:" line. The service ran ~8s matching the 20×0.5s wait
+    # loop, suggesting the tmux server was not responding after the service restart.
+    #
+    # `systemctl restart tmux.service` kills the server; the new server starts
+    # empty. Correct behavior: second run sees 1 pane (fresh server), detects the
+    # valid save, and runs restore again — exiting 0 with "restore complete".
+    SCENARIO_VARS+=(-e SAVES_BEFORE=3 -e DELETE_LIVE_LAST=1)
+    SECOND_SERVICE_RESTART=1 ;;
   *)
     echo "WARN: unknown scenario '$SCENARIO', using defaults"
     SCENARIO_VARS+=(-e SAVES_BEFORE=4 -e DELETE_LIVE_LAST=1) ;;
@@ -289,6 +306,28 @@ if (( DOUBLE_CRASH )); then
   wait_for_user_systemd
   user_exec "$CONTAINER_NAME" systemctl --user start tmux.service tmux-restore.service || true
   sleep 6
+fi
+
+if (( SECOND_SERVICE_RESTART )); then
+  echo ""
+  echo ">>> phase 2b: second service restart (no container reboot)"
+  # Wait for first tmux-restore.service run to settle before restarting.
+  sleep 8
+  echo ">>> first-boot restore state:"
+  user_exec "$CONTAINER_NAME" systemctl --user show -p ActiveState,Result,ExecMainStatus tmux-restore.service --no-pager 2>/dev/null || true
+  user_exec "$CONTAINER_NAME" tmux list-panes -a 2>/dev/null || true
+  echo ">>> restarting tmux.service (not a full reboot) to trigger second restore run"
+  # `systemctl restart` sends SIGTERM to tmux, which normally kills the server
+  # and all sessions. This is the trigger for the production bug.
+  user_exec "$CONTAINER_NAME" systemctl --user restart tmux.service || true
+  # Give tmux-restore.service time to run (another 20×0.5s wait loop internally)
+  sleep 12
+  echo ">>> second tmux-restore.service state:"
+  user_exec "$CONTAINER_NAME" systemctl --user show -p ActiveState,Result,ExecMainStatus tmux-restore.service --no-pager 2>/dev/null || true
+  echo ">>> systemd-restore.log (last 30 lines, includes second run):"
+  user_exec "$CONTAINER_NAME" tail -30 /home/tester/.tmux/resurrect/systemd-restore.log 2>/dev/null || true
+  echo ">>> journal for tmux-restore.service:"
+  user_exec "$CONTAINER_NAME" journalctl --user -u tmux-restore.service --no-pager -n 20 2>/dev/null || true
 fi
 
 echo ""

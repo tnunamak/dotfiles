@@ -28,23 +28,30 @@ fi
 rm -f "$SENTINEL"
 
 log "systemd-restore.sh invoked"
+log "diag: RESURRECT_DIR=$RESURRECT_DIR RESTORE_SCRIPT=$RESTORE_SCRIPT"
+log "diag: last symlink target=$(readlink "$RESURRECT_DIR/last" 2>/dev/null || echo '<none>')"
+log "diag: last file exists=$([ -f "$RESURRECT_DIR/last" ] && echo yes || echo no)"
 
 # Wait for tmux server to be ready (up to 10s). tmux.service is Type=forking,
 # so by the time we run it should already be responsive, but be defensive.
+log "diag: entering tmux wait loop"
 for _ in $(seq 1 20); do
   if tmux list-sessions >/dev/null 2>&1; then break; fi
   sleep 0.5
 done
+log "diag: tmux wait loop done; server responsive=$(tmux list-sessions >/dev/null 2>&1 && echo yes || echo no)"
 
 if ! tmux list-sessions >/dev/null 2>&1; then
   log "ERROR: tmux server not responsive; aborting"
   exit 1
 fi
 
+log "diag: tmux server is up"
 if [ ! -x "$RESTORE_SCRIPT" ]; then
   log "ERROR: $RESTORE_SCRIPT not found/executable; aborting"
   exit 1
 fi
+log "diag: restore script found and executable"
 
 if [ -L "$RESURRECT_DIR/last" ] && [ ! -f "$RESURRECT_DIR/last" ]; then
   # Hunt for the newest non-trivial save across both the live dir and backups/.

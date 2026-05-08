@@ -88,6 +88,16 @@ EOF
 chmod +x "$HOME/.local/bin/claude" "$HOME/.local/bin/codex"
 echo "[install] installed claude/codex stubs at ~/.local/bin"
 
+# --- Install tmux-local-attach-main from the dotfiles repo (or override).
+# ATTACH_SCRIPT_SRC defaults to the live repo copy; old-script tests set it
+# to the stashed pre-fix version under old-scripts/.
+ATTACH_SCRIPT_SRC="${ATTACH_SCRIPT_SRC:-$DOTFILES/bin/.local/bin/tmux-local-attach-main}"
+if [[ -f "$ATTACH_SCRIPT_SRC" ]]; then
+  cp "$ATTACH_SCRIPT_SRC" "$HOME/.local/bin/tmux-local-attach-main"
+  chmod +x "$HOME/.local/bin/tmux-local-attach-main"
+  echo "[install] installed tmux-local-attach-main from $ATTACH_SCRIPT_SRC"
+fi
+
 # --- The user's personal tmux-assistant-resurrect plugin ---
 # Lives under tmux/.config/tmux/plugins/tmux-assistant-resurrect/ in dotfiles.
 # It's gitignored at runtime via plugins/, but for the test we want it present.

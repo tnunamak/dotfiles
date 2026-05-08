@@ -19,6 +19,21 @@ SCENARIOS=(
   assistant-grouped-naming
   assistant-grouped-naming-unpatched
   assistant-tpm-wipe-recovery
+  second-boot-restore-failure
+  kitty-attach-clean-boot
+  kitty-attach-no-session-named-main
+  kitty-attach-group-name-drift
+  kitty-attach-multiple-groups
+  kitty-attach-all-windows-viewed
+)
+# Scenarios dispatched via kitty-attach-run.sh (kitty-attach behavior tests),
+# rest use run.sh (tmux-resurrect restore tests).
+KITTY_ATTACH_SCENARIOS=(
+  kitty-attach-clean-boot
+  kitty-attach-no-session-named-main
+  kitty-attach-group-name-drift
+  kitty-attach-multiple-groups
+  kitty-attach-all-windows-viewed
 )
 VERSIONS=(
   fixed
@@ -41,15 +56,34 @@ declare -A RESULTS
 total_runs=0
 pass_runs=0
 
+is_kitty_attach() {
+  local scenario="$1"
+  for s in "${KITTY_ATTACH_SCENARIOS[@]}"; do
+    [[ "$s" == "$scenario" ]] && return 0
+  done
+  return 1
+}
+
 for ver in "${VERSIONS[@]}"; do
   case "$ver" in
-    fixed) scripts_arg=() ;;
-    old)   scripts_arg=(--scripts-dir old-scripts) ;;
+    fixed)
+      restore_args=()
+      attach_args=()
+      ;;
+    old)
+      restore_args=(--scripts-dir old-scripts)
+      attach_args=(--attach-script old-scripts/tmux-local-attach-main)
+      ;;
   esac
   for sc in "${SCENARIOS[@]}"; do
     total_runs=$((total_runs + 1))
     printf '\n=== ver=%s scenario=%s ===\n' "$ver" "$sc"
-    if bash run.sh "${scripts_arg[@]}" --scenario "$sc" >"/tmp/run-${ver}-${sc}.log" 2>&1; then
+    if is_kitty_attach "$sc"; then
+      cmd=(bash kitty-attach-run.sh "${attach_args[@]}" --scenario "$sc")
+    else
+      cmd=(bash run.sh "${restore_args[@]}" --scenario "$sc")
+    fi
+    if "${cmd[@]}" >"/tmp/run-${ver}-${sc}.log" 2>&1; then
       RESULTS["${ver}/${sc}"]="PASS"
       pass_runs=$((pass_runs + 1))
       printf '  → PASS\n'

@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Attach local terminals to fresh grouped tmux sessions in the "main" group.
+# Restored grouped-session focus is consumed from a short-lived queue written by
+# the post-restore hook. Normal launches pick an unused or least-viewed window.
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
+LOCK_FILE="${STATE_DIR}/attach-main.lock"
+RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
+RESTORE_STAMP_FILE="${STATE_DIR}/main.restore-stamp"
+RESTORE_TTL=45
+
+mkdir -p "$STATE_DIR"
+
+# If tmux cannot start, fall back to a plain shell.
+if ! tmux start-server 2>/dev/null; then
+  echo "tmux failed to start; falling back to plain shell" >&2
+  exit 0
+fi
+
+# Wait for systemd boot-restore to complete before we create grouped sessions.
+# Without this, we race against tmux-restore.service: we might create `main`
+# fresh below (via `has-session`) before restore.sh populates it, clobbering
+# the restore.
+#
+# The sentinel path is on tmpfs (/run/user/$UID) so it clears on reboot.
+# We only wait if the restore unit is actually active/activating — no wait
+# if it's not enabled, already finished, or failed.
+if command -v systemctl >/dev/null 2>&1; then
+  unit_state="$(systemctl --user is-active tmux-restore.service 2>/dev/null || true)"
+  if [[ "$unit_state" == "activating" ]]; then
+    for _ in $(seq 1 40); do
+      sleep 0.5
+      unit_state="$(systemctl --user is-active tmux-restore.service 2>/dev/null || true)"
+      [[ "$unit_state" != "activating" ]] && break
+    done
+  fi
+fi
+
+window_exists() {
+  tmux list-windows -t =main -F '#{window_index}' 2>/dev/null | grep -Fxq -- "$1"
+}
+
+# Pop a window index from the restore queue (if it's fresh and valid).
+pop_restore_window() {
+  # Check timestamp — expire after RESTORE_TTL seconds
+  if [[ -f "$RESTORE_STAMP_FILE" ]]; then
+    local stamp now age
+    stamp=$(tr -d '[:space:]' < "$RESTORE_STAMP_FILE" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$((now - stamp))
+    if (( age > RESTORE_TTL )); then
+      rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
+      return 1
+    fi
+  else
+    rm -f "$RESTORE_QUEUE_FILE"
+    return 1
+  fi
+
+  # Pop the first valid window index
+  while [[ -s "$RESTORE_QUEUE_FILE" ]]; do
+    local window
+    IFS= read -r window < "$RESTORE_QUEUE_FILE" || break
+
+    # Remove the consumed line
+    local tmp="${RESTORE_QUEUE_FILE}.tmp.$$"
+    sed '1d' "$RESTORE_QUEUE_FILE" > "$tmp" 2>/dev/null || : > "$tmp"
+    mv "$tmp" "$RESTORE_QUEUE_FILE"
+
+    # Clean up empty files
+    if [[ ! -s "$RESTORE_QUEUE_FILE" ]]; then
+      rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
+    fi
+
+    if [[ "$window" =~ ^[0-9]+$ ]] && window_exists "$window"; then
+      printf '%s\n' "$window"
+      return 0
+    fi
+  done
+
+  rm -f "$RESTORE_QUEUE_FILE" "$RESTORE_STAMP_FILE"
+  return 1
+}
+
+# Pick a window not currently viewed by any attached session, or the least-viewed.
+choose_normal_window() {
+  local -a windows=()
+  local -A counts=()
+
+  mapfile -t windows < <(tmux list-windows -t =main -F '#{window_index}' 2>/dev/null)
+  (( ${#windows[@]} > 0 )) || return 1
+
+  for idx in "${windows[@]}"; do
+    counts["$idx"]=0
+  done
+
+  # Count how many attached sessions are viewing each window
+  while IFS= read -r idx; do
+    [[ -n "${counts[$idx]+x}" ]] || continue
+    counts["$idx"]=$(( counts["$idx"] + 1 ))
+  done < <(
+    tmux list-sessions -F '#{window_index}' \
+      -f '#{&&:#{==:#{session_group},main},#{!=:#{session_attached},0}}' \
+      2>/dev/null || true
+  )
+
+  # Prefer an unviewed window
+  for idx in "${windows[@]}"; do
+    if (( counts["$idx"] == 0 )); then
+      printf '%s\n' "$idx"
+      return 0
+    fi
+  done
+
+  # All windows are viewed — create a new one
+  tmux new-window -d -t =main -c "$HOME" -P -F '#{window_index}' 2>/dev/null
+  return $?
+}
+
+# Under lock: create a fresh grouped session and select the right window.
+target="$(
+  (
+    flock 9
+
+    # Wrap tmux so child processes don't inherit the lock fd
+    tmux() { command tmux "$@" 9>&-; }
+
+    # Ensure main session exists
+    tmux has-session -t =main 2>/dev/null || tmux new-session -d -s main
+
+    # Pick a window: restore queue first, then smart selection
+    target_window="$(pop_restore_window || true)"
+    if [[ -z "$target_window" ]]; then
+      target_window="$(choose_normal_window || true)"
+    fi
+
+    # Find the lowest available session name (main-0, main-1, ...)
+    new_name=""
+    for i in $(seq 0 999); do
+      if ! tmux has-session -t "=main-$i" 2>/dev/null; then
+        new_name="main-$i"
+        break
+      fi
+    done
+    tmux new-session -d -s "$new_name" -t =main
+
+    # Set the target window before anyone attaches
+    if [[ -n "$target_window" ]]; then
+      tmux select-window -t "=${new_name}:${target_window}" >/dev/null 2>&1 || true
+    fi
+
+    printf '%s\n' "$new_name"
+  ) 9>"$LOCK_FILE"
+)" || true
+
+if [[ -n "$target" ]]; then
+  # Do NOT set destroy-unattached: SDDM/Wayland restarts detach clients, and
+  # destroy-unattached would then kill the session. Sessions must survive
+  # display-server hiccups. See 2026-04-22 post-mortem in git log.
+  exec tmux attach-session -t "=$target"
+fi
+
+# Last-resort fallback
+exec tmux new-session -A -s main
