@@ -89,41 +89,74 @@ docker_size_to_bytes() {
     awk -v n="$num" -v m="$mult" 'BEGIN { printf "%.0f\n", n * m }'
 }
 
+# Examine a single node_modules path: classify stale/active using the newest
+# source-file mtime inside its parent project. Prints the path (NUL-terminated)
+# to stdout iff it qualifies as stale.
+#
+# Args: <node_modules_path> <active_thresh_epoch> <stale_thresh_epoch>
+classify_node_modules() {
+    local nm="$1" active_thresh="$2" stale_thresh="$3"
+    local project
+    project=$(dirname "$nm")
+    local newest
+    newest=$({ find "$project" \
+        -path "$nm" -prune -o \
+        -path "$project/.git" -prune -o \
+        -type f \( -name '*.js' -o -name '*.ts' -o -name '*.jsx' -o -name '*.tsx' \
+                  -o -name '*.json' -o -name '*.md' -o -name '*.py' -o -name '*.rs' \
+                  -o -name '*.go' -o -name '*.rb' -o -name '*.sh' \) \
+        -printf '%T@\n' 2>/dev/null; } | sort -nr 2>/dev/null | head -1 | cut -d. -f1)
+    if [[ -z "$newest" || "$newest" == "0" ]]; then
+        newest=$(stat -c %Y "$nm" 2>/dev/null || echo 0)
+    fi
+    if (( newest > active_thresh )); then
+        return 0  # active project; skip
+    fi
+    if (( newest < stale_thresh )); then
+        printf '%s\0' "$nm"
+    fi
+}
+
 # Find old project node_modules using inner-file mtime (not just dir mtime).
 # Active = newest source file under the parent project is <30d old.
 # Stale  = newest source file is >180d old.
-# Outputs one path per line.
+# Outputs NUL-terminated paths.
+#
+# Parallelism: each candidate parent project is classified concurrently, bounded
+# by $((nproc * 2)) to avoid fork-storms on machines with hundreds of projects.
 find_stale_node_modules() {
     local now_s
     now_s=$(date +%s)
     local stale_thresh=$((now_s - 180*86400))
     local active_thresh=$((now_s - 30*86400))
 
-    # Use NUL-separated paths to handle weird names.
+    # Cap in-flight to prevent fork-storms; 4*nproc is generous since each task
+    # is mostly I/O wait on a recursive find walking source files.
+    local max_jobs
+    max_jobs=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    (( max_jobs < 8 )) && max_jobs=8
+
+    local tmp
+    tmp=$(mktemp -d)
+    local i=0 inflight=0
     while IFS= read -r -d '' nm; do
-        local project
-        project=$(dirname "$nm")
-        # Find the newest mtime of any source file in the project,
-        # excluding node_modules itself and .git internals.
-        local newest
-        newest=$({ find "$project" \
-            -path "$nm" -prune -o \
-            -path "$project/.git" -prune -o \
-            -type f \( -name '*.js' -o -name '*.ts' -o -name '*.jsx' -o -name '*.tsx' \
-                      -o -name '*.json' -o -name '*.md' -o -name '*.py' -o -name '*.rs' \
-                      -o -name '*.go' -o -name '*.rb' -o -name '*.sh' \) \
-            -printf '%T@\n' 2>/dev/null; } | sort -nr 2>/dev/null | head -1 | cut -d. -f1)
-        # Fall back to the node_modules dir mtime if no source files found.
-        if [[ -z "$newest" || "$newest" == "0" ]]; then
-            newest=$(stat -c %Y "$nm" 2>/dev/null || echo 0)
-        fi
-        if (( newest > active_thresh )); then
-            continue  # active project; skip
-        fi
-        if (( newest < stale_thresh )); then
-            printf '%s\0' "$nm"
+        classify_node_modules "$nm" "$active_thresh" "$stale_thresh" \
+            > "$tmp/nm-$i" 2>/dev/null &
+        i=$((i+1))
+        inflight=$((inflight+1))
+        # Throttle: when in-flight jobs hit cap, wait for any to finish.
+        if (( inflight >= max_jobs )); then
+            wait -n 2>/dev/null || true
+            inflight=$((inflight-1))
         fi
     done < <(find ~/code -maxdepth 4 -name node_modules -type d -print0 2>/dev/null)
+    wait 2>/dev/null || true
+
+    # Concatenate NUL-separated outputs in stable order.
+    for ((j=0; j<i; j++)); do
+        [[ -s "$tmp/nm-$j" ]] && cat "$tmp/nm-$j"
+    done
+    rm -rf "$tmp"
 }
 
 # Compute the on-disk size of a list of NUL-separated paths.
@@ -186,6 +219,62 @@ docker_tier_sizes() {
     echo "$dangling"
 }
 
+# Sum the size of one path. Args: <path>. Prints bytes, or "0" on missing.
+probe_du_path() {
+    local p="$1"
+    [[ -e "$p" ]] || { echo 0; return; }
+    du -sb "$p" 2>/dev/null | cut -f1 || echo 0
+}
+
+# Probe the total size of stale node_modules and emit "count|bytes".
+# du -sb on each stale path runs in parallel (most paths are 50-500 MB each,
+# I/O-bound, and there are 100+ of them on a typical dev machine).
+probe_node_modules_total() {
+    local paths=()
+    while IFS= read -r -d '' p; do
+        [[ -z "$p" ]] && continue
+        paths+=("$p")
+    done < <(find_stale_node_modules)
+
+    if (( ${#paths[@]} == 0 )); then
+        echo "0|0"
+        return
+    fi
+
+    # Fan out du -sb across cores; xargs -P collects sizes in bulk.
+    local total
+    total=$(printf '%s\0' "${paths[@]}" \
+        | xargs -0 -n 32 -P "$(nproc 2>/dev/null || echo 4)" du -sb 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')
+    : "${total:=0}"
+    echo "${#paths[@]}|${total}"
+}
+
+# Probe git bloat under ~/code. Emits zero or more "repo_name:size" lines.
+probe_git_bloat() {
+    local raw
+    raw=$(find ~/code -maxdepth 2 -name ".git" -type d -exec du -sb {} \; 2>/dev/null \
+        | awk -v t="$THRESH_GIT_BLOAT" '$1 > t {print $2 ":" $1}' || true)
+    [[ -z "$raw" ]] && return 0
+    while IFS=: read -r path size; do
+        [[ -z "$path" ]] && continue
+        local repo_name
+        repo_name=$(basename "$(dirname "$path")")
+        echo "${repo_name}:${size}"
+    done <<< "$raw"
+}
+
+# Probe the Windows mount (skip if unmounted). Emits "<pct>:<avail>" iff >85% full.
+probe_windows() {
+    mountpoint -q /media/windows 2>/dev/null || return 0
+    local win_pct win_avail
+    win_pct=$(df /media/windows | tail -1 | awk '{print $5}' | tr -d '%')
+    win_avail=$(df -B1 /media/windows | tail -1 | awk '{print $4}')
+    if (( win_pct > 85 )); then
+        echo "${win_pct}:${win_avail}"
+    fi
+}
+
 # Build the cache file. Format:
 #   line 1: cache version
 #   line 2: disk_pct
@@ -193,110 +282,136 @@ docker_tier_sizes() {
 #   lines: <type>:<count>:<bytes>
 #   line:  ---
 #   lines: <type>:<val>:<size>  (info-only)
+#
+# Implementation: every independent probe runs in a backgrounded subshell that
+# writes its result to "$TMPDIR_PARALLEL/<key>". The main shell waits for all
+# children, then reads the files back in a deterministic order so the cache
+# output is byte-stable across runs.
 check_cleanup() {
-    local total_cleanable=0
-    local items=()
-    local info_items=()
+    local TMPDIR_PARALLEL
+    TMPDIR_PARALLEL=$(mktemp -d)
+    # Ensure tmpdir is cleaned up even on signal or errexit.
+    trap 'rm -rf "$TMPDIR_PARALLEL"' EXIT
 
     local disk_pct
     disk_pct=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
 
-    # node_modules (recency-aware)
-    local nm_size=0 nm_count=0
-    local nm_list
-    nm_list=$(find_stale_node_modules | xargs -0 -I {} echo {} 2>/dev/null || true)
-    if [[ -n "$nm_list" ]]; then
-        while IFS= read -r p; do
-            [[ -z "$p" ]] && continue
-            local s
-            s=$(du -sb "$p" 2>/dev/null | cut -f1 || echo 0)
-            nm_size=$((nm_size + s))
-            nm_count=$((nm_count + 1))
-        done <<< "$nm_list"
-        if (( nm_count > 0 )); then
-            items+=("node_modules:$nm_count:$nm_size")
-            total_cleanable=$((total_cleanable + nm_size))
-        fi
+    local pids=()
+
+    # --- du -sb probes for individual cache paths ---
+    # Each probe writes a single integer to "$TMPDIR_PARALLEL/du-<key>".
+    local du_probes=(
+        "pip_cache:$HOME/.cache/pip"
+        "uv_cache:$HOME/.cache/uv"
+        "npm_cache:$HOME/.npm"
+        "cargo_cache:$HOME/.cargo/registry"
+        "yarn_cache:$HOME/.yarn/cache"
+        "thumbnails:$HOME/.cache/thumbnails"
+        "hf_cache:$HOME/.cache/huggingface"
+        "conda:$HOME/miniconda3"
+        "devcontainer_homes:$HOME/.devcontainer-homes"
+        "steam:$HOME/.steam"
+    )
+    local entry key path
+    for entry in "${du_probes[@]}"; do
+        key="${entry%%:*}"
+        path="${entry#*:}"
+        ( probe_du_path "$path" > "$TMPDIR_PARALLEL/du-$key" 2>/dev/null ) &
+        pids+=($!)
+    done
+
+    # --- node_modules (recency-aware; itself uses internal parallelism) ---
+    ( probe_node_modules_total > "$TMPDIR_PARALLEL/node_modules" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Docker probes ---
+    ( docker_tier_sizes > "$TMPDIR_PARALLEL/docker" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- git bloat scan under ~/code ---
+    ( probe_git_bloat > "$TMPDIR_PARALLEL/git_bloat" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Windows partition ---
+    ( probe_windows > "$TMPDIR_PARALLEL/windows" 2>/dev/null ) &
+    pids+=($!)
+
+    # Wait for every backgrounded probe to finish.
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    # ------------------------------------------------------------------------
+    # Aggregate. Iteration order below defines the cache line order — keep it
+    # stable so cached output stays byte-identical across runs.
+    # ------------------------------------------------------------------------
+
+    local total_cleanable=0
+    local items=()
+    local info_items=()
+
+    # node_modules
+    local nm_raw nm_count nm_size
+    nm_raw=$(cat "$TMPDIR_PARALLEL/node_modules" 2>/dev/null || echo "0|0")
+    nm_count="${nm_raw%%|*}"
+    nm_size="${nm_raw#*|}"
+    : "${nm_count:=0}" "${nm_size:=0}"
+    if (( nm_count > 0 )); then
+        items+=("node_modules:$nm_count:$nm_size")
+        total_cleanable=$((total_cleanable + nm_size))
     fi
 
-    # Package manager caches: each independently checked.
-    local pip_cache=0
-    if [[ -d ~/.cache/pip ]]; then
-        pip_cache=$(du -sb ~/.cache/pip 2>/dev/null | cut -f1 || echo 0)
-        if (( pip_cache > THRESH_PIP )); then
-            items+=("pip_cache:1:$pip_cache")
-            total_cleanable=$((total_cleanable + pip_cache))
-        fi
+    # Helper: read a du-* value with a 0 default.
+    _du() { cat "$TMPDIR_PARALLEL/du-$1" 2>/dev/null || echo 0; }
+
+    local pip_cache uv_cache npm_cache cargo_cache yarn_cache thumb_cache hf_cache
+    pip_cache=$(_du pip_cache)
+    uv_cache=$(_du uv_cache)
+    npm_cache=$(_du npm_cache)
+    cargo_cache=$(_du cargo_cache)
+    yarn_cache=$(_du yarn_cache)
+    thumb_cache=$(_du thumbnails)
+    hf_cache=$(_du hf_cache)
+    : "${pip_cache:=0}" "${uv_cache:=0}" "${npm_cache:=0}" "${cargo_cache:=0}"
+    : "${yarn_cache:=0}" "${thumb_cache:=0}" "${hf_cache:=0}"
+
+    if (( pip_cache > THRESH_PIP )); then
+        items+=("pip_cache:1:$pip_cache")
+        total_cleanable=$((total_cleanable + pip_cache))
+    fi
+    if (( uv_cache > THRESH_UV )); then
+        items+=("uv_cache:1:$uv_cache")
+        total_cleanable=$((total_cleanable + uv_cache))
+    fi
+    if (( npm_cache > THRESH_NPM )); then
+        items+=("npm_cache:1:$npm_cache")
+        total_cleanable=$((total_cleanable + npm_cache))
+    fi
+    if (( cargo_cache > THRESH_CARGO )); then
+        items+=("cargo_cache:1:$cargo_cache")
+        total_cleanable=$((total_cleanable + cargo_cache))
+    fi
+    if (( yarn_cache > THRESH_YARN )); then
+        items+=("yarn_cache:1:$yarn_cache")
+        total_cleanable=$((total_cleanable + yarn_cache))
+    fi
+    if (( thumb_cache > THRESH_THUMBS )); then
+        items+=("thumbnails:1:$thumb_cache")
+        total_cleanable=$((total_cleanable + thumb_cache))
+    fi
+    if (( hf_cache > THRESH_HF )); then
+        items+=("hf_cache:1:$hf_cache")
+        total_cleanable=$((total_cleanable + hf_cache))
     fi
 
-    local uv_cache=0
-    if [[ -d ~/.cache/uv ]]; then
-        uv_cache=$(du -sb ~/.cache/uv 2>/dev/null | cut -f1 || echo 0)
-        if (( uv_cache > THRESH_UV )); then
-            items+=("uv_cache:1:$uv_cache")
-            total_cleanable=$((total_cleanable + uv_cache))
-        fi
-    fi
-
-    local npm_cache=0
-    if [[ -d ~/.npm ]]; then
-        npm_cache=$(du -sb ~/.npm 2>/dev/null | cut -f1 || echo 0)
-        if (( npm_cache > THRESH_NPM )); then
-            items+=("npm_cache:1:$npm_cache")
-            total_cleanable=$((total_cleanable + npm_cache))
-        fi
-    fi
-
-    local cargo_cache=0
-    if [[ -d ~/.cargo/registry ]]; then
-        cargo_cache=$(du -sb ~/.cargo/registry 2>/dev/null | cut -f1 || echo 0)
-        if (( cargo_cache > THRESH_CARGO )); then
-            items+=("cargo_cache:1:$cargo_cache")
-            total_cleanable=$((total_cleanable + cargo_cache))
-        fi
-    fi
-
-    local yarn_cache=0
-    if [[ -d ~/.yarn/cache ]]; then
-        yarn_cache=$(du -sb ~/.yarn/cache 2>/dev/null | cut -f1 || echo 0)
-        if (( yarn_cache > THRESH_YARN )); then
-            items+=("yarn_cache:1:$yarn_cache")
-            total_cleanable=$((total_cleanable + yarn_cache))
-        fi
-    fi
-
-    local thumb_cache=0
-    if [[ -d ~/.cache/thumbnails ]]; then
-        thumb_cache=$(du -sb ~/.cache/thumbnails 2>/dev/null | cut -f1 || echo 0)
-        if (( thumb_cache > THRESH_THUMBS )); then
-            items+=("thumbnails:1:$thumb_cache")
-            total_cleanable=$((total_cleanable + thumb_cache))
-        fi
-    fi
-
-    # HuggingFace cache. If huggingface-cli is available we record raw size only
-    # and let the cleanup path use scan-cache / delete-cache interactively.
-    local hf_cache=0
-    if [[ -d ~/.cache/huggingface ]]; then
-        hf_cache=$(du -sb ~/.cache/huggingface 2>/dev/null | cut -f1 || echo 0)
-        if (( hf_cache > THRESH_HF )); then
-            items+=("hf_cache:1:$hf_cache")
-            total_cleanable=$((total_cleanable + hf_cache))
-        fi
-    fi
-
-    # Docker, tiered. We report sizes via docker system df; tier-1 is the only
-    # bucket counted toward total_cleanable (containers + builder cache).
-    # Note: docker system df reports per-image total bytes; layers shared across
-    # images are double-counted in raw image sizes but not in Reclaimable.
-    local tier_out
-    tier_out=$(docker_tier_sizes)
+    # Docker tier output: 5 lines (containers, builder, images, volumes, dangling-count)
     local d_containers d_builder d_images d_volumes d_dangling
-    d_containers=$(echo "$tier_out" | sed -n '1p')
-    d_builder=$(echo "$tier_out" | sed -n '2p')
-    d_images=$(echo "$tier_out" | sed -n '3p')
-    d_volumes=$(echo "$tier_out" | sed -n '4p')
-    d_dangling=$(echo "$tier_out" | sed -n '5p')
+    d_containers=$(sed -n '1p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
+    d_builder=$(sed -n '2p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
+    d_images=$(sed -n '3p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
+    d_volumes=$(sed -n '4p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
+    d_dangling=$(sed -n '5p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
     : "${d_containers:=0}" "${d_builder:=0}" "${d_images:=0}" "${d_volumes:=0}" "${d_dangling:=0}"
 
     if (( d_containers > THRESH_DOCKER )); then
@@ -321,49 +436,40 @@ check_cleanup() {
         items+=("docker_dangling:$d_dangling:0")
     fi
 
-    # Info items (manual-only)
-    if [[ -d ~/miniconda3 ]]; then
-        local conda_size
-        conda_size=$(du -sb ~/miniconda3 2>/dev/null | cut -f1 || echo 0)
-        if (( conda_size > THRESH_CONDA )); then
-            info_items+=("conda:1:$conda_size")
-        fi
+    # --- Info items (manual-only) ---
+    local conda_size devc_size steam_size
+    conda_size=$(_du conda)
+    devc_size=$(_du devcontainer_homes)
+    steam_size=$(_du steam)
+    : "${conda_size:=0}" "${devc_size:=0}" "${steam_size:=0}"
+
+    if (( conda_size > THRESH_CONDA )); then
+        info_items+=("conda:1:$conda_size")
+    fi
+    if (( devc_size > THRESH_DEVC )); then
+        info_items+=("devcontainer_homes:1:$devc_size")
     fi
 
-    if [[ -d ~/.devcontainer-homes ]]; then
-        local devc_size
-        devc_size=$(du -sb ~/.devcontainer-homes 2>/dev/null | cut -f1 || echo 0)
-        if (( devc_size > THRESH_DEVC )); then
-            info_items+=("devcontainer_homes:1:$devc_size")
-        fi
+    # git_bloat: zero-or-more "repo_name:size" lines.
+    if [[ -s "$TMPDIR_PARALLEL/git_bloat" ]]; then
+        local gb_line repo size
+        while IFS=: read -r repo size; do
+            [[ -z "$repo" ]] && continue
+            info_items+=("git_bloat:$repo:$size")
+        done < "$TMPDIR_PARALLEL/git_bloat"
     fi
 
-    local git_bloat
-    git_bloat=$(find ~/code -maxdepth 2 -name ".git" -type d -exec du -sb {} \; 2>/dev/null \
-        | awk -v t="$THRESH_GIT_BLOAT" '$1 > t {print $2 ":" $1}' || true)
-    if [[ -n "$git_bloat" ]]; then
-        while IFS=: read -r path size; do
-            local repo_name
-            repo_name=$(basename "$(dirname "$path")")
-            info_items+=("git_bloat:$repo_name:$size")
-        done <<< "$git_bloat"
+    if (( steam_size > THRESH_STEAM )); then
+        info_items+=("steam:1:$steam_size")
     fi
 
-    if [[ -d ~/.steam ]]; then
-        local steam_size
-        steam_size=$(du -sb ~/.steam 2>/dev/null | cut -f1 || echo 0)
-        if (( steam_size > THRESH_STEAM )); then
-            info_items+=("steam:1:$steam_size")
-        fi
-    fi
-
-    if mountpoint -q /media/windows 2>/dev/null; then
-        local win_pct win_avail
-        win_pct=$(df /media/windows | tail -1 | awk '{print $5}' | tr -d '%')
-        win_avail=$(df -B1 /media/windows | tail -1 | awk '{print $4}')
-        if (( win_pct > 85 )); then
-            info_items+=("windows:$win_pct:$win_avail")
-        fi
+    # windows: optional "pct:avail"
+    if [[ -s "$TMPDIR_PARALLEL/windows" ]]; then
+        local win_line
+        win_line=$(head -1 "$TMPDIR_PARALLEL/windows")
+        local win_pct="${win_line%%:*}"
+        local win_avail="${win_line#*:}"
+        info_items+=("windows:$win_pct:$win_avail")
     fi
 
     # Emit cache
@@ -373,6 +479,10 @@ check_cleanup() {
     printf '%s\n' "${items[@]+"${items[@]}"}"
     echo "---"
     printf '%s\n' "${info_items[@]+"${info_items[@]}"}"
+
+    # Explicit cleanup (EXIT trap is a belt-and-braces fallback).
+    rm -rf "$TMPDIR_PARALLEL"
+    trap - EXIT
 }
 
 # Ensure the cache exists and is current. Re-build if version mismatched.
