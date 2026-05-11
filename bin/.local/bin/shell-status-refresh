@@ -58,8 +58,18 @@ if [[ -x "$cleanup_script" ]]; then
   "$cleanup_script" &>/dev/null || true
 
   if [[ -f "$cleanup_cache" ]]; then
-    disk_pct=$(sed -n '1p' "$cleanup_cache")
-    total_cleanable=$(sed -n '2p' "$cleanup_cache")
+    # Cache format v2: line 1 = version, line 2 = disk_pct, line 3 = total bytes.
+    # Older v1 caches had no version line; detect and fall back.
+    cache_first=$(sed -n '1p' "$cleanup_cache")
+    if [[ "$cache_first" =~ ^[0-9]+$ ]] && (( cache_first >= 2 )); then
+      disk_pct=$(sed -n '2p' "$cleanup_cache")
+      total_cleanable=$(sed -n '3p' "$cleanup_cache")
+      data_start=4
+    else
+      disk_pct=$(sed -n '1p' "$cleanup_cache")
+      total_cleanable=$(sed -n '2p' "$cleanup_cache")
+      data_start=3
+    fi
 
     if (( disk_pct >= 75 || total_cleanable >= 5368709120 )); then
       clean_size=$(human_size "$total_cleanable")
@@ -73,14 +83,21 @@ if [[ -x "$cleanup_script" ]]; then
       while IFS=: read -r type count size; do
         [[ "$type" == "---" ]] && break
         case "$type" in
-          node_modules_old) detail_out+=("    rm $count old node_modules (>6mo): $(human_size "$size")") ;;
-          pip_cache)        detail_out+=("    pip cache purge: $(human_size "$size")") ;;
-          uv_cache)         detail_out+=("    uv cache clean: $(human_size "$size")") ;;
-          thumbnails)       detail_out+=("    rm thumbnail cache: $(human_size "$size")") ;;
-          hf_cache)         detail_out+=("    rm HuggingFace cache: $(human_size "$size")") ;;
-          docker)           detail_out+=("    docker system prune -af: $(human_size "$size")") ;;
+          node_modules|node_modules_old) detail_out+=("    rm $count stale node_modules: $(human_size "$size")") ;;
+          pip_cache)         detail_out+=("    pip cache purge: $(human_size "$size")") ;;
+          uv_cache)          detail_out+=("    uv cache clean: $(human_size "$size")") ;;
+          npm_cache)         detail_out+=("    npm cache clean --force: $(human_size "$size")") ;;
+          cargo_cache)       detail_out+=("    rm -rf ~/.cargo/registry: $(human_size "$size")") ;;
+          yarn_cache)        detail_out+=("    yarn cache clean: $(human_size "$size")") ;;
+          thumbnails)        detail_out+=("    rm thumbnail cache: $(human_size "$size")") ;;
+          hf_cache)          detail_out+=("    huggingface-cli delete-cache: $(human_size "$size")") ;;
+          docker_dangling)   detail_out+=("    docker image prune (dangling): ${count} image(s)") ;;
+          docker_containers) detail_out+=("    docker container prune: $(human_size "$size")") ;;
+          docker_builder)    detail_out+=("    docker builder prune -af: $(human_size "$size")") ;;
+          docker_images)     detail_out+=("    docker image prune -af (tier 2): $(human_size "$size")") ;;
+          docker_volumes)    detail_out+=("    docker volume prune (tier 3): $(human_size "$size")") ;;
         esac
-      done < <(tail -n +3 "$cleanup_cache")
+      done < <(tail -n +"$data_start" "$cleanup_cache")
     fi
     # Info items (after the --- separator)
     has_manual=false

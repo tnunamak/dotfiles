@@ -1,0 +1,898 @@
+#!/bin/bash
+# Disk cleanup checker - shows cleanup opportunities and (optionally) executes them.
+#
+# Safety model: preview-by-default, tiered Docker actions, per-category confirmation
+# in --clean mode. Inspired by Docker's prune tiers, HuggingFace's scan-cache, and
+# npkill's recency-aware UX. See inbox/2026-05-11-cleanup-check-prior-art.md.
+#
+# Cache: /tmp/.cleanup-check-cache-<uid>, 1h TTL, version-tagged on first line.
+
+set -euo pipefail
+
+CACHE_VERSION=2
+CACHE_FILE="/tmp/.cleanup-check-cache-$(id -u)"
+CACHE_MAX_AGE=3600  # 1h
+
+# Colors
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Thresholds (bytes)
+THRESH_PIP=104857600        # 100M
+THRESH_UV=1073741824        # 1G
+THRESH_THUMBS=1073741824    # 1G
+THRESH_HF=5368709120        # 5G
+THRESH_DOCKER=1073741824    # 1G per tier
+THRESH_NPM=524288000        # 500M
+THRESH_CARGO=1073741824     # 1G
+THRESH_YARN=524288000       # 500M
+THRESH_CONDA=10737418240    # 10G (info only)
+THRESH_DEVC=10737418240     # 10G (info only)
+THRESH_STEAM=10737418240    # 10G (info only)
+THRESH_GIT_BLOAT=1073741824 # 1G (info only)
+
+# Categories that participate in --clean / --preview / --skip-X / --only-X.
+# Keep in sync with documentation below and prompts in do_cleanup().
+CATEGORIES=(
+    node_modules
+    pip_cache
+    uv_cache
+    npm_cache
+    cargo_cache
+    yarn_cache
+    thumbnails
+    hf_cache
+    docker_containers
+    docker_builder
+    docker_dangling
+    docker_images
+    docker_volumes
+)
+
+human_size() {
+    local bytes=${1:-0}
+    if (( bytes >= 1073741824 )); then
+        printf "%.1fG" "$(echo "scale=1; $bytes/1073741824" | bc)"
+    elif (( bytes >= 1048576 )); then
+        printf "%.0fM" "$(echo "scale=0; $bytes/1048576" | bc)"
+    else
+        printf "%.0fK" "$(echo "scale=0; $bytes/1024" | bc)"
+    fi
+}
+
+# Parse "1.234GB" / "456MB" / "789kB" / "0B" -> bytes (integer).
+docker_size_to_bytes() {
+    local s="${1:-0B}"
+    # Strip whitespace
+    s="${s// /}"
+    # Extract numeric part and unit
+    local num unit
+    num=$(echo "$s" | grep -oE '^[0-9.]+' || echo "0")
+    unit=$(echo "$s" | grep -oE '[A-Za-z]+$' || echo "B")
+    local mult=1
+    case "$unit" in
+        B)  mult=1 ;;
+        kB|KB|K) mult=1000 ;;
+        MB|M)    mult=1000000 ;;
+        GB|G)    mult=1000000000 ;;
+        TB|T)    mult=1000000000000 ;;
+        KiB)     mult=1024 ;;
+        MiB)     mult=1048576 ;;
+        GiB)     mult=1073741824 ;;
+        TiB)     mult=1099511627776 ;;
+    esac
+    awk -v n="$num" -v m="$mult" 'BEGIN { printf "%.0f\n", n * m }'
+}
+
+# Find old project node_modules using inner-file mtime (not just dir mtime).
+# Active = newest source file under the parent project is <30d old.
+# Stale  = newest source file is >180d old.
+# Outputs one path per line.
+find_stale_node_modules() {
+    local now_s
+    now_s=$(date +%s)
+    local stale_thresh=$((now_s - 180*86400))
+    local active_thresh=$((now_s - 30*86400))
+
+    # Use NUL-separated paths to handle weird names.
+    while IFS= read -r -d '' nm; do
+        local project
+        project=$(dirname "$nm")
+        # Find the newest mtime of any source file in the project,
+        # excluding node_modules itself and .git internals.
+        local newest
+        newest=$({ find "$project" \
+            -path "$nm" -prune -o \
+            -path "$project/.git" -prune -o \
+            -type f \( -name '*.js' -o -name '*.ts' -o -name '*.jsx' -o -name '*.tsx' \
+                      -o -name '*.json' -o -name '*.md' -o -name '*.py' -o -name '*.rs' \
+                      -o -name '*.go' -o -name '*.rb' -o -name '*.sh' \) \
+            -printf '%T@\n' 2>/dev/null; } | sort -nr 2>/dev/null | head -1 | cut -d. -f1)
+        # Fall back to the node_modules dir mtime if no source files found.
+        if [[ -z "$newest" || "$newest" == "0" ]]; then
+            newest=$(stat -c %Y "$nm" 2>/dev/null || echo 0)
+        fi
+        if (( newest > active_thresh )); then
+            continue  # active project; skip
+        fi
+        if (( newest < stale_thresh )); then
+            printf '%s\0' "$nm"
+        fi
+    done < <(find ~/code -maxdepth 4 -name node_modules -type d -print0 2>/dev/null)
+}
+
+# Compute the on-disk size of a list of NUL-separated paths.
+sum_size_null() {
+    local total=0 path size
+    while IFS= read -r -d '' path; do
+        size=$(du -sb "$path" 2>/dev/null | cut -f1 || echo 0)
+        total=$((total + size))
+    done
+    echo "$total"
+}
+
+# Probe Docker sizes per tier without running any deletions.
+# Outputs five lines:
+#   containers_bytes
+#   builder_bytes
+#   images_bytes
+#   volumes_bytes
+#   dangling_images_bytes  (subset of images; tier-1 safe)
+docker_tier_sizes() {
+    local containers=0 builder=0 images=0 volumes=0 dangling=0
+    if ! command -v docker &>/dev/null; then
+        echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; return
+    fi
+    if ! docker info &>/dev/null; then
+        echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; return
+    fi
+
+    # `docker system df` is fast and authoritative for reclaimable space.
+    # Columns vary by Docker version; use --format with explicit fields.
+    # Type | Total | Active | Size | Reclaimable
+    local df_out
+    df_out=$(docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null || true)
+
+    while IFS='|' read -r type reclaim; do
+        # Reclaim looks like "1.234GB (45%)" — strip the percentage.
+        local r
+        r=$(echo "$reclaim" | sed -E 's/[[:space:]]*\([^)]*\)//')
+        local b
+        b=$(docker_size_to_bytes "$r")
+        case "$type" in
+            "Images"|"images")            images=$b ;;
+            "Containers"|"containers")    containers=$b ;;
+            "Local Volumes"|"local volumes"|"Local volumes") volumes=$b ;;
+            "Build Cache"|"build cache")  builder=$b ;;
+        esac
+    done <<< "$df_out"
+
+    # Dangling images are tier-1 safe to prune, but their reported size is
+    # unreliable (per-image totals double-count shared layers). Count only the
+    # number of dangling images; size is shown as "n/a".
+    local dangling_count
+    dangling_count=$(docker images --filter dangling=true --quiet 2>/dev/null | wc -l)
+    dangling=$dangling_count  # repurpose: store COUNT, not bytes
+
+    echo "$containers"
+    echo "$builder"
+    echo "$images"
+    echo "$volumes"
+    echo "$dangling"
+}
+
+# Build the cache file. Format:
+#   line 1: cache version
+#   line 2: disk_pct
+#   line 3: total_cleanable_bytes  (tier-1 safe sum)
+#   lines: <type>:<count>:<bytes>
+#   line:  ---
+#   lines: <type>:<val>:<size>  (info-only)
+check_cleanup() {
+    local total_cleanable=0
+    local items=()
+    local info_items=()
+
+    local disk_pct
+    disk_pct=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
+
+    # node_modules (recency-aware)
+    local nm_size=0 nm_count=0
+    local nm_list
+    nm_list=$(find_stale_node_modules | xargs -0 -I {} echo {} 2>/dev/null || true)
+    if [[ -n "$nm_list" ]]; then
+        while IFS= read -r p; do
+            [[ -z "$p" ]] && continue
+            local s
+            s=$(du -sb "$p" 2>/dev/null | cut -f1 || echo 0)
+            nm_size=$((nm_size + s))
+            nm_count=$((nm_count + 1))
+        done <<< "$nm_list"
+        if (( nm_count > 0 )); then
+            items+=("node_modules:$nm_count:$nm_size")
+            total_cleanable=$((total_cleanable + nm_size))
+        fi
+    fi
+
+    # Package manager caches: each independently checked.
+    local pip_cache=0
+    if [[ -d ~/.cache/pip ]]; then
+        pip_cache=$(du -sb ~/.cache/pip 2>/dev/null | cut -f1 || echo 0)
+        if (( pip_cache > THRESH_PIP )); then
+            items+=("pip_cache:1:$pip_cache")
+            total_cleanable=$((total_cleanable + pip_cache))
+        fi
+    fi
+
+    local uv_cache=0
+    if [[ -d ~/.cache/uv ]]; then
+        uv_cache=$(du -sb ~/.cache/uv 2>/dev/null | cut -f1 || echo 0)
+        if (( uv_cache > THRESH_UV )); then
+            items+=("uv_cache:1:$uv_cache")
+            total_cleanable=$((total_cleanable + uv_cache))
+        fi
+    fi
+
+    local npm_cache=0
+    if [[ -d ~/.npm ]]; then
+        npm_cache=$(du -sb ~/.npm 2>/dev/null | cut -f1 || echo 0)
+        if (( npm_cache > THRESH_NPM )); then
+            items+=("npm_cache:1:$npm_cache")
+            total_cleanable=$((total_cleanable + npm_cache))
+        fi
+    fi
+
+    local cargo_cache=0
+    if [[ -d ~/.cargo/registry ]]; then
+        cargo_cache=$(du -sb ~/.cargo/registry 2>/dev/null | cut -f1 || echo 0)
+        if (( cargo_cache > THRESH_CARGO )); then
+            items+=("cargo_cache:1:$cargo_cache")
+            total_cleanable=$((total_cleanable + cargo_cache))
+        fi
+    fi
+
+    local yarn_cache=0
+    if [[ -d ~/.yarn/cache ]]; then
+        yarn_cache=$(du -sb ~/.yarn/cache 2>/dev/null | cut -f1 || echo 0)
+        if (( yarn_cache > THRESH_YARN )); then
+            items+=("yarn_cache:1:$yarn_cache")
+            total_cleanable=$((total_cleanable + yarn_cache))
+        fi
+    fi
+
+    local thumb_cache=0
+    if [[ -d ~/.cache/thumbnails ]]; then
+        thumb_cache=$(du -sb ~/.cache/thumbnails 2>/dev/null | cut -f1 || echo 0)
+        if (( thumb_cache > THRESH_THUMBS )); then
+            items+=("thumbnails:1:$thumb_cache")
+            total_cleanable=$((total_cleanable + thumb_cache))
+        fi
+    fi
+
+    # HuggingFace cache. If huggingface-cli is available we record raw size only
+    # and let the cleanup path use scan-cache / delete-cache interactively.
+    local hf_cache=0
+    if [[ -d ~/.cache/huggingface ]]; then
+        hf_cache=$(du -sb ~/.cache/huggingface 2>/dev/null | cut -f1 || echo 0)
+        if (( hf_cache > THRESH_HF )); then
+            items+=("hf_cache:1:$hf_cache")
+            total_cleanable=$((total_cleanable + hf_cache))
+        fi
+    fi
+
+    # Docker, tiered. We report sizes via docker system df; tier-1 is the only
+    # bucket counted toward total_cleanable (containers + builder cache).
+    # Note: docker system df reports per-image total bytes; layers shared across
+    # images are double-counted in raw image sizes but not in Reclaimable.
+    local tier_out
+    tier_out=$(docker_tier_sizes)
+    local d_containers d_builder d_images d_volumes d_dangling
+    d_containers=$(echo "$tier_out" | sed -n '1p')
+    d_builder=$(echo "$tier_out" | sed -n '2p')
+    d_images=$(echo "$tier_out" | sed -n '3p')
+    d_volumes=$(echo "$tier_out" | sed -n '4p')
+    d_dangling=$(echo "$tier_out" | sed -n '5p')
+    : "${d_containers:=0}" "${d_builder:=0}" "${d_images:=0}" "${d_volumes:=0}" "${d_dangling:=0}"
+
+    if (( d_containers > THRESH_DOCKER )); then
+        items+=("docker_containers:1:$d_containers")
+        total_cleanable=$((total_cleanable + d_containers))
+    fi
+    if (( d_builder > THRESH_DOCKER )); then
+        items+=("docker_builder:1:$d_builder")
+        total_cleanable=$((total_cleanable + d_builder))
+    fi
+    # Tier 2: unused images. Don't add to total_cleanable (not safe-by-default).
+    if (( d_images > THRESH_DOCKER )); then
+        items+=("docker_images:1:$d_images")
+    fi
+    # Tier 3: unused volumes. Risky; report only.
+    if (( d_volumes > 0 )); then
+        items+=("docker_volumes:1:$d_volumes")
+    fi
+    # d_dangling is a COUNT of dangling images (not bytes). Stored in `val`
+    # column of the cache entry so renderers can show "N images".
+    if (( d_dangling > 0 )); then
+        items+=("docker_dangling:$d_dangling:0")
+    fi
+
+    # Info items (manual-only)
+    if [[ -d ~/miniconda3 ]]; then
+        local conda_size
+        conda_size=$(du -sb ~/miniconda3 2>/dev/null | cut -f1 || echo 0)
+        if (( conda_size > THRESH_CONDA )); then
+            info_items+=("conda:1:$conda_size")
+        fi
+    fi
+
+    if [[ -d ~/.devcontainer-homes ]]; then
+        local devc_size
+        devc_size=$(du -sb ~/.devcontainer-homes 2>/dev/null | cut -f1 || echo 0)
+        if (( devc_size > THRESH_DEVC )); then
+            info_items+=("devcontainer_homes:1:$devc_size")
+        fi
+    fi
+
+    local git_bloat
+    git_bloat=$(find ~/code -maxdepth 2 -name ".git" -type d -exec du -sb {} \; 2>/dev/null \
+        | awk -v t="$THRESH_GIT_BLOAT" '$1 > t {print $2 ":" $1}' || true)
+    if [[ -n "$git_bloat" ]]; then
+        while IFS=: read -r path size; do
+            local repo_name
+            repo_name=$(basename "$(dirname "$path")")
+            info_items+=("git_bloat:$repo_name:$size")
+        done <<< "$git_bloat"
+    fi
+
+    if [[ -d ~/.steam ]]; then
+        local steam_size
+        steam_size=$(du -sb ~/.steam 2>/dev/null | cut -f1 || echo 0)
+        if (( steam_size > THRESH_STEAM )); then
+            info_items+=("steam:1:$steam_size")
+        fi
+    fi
+
+    if mountpoint -q /media/windows 2>/dev/null; then
+        local win_pct win_avail
+        win_pct=$(df /media/windows | tail -1 | awk '{print $5}' | tr -d '%')
+        win_avail=$(df -B1 /media/windows | tail -1 | awk '{print $4}')
+        if (( win_pct > 85 )); then
+            info_items+=("windows:$win_pct:$win_avail")
+        fi
+    fi
+
+    # Emit cache
+    echo "$CACHE_VERSION"
+    echo "$disk_pct"
+    echo "$total_cleanable"
+    printf '%s\n' "${items[@]+"${items[@]}"}"
+    echo "---"
+    printf '%s\n' "${info_items[@]+"${info_items[@]}"}"
+}
+
+# Ensure the cache exists and is current. Re-build if version mismatched.
+ensure_cache() {
+    local force="${1:-false}"
+    local need_refresh=true
+
+    if [[ "$force" == "true" ]]; then
+        need_refresh=true
+    elif [[ -f "$CACHE_FILE" ]]; then
+        local first_line cache_age
+        first_line=$(sed -n '1p' "$CACHE_FILE" 2>/dev/null || echo "")
+        cache_age=$(($(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0)))
+        if [[ "$first_line" == "$CACHE_VERSION" ]] && (( cache_age <= CACHE_MAX_AGE )); then
+            need_refresh=false
+        fi
+    fi
+
+    if [[ "$need_refresh" == "true" ]]; then
+        check_cleanup > "$CACHE_FILE"
+    fi
+}
+
+# Read the cache and emit the human-friendly summary.
+show_suggestions() {
+    ensure_cache false
+
+    local disk_pct total_cleanable
+    disk_pct=$(sed -n '2p' "$CACHE_FILE")
+    total_cleanable=$(sed -n '3p' "$CACHE_FILE")
+
+    # Only show if disk >75% or >5GB cleanable
+    if (( disk_pct < 75 && total_cleanable < 5368709120 )); then
+        return 0
+    fi
+
+    if (( disk_pct >= 80 )); then
+        echo -e "${RED}${BOLD}Disk usage: ${disk_pct}%${NC}"
+    elif (( disk_pct >= 75 )); then
+        echo -e "${YELLOW}${BOLD}Disk usage: ${disk_pct}%${NC}"
+    else
+        echo -e "${CYAN}Disk usage: ${disk_pct}%${NC}"
+    fi
+
+    if (( total_cleanable > 0 )); then
+        echo -e "  ${GREEN}--clean will free ~$(human_size "$total_cleanable") (tier-1 safe):${NC}"
+    fi
+
+    # We want Docker grouped under a "Docker" header even though the cache
+    # is otherwise flat. Buffer items per tier so we can render tier 1 first.
+    local docker_t1=() docker_t2=() docker_t3=()
+    local other_lines=()
+
+    while IFS=: read -r type count size; do
+        [[ "$type" == "---" ]] && break
+        [[ -z "$type" ]] && continue
+        case "$type" in
+            node_modules)
+                other_lines+=("    rm $count stale node_modules: $(human_size "$size")  ${DIM}(parent inactive >180d)${NC}")
+                ;;
+            pip_cache)
+                other_lines+=("    pip cache purge: $(human_size "$size")")
+                ;;
+            uv_cache)
+                other_lines+=("    uv cache clean: $(human_size "$size")")
+                ;;
+            npm_cache)
+                other_lines+=("    npm cache clean --force: $(human_size "$size")")
+                ;;
+            cargo_cache)
+                other_lines+=("    rm -rf ~/.cargo/registry: $(human_size "$size")")
+                ;;
+            yarn_cache)
+                other_lines+=("    yarn cache clean: $(human_size "$size")")
+                ;;
+            thumbnails)
+                other_lines+=("    rm thumbnail cache: $(human_size "$size")")
+                ;;
+            hf_cache)
+                other_lines+=("    HuggingFace cache: $(human_size "$size")  ${DIM}(huggingface-cli delete-cache)${NC}")
+                ;;
+            docker_dangling)
+                # $count holds the number of dangling images; size is unreliable.
+                docker_t1+=("  ${GREEN}tier 1${NC} docker image prune       (dangling images):   ${count} image(s)")
+                ;;
+            docker_containers)
+                docker_t1+=("  ${GREEN}tier 1${NC} docker container prune   (stopped):           $(human_size "$size")")
+                ;;
+            docker_builder)
+                docker_t1+=("  ${GREEN}tier 1${NC} docker builder prune -af (build cache):       $(human_size "$size")")
+                ;;
+            docker_images)
+                docker_t2+=("  ${YELLOW}tier 2${NC} docker image prune -af   (all unused images): $(human_size "$size")")
+                ;;
+            docker_volumes)
+                docker_t3+=("  ${RED}tier 3${NC} docker volume prune       (unused volumes):    $(human_size "$size")")
+                ;;
+        esac
+    done < <(tail -n +4 "$CACHE_FILE")
+
+    if (( ${#other_lines[@]} > 0 )); then
+        for l in "${other_lines[@]}"; do echo -e "$l"; done
+    fi
+    if (( ${#docker_t1[@]} + ${#docker_t2[@]} + ${#docker_t3[@]} > 0 )); then
+        echo -e "  ${CYAN}Docker:${NC}"
+        for l in "${docker_t1[@]+"${docker_t1[@]}"}"; do echo -e "$l"; done
+        for l in "${docker_t2[@]+"${docker_t2[@]}"}"; do echo -e "$l"; done
+        for l in "${docker_t3[@]+"${docker_t3[@]}"}"; do echo -e "$l"; done
+    fi
+
+    # Info items
+    local has_manual=false
+    while IFS=: read -r type val size; do
+        [[ -z "$type" ]] && continue
+        if [[ "$has_manual" == "false" ]]; then
+            echo -e "  ${CYAN}Manual:${NC}"
+            has_manual=true
+        fi
+        case "$type" in
+            steam)              echo -e "    Steam games: $(human_size "$size")" ;;
+            conda)              echo -e "    Conda envs: $(human_size "$size")  ${DIM}conda env list${NC}" ;;
+            devcontainer_homes) echo -e "    Devcontainer homes: $(human_size "$size")  ${DIM}du -sh ~/.devcontainer-homes/*${NC}" ;;
+            git_bloat)          echo -e "    .git bloat: ${val} ($(human_size "$size"))  ${DIM}git gc --prune=now${NC}" ;;
+            windows)            echo -e "    ${RED}Windows partition: ${val}% full${NC} ($(human_size "$size") free)" ;;
+        esac
+    done < <(sed -n '/^---$/,$ p' "$CACHE_FILE" | tail -n +2)
+}
+
+# ---------------------------------------------------------------------------
+# Cleanup execution
+# ---------------------------------------------------------------------------
+
+# Globals set by parse_clean_args
+DRY_RUN=false
+ASSUME_YES=false
+INCLUDE_TIER_2=false
+INCLUDE_TIER_3=false
+declare -A SKIP_CAT
+declare -A ONLY_CAT
+ONLY_MODE=false
+
+is_enabled() {
+    local cat="$1"
+    if [[ "$ONLY_MODE" == "true" ]]; then
+        [[ -n "${ONLY_CAT[$cat]:-}" ]] && return 0 || return 1
+    fi
+    [[ -n "${SKIP_CAT[$cat]:-}" ]] && return 1
+    return 0
+}
+
+# Returns 0 if the user confirms (or --yes is set).
+# Times out to "no" after 10 seconds.
+confirm() {
+    local msg="$1"
+    if [[ "$ASSUME_YES" == "true" ]]; then
+        echo -e "${DIM}${msg} [auto-yes]${NC}"
+        return 0
+    fi
+    echo -ne "${msg} [y/N] (10s, default N): "
+    local ans=""
+    if read -t 10 -r ans; then
+        :
+    else
+        echo "(timeout)"
+        return 1
+    fi
+    case "${ans,,}" in
+        y|yes) return 0 ;;
+        *)     return 1 ;;
+    esac
+}
+
+# Wraps an action with confirmation + dry-run. Echoes the command in dry-run mode.
+maybe_run() {
+    local label="$1" est_size="$2"
+    shift 2
+    # Remaining args = the command to run (executed via eval to allow pipes/glob).
+    local cmd="$*"
+
+    echo ""
+    echo -e "${BOLD}${label}${NC}  (${YELLOW}$(human_size "${est_size:-0}")${NC})"
+    echo -e "  ${DIM}\$ ${cmd}${NC}"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "  ${CYAN}[preview] would run${NC}"
+        return 0
+    fi
+
+    if ! confirm "  Proceed?"; then
+        echo -e "  ${DIM}skipped${NC}"
+        return 1
+    fi
+
+    eval "$cmd"
+}
+
+# Read a value from the cache by type key (returns size bytes for tier items).
+cache_size_for() {
+    local key="$1"
+    local val
+    val=$(awk -F: -v k="$key" '$1 == k {print $3; exit}' "$CACHE_FILE" 2>/dev/null || true)
+    echo "${val:-0}"
+}
+
+do_cleanup() {
+    ensure_cache false
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${BOLD}${CYAN}Preview mode — no changes will be made.${NC}"
+    else
+        echo -e "${BOLD}Running cleanup...${NC}"
+    fi
+
+    local freed=0
+
+    # ----- node_modules -----
+    if is_enabled node_modules; then
+        local nm_size
+        nm_size=$(cache_size_for node_modules)
+        if (( nm_size > 0 )); then
+            local nm_paths=()
+            # Read NUL-separated paths into an array (bash arrays cannot store
+            # NUL bytes themselves, but mapfile -d '' splits cleanly on NUL).
+            while IFS= read -r -d '' p; do
+                nm_paths+=("$p")
+            done < <(find_stale_node_modules)
+
+            if (( ${#nm_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Stale node_modules${NC}  (${YELLOW}$(human_size "$nm_size")${NC}, ${#nm_paths[@]} dirs)"
+                local shown=0
+                for p in "${nm_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#nm_paths[@]} - 5 ))
+                        if (( remaining > 0 )); then
+                            echo -e "  ${DIM}... and $remaining more${NC}"
+                        fi
+                        break
+                    fi
+                done
+
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
+                elif confirm "  Delete all stale node_modules?"; then
+                    for p in "${nm_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + nm_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- pip cache -----
+    if is_enabled pip_cache; then
+        local s; s=$(cache_size_for pip_cache)
+        if (( s > 0 )); then
+            if maybe_run "pip cache" "$s" "rm -rf ~/.cache/pip"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- uv cache -----
+    if is_enabled uv_cache; then
+        local s; s=$(cache_size_for uv_cache)
+        if (( s > 0 )); then
+            local cmd="uv cache clean"
+            command -v uv >/dev/null || cmd="rm -rf ~/.cache/uv"
+            if maybe_run "uv cache" "$s" "$cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- npm cache -----
+    if is_enabled npm_cache; then
+        local s; s=$(cache_size_for npm_cache)
+        if (( s > 0 )); then
+            local cmd="npm cache clean --force"
+            command -v npm >/dev/null || cmd="rm -rf ~/.npm"
+            if maybe_run "npm cache" "$s" "$cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- cargo cache -----
+    if is_enabled cargo_cache; then
+        local s; s=$(cache_size_for cargo_cache)
+        if (( s > 0 )); then
+            if maybe_run "cargo registry" "$s" "rm -rf ~/.cargo/registry"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- yarn cache -----
+    if is_enabled yarn_cache; then
+        local s; s=$(cache_size_for yarn_cache)
+        if (( s > 0 )); then
+            local cmd="yarn cache clean"
+            command -v yarn >/dev/null || cmd="rm -rf ~/.yarn/cache"
+            if maybe_run "yarn cache" "$s" "$cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- thumbnail cache -----
+    if is_enabled thumbnails; then
+        local s; s=$(cache_size_for thumbnails)
+        if (( s > 0 )); then
+            if maybe_run "thumbnail cache" "$s" "rm -rf ~/.cache/thumbnails/*"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- HuggingFace cache -----
+    if is_enabled hf_cache; then
+        local s; s=$(cache_size_for hf_cache)
+        if (( s > 0 )); then
+            echo ""
+            echo -e "${BOLD}HuggingFace cache${NC}  (${YELLOW}$(human_size "$s")${NC})"
+            if command -v huggingface-cli >/dev/null; then
+                echo -e "  ${DIM}\$ huggingface-cli scan-cache${NC}"
+                echo -e "  ${CYAN}tip: run 'huggingface-cli delete-cache' for an interactive picker${NC}"
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would invoke huggingface-cli delete-cache${NC}"
+                elif confirm "  Run huggingface-cli delete-cache now?"; then
+                    huggingface-cli delete-cache || true
+                fi
+            else
+                if maybe_run "HuggingFace cache (full rm)" "$s" "rm -rf ~/.cache/huggingface"; then
+                    freed=$((freed + s))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- Docker tier 1: containers + builder + dangling images -----
+    if command -v docker &>/dev/null && docker info &>/dev/null; then
+        local dc db
+        dc=$(cache_size_for docker_containers)
+        db=$(cache_size_for docker_builder)
+
+        if is_enabled docker_containers && (( dc > 0 )); then
+            if maybe_run "Docker tier 1: stopped containers" "$dc" "docker container prune -f"; then
+                freed=$((freed + dc))
+            fi
+        fi
+        if is_enabled docker_builder && (( db > 0 )); then
+            if maybe_run "Docker tier 1: build cache" "$db" "docker builder prune -af"; then
+                freed=$((freed + db))
+            fi
+        fi
+        # Dangling images: cache stores the COUNT in the "val" column.
+        local dd_count=0
+        if is_enabled docker_dangling; then
+            dd_count=$(awk -F: '$1 == "docker_dangling" {print $2; exit}' "$CACHE_FILE" 2>/dev/null || echo 0)
+        fi
+        if (( ${dd_count:-0} > 0 )); then
+            echo ""
+            echo -e "${BOLD}Docker tier 1: dangling images${NC}  (${YELLOW}${dd_count} image(s)${NC})"
+            echo -e "  ${DIM}\$ docker image prune -f${NC}"
+            if [[ "$DRY_RUN" == "true" ]]; then
+                echo -e "  ${CYAN}[preview] would run${NC}"
+            elif confirm "  Proceed?"; then
+                docker image prune -f
+            else
+                echo -e "  ${DIM}skipped${NC}"
+            fi
+        fi
+
+        if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled docker_images; then
+            local di; di=$(cache_size_for docker_images)
+            if (( di > 0 )); then
+                if maybe_run "Docker tier 2: all unused images" "$di" "docker image prune -af"; then
+                    freed=$((freed + di))
+                fi
+            fi
+        fi
+
+        if [[ "$INCLUDE_TIER_3" == "true" ]] && is_enabled docker_volumes; then
+            local dv; dv=$(cache_size_for docker_volumes)
+            if (( dv > 0 )); then
+                echo ""
+                echo -e "${RED}${BOLD}DESTRUCTIVE: docker volume prune permanently deletes unreferenced volumes.${NC}"
+                if maybe_run "Docker tier 3: unused volumes" "$dv" "docker volume prune -f"; then
+                    freed=$((freed + dv))
+                fi
+            fi
+        fi
+    fi
+
+    # Invalidate cache after real work
+    if [[ "$DRY_RUN" != "true" ]]; then
+        rm -f "$CACHE_FILE"
+    fi
+
+    echo ""
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${BOLD}Preview total: $(human_size "$freed")${NC}"
+    else
+        echo -e "${BOLD}Total freed (estimate): $(human_size "$freed")${NC}"
+        echo -e "Disk now: $(df -h / | tail -1 | awk '{print $5}')"
+    fi
+}
+
+refresh_cache() {
+    ensure_cache true
+    echo "Cache refreshed"
+}
+
+show_help() {
+    cat <<EOF
+cleanup-check — disk-cleanup advisor with tiered execution
+
+USAGE:
+  cleanup-check                     Show suggestions (uses 1h cache)
+  cleanup-check --preview           Show what --clean would do; no execution
+  cleanup-check --clean             Execute cleanup with per-category prompts
+  cleanup-check --clean --yes       Execute without prompts (CI / automation)
+  cleanup-check --refresh           Re-scan and rebuild cache (prints output)
+  cleanup-check --quiet             Single '!' if action is warranted (prompt use)
+  cleanup-check --help              This message
+
+CLEAN FLAGS:
+  --yes, -y                 Skip every per-category prompt
+  --dry-run                 Same as --preview when combined with --clean
+  --preview                 Dry-run regardless of other flags
+  --include-tier-2          Also run 'docker image prune -af' (all unused images)
+  --include-tier-3          Also run 'docker volume prune'    (DESTRUCTIVE)
+  --skip-CATEGORY           Exclude a category (repeatable)
+  --only-CATEGORY           Restrict to listed categories (repeatable)
+
+CATEGORIES:
+  node_modules        Stale project node_modules (parent inactive >180d)
+  pip_cache           ~/.cache/pip
+  uv_cache            ~/.cache/uv  (via 'uv cache clean')
+  npm_cache           ~/.npm       (via 'npm cache clean --force')
+  cargo_cache         ~/.cargo/registry
+  yarn_cache          ~/.yarn/cache
+  thumbnails          ~/.cache/thumbnails
+  hf_cache            ~/.cache/huggingface  (prefers huggingface-cli delete-cache)
+  docker_containers   tier 1, safe         (docker container prune -f)
+  docker_builder      tier 1, safe         (docker builder prune -af)
+  docker_dangling     tier 1, safe         (docker image prune -f)
+  docker_images       tier 2, opt-in       (docker image prune -af)
+  docker_volumes      tier 3, destructive  (docker volume prune -f)
+
+EXAMPLES:
+  cleanup-check --preview
+  cleanup-check --clean --only-pip_cache --only-npm_cache
+  cleanup-check --clean --skip-node_modules
+  cleanup-check --clean --yes --include-tier-2
+EOF
+}
+
+parse_clean_args() {
+    while (( $# > 0 )); do
+        case "$1" in
+            --yes|-y)             ASSUME_YES=true ;;
+            --dry-run|--preview)  DRY_RUN=true ;;
+            --include-tier-2)     INCLUDE_TIER_2=true ;;
+            --include-tier-3)     INCLUDE_TIER_3=true ;;
+            --skip-*)             SKIP_CAT["${1#--skip-}"]=1 ;;
+            --only-*)             ONLY_CAT["${1#--only-}"]=1; ONLY_MODE=true ;;
+            *)                    echo "Unknown flag: $1" >&2; show_help >&2; exit 2 ;;
+        esac
+        shift
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+main() {
+    local cmd="${1:-}"
+    case "$cmd" in
+        --help|-h)
+            show_help
+            ;;
+        --clean|-c)
+            shift
+            parse_clean_args "$@"
+            do_cleanup
+            ;;
+        --preview)
+            shift
+            parse_clean_args "$@"
+            DRY_RUN=true
+            do_cleanup
+            ;;
+        --refresh|-r)
+            refresh_cache
+            ;;
+        --quiet|-q)
+            ensure_cache false
+            local disk_pct total
+            disk_pct=$(sed -n '2p' "$CACHE_FILE")
+            total=$(sed -n '3p' "$CACHE_FILE")
+            if (( disk_pct >= 80 || total > 5368709120 )); then
+                echo "!"
+            fi
+            ;;
+        "")
+            show_suggestions
+            ;;
+        *)
+            echo "Unknown command: $cmd" >&2
+            show_help >&2
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"
