@@ -21,6 +21,7 @@ export VISUAL=nvim
 
 # PATH
 export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.foundry/bin:$PATH"
 export PATH="$HOME/.cargo/bin:$PATH"
 export PATH="$HOME/go/bin:$PATH"
 
@@ -30,6 +31,11 @@ export GPG_TTY=$(tty)
 # Privacy
 export DO_NOT_TRACK=1
 export RTK_TELEMETRY_DISABLED=1
+
+# Claude Code: speed up mouse-wheel scrolling in fullscreen rendering mode
+# (1-20). Default 1 sends one terminal line per wheel notch which feels glacial
+# inside a long conversation. 6 is brisk without being motion-sickness-y.
+export CLAUDE_CODE_SCROLL_SPEED=6
 
 # Kitty: use SSH kitten for automatic terminfo + shell integration
 [[ "$TERM" == "xterm-kitty" ]] && alias ssh='kitten ssh'
@@ -114,4 +120,5 @@ if [[ $- == *i* ]] && [[ -z "$_SHELL_STATUS_RAN" ]]; then
   export _SHELL_STATUS_RAN=1
   [[ -f ~/.cache/shell-status/summary ]] && printf '%b\n' "$(cat ~/.cache/shell-status/summary)"
   ( shell-status-refresh &>/dev/null & )
+  ( cleanup-check --refresh &>/dev/null & )
 fi
