@@ -1,0 +1,111 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    }
+  },
+  "general": {
+    "sessionRetention": {
+      "enabled": true,
+      "maxAge": "30d",
+      "warningAcknowledged": true
+    },
+    "enableAutoUpdate": false
+  },
+  "mcpServers": {
+    "context-mode": {
+      "command": "context-mode"
+    },
+    "codex-cli": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "codex-mcp-server"
+      ]
+    },
+    "excalidraw": {
+      "url": "https://mcp.excalidraw.com",
+      "type": "http"
+    },
+    "linear": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/mcp",
+        "--header",
+        "Authorization:${LINEAR_AUTH}"
+      ],
+      "env": {
+        "LINEAR_AUTH": "Bearer ${LINEAR_API_KEY}"
+      }
+    },
+    "playwright": {
+      "url": "http://127.0.0.1:3100",
+      "type": "http"
+    },
+    "searxng": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-searxng"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://searxng.home"
+      }
+    },
+    "vana-knowledge-base": {
+      "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
+      "type": "http",
+      "headers": {
+        "Authorization": "Bearer VANA_KB_TOKEN_REDACTED"
+      }
+    }
+  },
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-mode hook gemini-cli beforetool"
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-mode hook gemini-cli aftertool"
+          }
+        ]
+      }
+    ],
+    "PreCompress": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-mode hook gemini-cli precompress"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-mode hook gemini-cli sessionstart"
+          }
+        ]
+      }
+    ]
+  }
+}
