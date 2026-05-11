@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch kernel log for GPU/IOMMU/softlockup events and snapshot state
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gpu-incident-watcher
+Restart=on-failure
+RestartSec=10
+# Keep journal noise reasonable
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

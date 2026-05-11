@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# gpu-incident-capture: snapshot system state on GPU/IOMMU/kernel trouble.
+# Invoked by gpu-incident-watcher (or manually for testing).
+#
+# Usage: gpu-incident-capture --reason "<triggering line>"
+set -uo pipefail
+
+REASON=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reason) REASON="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+INCIDENTS_ROOT="${GPU_INCIDENTS_ROOT:-$HOME/applications/openai-proxy/data/incidents}"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+DIR="$INCIDENTS_ROOT/$TS"
+mkdir -p "$DIR"
+
+# Each command gets a hard timeout. If a tool hangs (nvidia-smi can during Xid),
+# we skip it rather than wedge the capture script itself.
+run() {
+  local out="$1"; shift
+  # shellcheck disable=SC2024
+  timeout --kill-after=2 5 "$@" >"$DIR/$out" 2>&1 || \
+    echo "[gpu-incident-capture] ($out) timed out or failed: $*" >>"$DIR/$out"
+}
+
+run_sh() {
+  local out="$1"; shift
+  timeout --kill-after=2 5 bash -c "$*" >"$DIR/$out" 2>&1 || \
+    echo "[gpu-incident-capture] ($out) timed out or failed" >>"$DIR/$out"
+}
+
+# trigger.txt — the kernel line + timestamp
+{
+  echo "timestamp_utc: $TS"
+  echo "host: $(hostname)"
+  echo "user: $(id -un)"
+  echo "reason:"
+  printf '  %s\n' "$REASON"
+} >"$DIR/trigger.txt"
+
+# Kernel log, last 5 minutes
+run_sh "dmesg-last-5min.txt" "journalctl -k --since '5 minutes ago' --no-pager"
+
+# Top processes by memory
+run_sh "proc-summary.txt" "ps -eo pid,user,pcpu,pmem,rss,cmd --sort=-pmem | head -50"
+
+# NVIDIA state (5s timeout; nvidia-smi is the most likely hanger during Xid)
+run "nvidia-smi.txt" nvidia-smi
+run "nvidia-smi-procs.txt" nvidia-smi --query-compute-apps=pid,process_name,gpu_uuid,used_memory --format=csv
+
+# Per-service journals
+SERVICES=(llama-turbo voxtral-int4-tts parakeet-stt comfyui openai-proxy daisy)
+{
+  for unit in "${SERVICES[@]}"; do
+    echo "===== $unit ====="
+    timeout --kill-after=2 5 journalctl --user -u "$unit" -n 200 --no-pager 2>&1 || \
+      echo "[skip] $unit timed out"
+    echo
+  done
+} >"$DIR/journalctl-services.txt"
+
+# Memory / scheduler state
+run_sh "meminfo.txt" "cat /proc/meminfo"
+run_sh "vmstat.txt"  "cat /proc/vmstat"
+run_sh "loadavg.txt" "cat /proc/loadavg; echo; uptime"
+
+# PCI info for both GPUs (no sudo required for non-config-space reads)
+run_sh "lspci-nvidia.txt" "lspci -vvv -s 01:00.0; echo; lspci -vvv -s 03:00.0"
+
+# Atomic finish sentinel
+date -u +%Y-%m-%dT%H:%M:%SZ >"$DIR/DONE"
+
+echo "[gpu-incident-capture] saved snapshot at $DIR"
+logger -t gpu-incident-capture "saved snapshot at $DIR (reason: ${REASON:0:120})"
+
+# Prune: keep newest 30 incident directories
+mapfile -t OLD < <(ls -1dt "$INCIDENTS_ROOT"/*/ 2>/dev/null | tail -n +31)
+for d in "${OLD[@]}"; do
+  [[ -n "$d" && "$d" == "$INCIDENTS_ROOT"/* ]] && rm -rf -- "$d"
+done
+
+exit 0

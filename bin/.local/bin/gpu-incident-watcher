@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# gpu-incident-watcher: tail kernel log, fire gpu-incident-capture on
+# AMD-Vi page faults on nvidia, NVRM Xid events, soft lockups, or MCE
+# Hardware Errors. Debounces: one capture per 60s window.
+set -uo pipefail
+
+CAPTURE="${GPU_INCIDENT_CAPTURE:-$HOME/.local/bin/gpu-incident-capture}"
+DEBOUNCE_SECS="${GPU_INCIDENT_DEBOUNCE:-60}"
+SETTLE_SECS="${GPU_INCIDENT_SETTLE:-5}"
+
+# Match patterns (extended regex, case-sensitive — kernel emits these verbatim)
+PATTERN='(AMD-Vi: Event logged.*nvidia|NVRM: Xid|watchdog: BUG: soft lockup|Hardware Error)'
+
+# Startup prune (cheap; reuse capture script's logic via a no-op invocation
+# isn't ideal — instead inline it here so we don't create an empty incident)
+INCIDENTS_ROOT="${GPU_INCIDENTS_ROOT:-$HOME/applications/openai-proxy/data/incidents}"
+mkdir -p "$INCIDENTS_ROOT"
+mapfile -t OLD < <(ls -1dt "$INCIDENTS_ROOT"/*/ 2>/dev/null | tail -n +31)
+for d in "${OLD[@]}"; do
+  [[ -n "$d" && "$d" == "$INCIDENTS_ROOT"/* ]] && rm -rf -- "$d"
+done
+
+echo "[gpu-incident-watcher] starting; pattern=$PATTERN; debounce=${DEBOUNCE_SECS}s"
+logger -t gpu-incident-watcher "starting; debounce=${DEBOUNCE_SECS}s"
+
+last_fire=0
+
+# journalctl -k -f works unprivileged for public kernel messages.
+# --no-pager + -o cat strips formatting so grep -E works cleanly.
+# If the journalctl pipe ever exits (e.g. journal restart), systemd
+# Restart=on-failure will bring us back. Use --since=now to avoid replaying
+# old events on watcher restart.
+journalctl -k -f --no-pager -o cat --since=now 2>/dev/null | \
+while IFS= read -r line; do
+  if [[ "$line" =~ $PATTERN ]]; then
+    now=$(date +%s)
+    if (( now - last_fire < DEBOUNCE_SECS )); then
+      # Still in debounce window; ignore.
+      continue
+    fi
+    last_fire=$now
+    echo "[gpu-incident-watcher] match: $line"
+    logger -t gpu-incident-watcher "match: ${line:0:200}"
+    # Settle: let cascading related kernel lines arrive so dmesg-last-5min
+    # captures the full picture, then fire capture.
+    (
+      sleep "$SETTLE_SECS"
+      "$CAPTURE" --reason "$line" || \
+        logger -t gpu-incident-watcher "capture failed (exit $?)"
+    ) &
+  fi
+done
+
+# If we fall out of the loop, journalctl died. Exit non-zero so systemd restarts us.
+echo "[gpu-incident-watcher] journalctl pipe closed; exiting for restart"
+exit 1
