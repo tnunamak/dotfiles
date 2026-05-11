@@ -120,5 +120,5 @@ if [[ $- == *i* ]] && [[ -z "$_SHELL_STATUS_RAN" ]]; then
   export _SHELL_STATUS_RAN=1
   [[ -f ~/.cache/shell-status/summary ]] && printf '%b\n' "$(cat ~/.cache/shell-status/summary)"
   ( shell-status-refresh &>/dev/null & )
-  ( cleanup-check --refresh &>/dev/null & )
+  ( cleanup --refresh &>/dev/null & )
 fi

@@ -50,9 +50,9 @@ detail_out=()
 # Level 1: Alerts
 # ============================================================================
 
-# --- cleanup-check: read cache directly for one-line summary ---
-cleanup_cache="/tmp/.cleanup-check-cache-$(id -u)"
-cleanup_script="$HOME/.local/bin/cleanup-check"
+# --- cleanup: read cache directly for one-line summary ---
+cleanup_cache="/tmp/.cleanup-cache-$(id -u)"
+cleanup_script="$HOME/.local/bin/cleanup"
 if [[ -x "$cleanup_script" ]]; then
   # Ensure cache is populated (runs silently)
   "$cleanup_script" &>/dev/null || true
@@ -73,7 +73,7 @@ if [[ -x "$cleanup_script" ]]; then
 
     if (( disk_pct >= 75 || total_cleanable >= 5368709120 )); then
       clean_size=$(human_size "$total_cleanable")
-      lines+=("Run cleanup-check to see ~${clean_size} reclaimable|")
+      lines+=("Run cleanup to see ~${clean_size} reclaimable|")
     fi
 
     # Build detail section from raw cache data
