@@ -54,10 +54,20 @@ detail_out=()
 cleanup_cache="/tmp/.cleanup-cache-$(id -u)"
 cleanup_script="$HOME/.local/bin/cleanup"
 if [[ -x "$cleanup_script" ]]; then
-  # Ensure cache is populated (runs silently)
-  "$cleanup_script" &>/dev/null || true
-
+  # Cache is populated by `cleanup --refresh`, NOT by bare `cleanup` (which is
+  # a pure reader). Refresh in the background so we don't block the prompt:
+  # the scan can take 30s+ on a large ~/code. First shell after install or
+  # after cache invalidation won't show the disk line — next one will.
+  cache_age=0
   if [[ -f "$cleanup_cache" ]]; then
+    cache_age=$(( $(date +%s) - $(stat -c %Y "$cleanup_cache" 2>/dev/null || echo 0) ))
+  fi
+  if [[ ! -f "$cleanup_cache" ]] || (( cache_age > 3600 )); then
+    nohup "$cleanup_script" --refresh </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
+
+  if [[ -f "$cleanup_cache" && -s "$cleanup_cache" ]]; then
     # Cache format v2: line 1 = version, line 2 = disk_pct, line 3 = total bytes.
     # Older v1 caches had no version line; detect and fall back.
     cache_first=$(sed -n '1p' "$cleanup_cache")

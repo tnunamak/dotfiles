@@ -12,7 +12,7 @@ Problems, not updates. Only shown when thresholds are exceeded.
 
 **Disk alert** — one line when disk >= 75% OR > 5GB reclaimable:
 ```
-Disk 67%  ~42G reclaimable           cleanup-check --clean
+Disk 67%  ~42G reclaimable           cleanup --clean
 ```
 
 **Workstation issues** — 0-1 lines from `workstation-issues --check-upstream`.

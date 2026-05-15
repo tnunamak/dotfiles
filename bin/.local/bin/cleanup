@@ -9,9 +9,10 @@
 
 set -euo pipefail
 
-CACHE_VERSION=2
+CACHE_VERSION=4
 CACHE_FILE="/tmp/.cleanup-cache-$(id -u)"
-CACHE_MAX_AGE=3600  # 1h
+CACHE_MAX_AGE=3600  # 1h — safety net only; state-changing actions (--clean,
+                    # shell startup) refresh the cache proactively.
 
 # Colors
 RED='\033[0;31m'
@@ -35,11 +36,26 @@ THRESH_CONDA=10737418240    # 10G (info only)
 THRESH_DEVC=10737418240     # 10G (info only)
 THRESH_STEAM=10737418240    # 10G (info only)
 THRESH_GIT_BLOAT=1073741824 # 1G (info only)
+THRESH_NEXT_CACHE=524288000 # 500M
+THRESH_RUST_TARGET=2147483648 # 2G (tier-2 — expensive to rebuild)
+THRESH_VENV=524288000       # 500M
+THRESH_PNPM_STORE=1073741824 # 1G
+THRESH_CLAUDE_CLI=104857600 # 100M
+THRESH_GO_BUILD=209715200   # 200M
+THRESH_DRKONQI=104857600    # 100M (KDE crash dumps)
+THRESH_WRANGLER=104857600   # 100M
+THRESH_PUPPETEER=536870912  # 512M (large; only flag if multiple Chrome versions cached)
+
+# Code roots to scan for build artifacts (.next, target, venv). Kept narrow to
+# avoid trawling unrelated mounts. CODE_ROOT can be overridden via env for tests.
+CODE_ROOT="${CODE_ROOT:-$HOME/code}"
 
 # Categories that participate in --clean / --preview / --skip-X / --only-X.
 # Keep in sync with documentation below and prompts in do_cleanup().
 CATEGORIES=(
     node_modules
+    next_cache
+    pnpm_store
     pip_cache
     uv_cache
     npm_cache
@@ -52,6 +68,13 @@ CATEGORIES=(
     docker_dangling
     docker_images
     docker_volumes
+    rust_target
+    python_venvs
+    claude_cli
+    go_build
+    drkonqi
+    wrangler
+    puppeteer
 )
 
 human_size() {
@@ -265,6 +288,182 @@ probe_node_modules_total() {
     echo "${#paths[@]}|${total}"
 }
 
+# Sum sizes of dirs matching a name under CODE_ROOT. Args: <name> [<name>...].
+# Walks at most 5 levels deep, prunes at each match (don't descend into them).
+# Emits "count|bytes".
+probe_named_dirs_total() {
+    local names=("$@")
+    local find_args=()
+    local n
+    for n in "${names[@]}"; do
+        find_args+=( -name "$n" -o )
+    done
+    # Trim trailing -o
+    unset 'find_args[${#find_args[@]}-1]'
+
+    local paths=()
+    while IFS= read -r -d '' p; do
+        [[ -z "$p" ]] && continue
+        paths+=("$p")
+    done < <(find "$CODE_ROOT" -maxdepth 5 -type d \( "${find_args[@]}" \) -prune -print0 2>/dev/null)
+
+    if (( ${#paths[@]} == 0 )); then
+        echo "0|0"
+        return
+    fi
+    local total
+    total=$(printf '%s\0' "${paths[@]}" \
+        | xargs -0 -n 32 -P "$(nproc 2>/dev/null || echo 4)" du -sb 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')
+    : "${total:=0}"
+    echo "${#paths[@]}|${total}"
+}
+
+# Probe .next/cache/ totals under CODE_ROOT. The build output (.next/) is needed
+# at runtime for `next start`; only .next/cache/ is safely regenerable.
+probe_next_cache_total() {
+    local paths=()
+    while IFS= read -r -d '' p; do
+        [[ -z "$p" ]] && continue
+        # Only count if .next/cache exists
+        [[ -d "$p/cache" ]] || continue
+        paths+=("$p/cache")
+    done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name .next -prune -print0 2>/dev/null)
+
+    if (( ${#paths[@]} == 0 )); then
+        echo "0|0"
+        return
+    fi
+    local total
+    total=$(printf '%s\0' "${paths[@]}" \
+        | xargs -0 -n 32 -P "$(nproc 2>/dev/null || echo 4)" du -sb 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')
+    : "${total:=0}"
+    echo "${#paths[@]}|${total}"
+}
+
+# Probe rust target/ dirs under CODE_ROOT. Validated by sibling Cargo.toml to
+# avoid eating unrelated "target" dirs (Maven, etc.). Emits "count|bytes".
+probe_rust_target_total() {
+    local paths=()
+    while IFS= read -r -d '' p; do
+        [[ -z "$p" ]] && continue
+        local parent
+        parent=$(dirname "$p")
+        # Require a Cargo.toml next to target/, else skip.
+        [[ -f "$parent/Cargo.toml" ]] || continue
+        paths+=("$p")
+    done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name target -prune -print0 2>/dev/null)
+
+    if (( ${#paths[@]} == 0 )); then
+        echo "0|0"
+        return
+    fi
+    local total
+    total=$(printf '%s\0' "${paths[@]}" \
+        | xargs -0 -n 32 -P "$(nproc 2>/dev/null || echo 4)" du -sb 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')
+    : "${total:=0}"
+    echo "${#paths[@]}|${total}"
+}
+
+# Classify a single venv: stale iff parent project has no source-file edit in
+# the last 90 days. Emits NUL-terminated paths to stdout iff stale.
+#
+# Args: <venv_path> <stale_thresh_epoch>
+classify_venv() {
+    local venv="$1" stale_thresh="$2"
+    local project
+    project=$(dirname "$venv")
+    local newest
+    newest=$({ find "$project" \
+        -path "$venv" -prune -o \
+        -path "$project/.git" -prune -o \
+        -path "$project/node_modules" -prune -o \
+        -type f \( -name '*.py' -o -name '*.toml' -o -name '*.txt' \
+                  -o -name '*.ipynb' -o -name '*.md' \) \
+        -printf '%T@\n' 2>/dev/null; } | sort -nr 2>/dev/null | head -1 | cut -d. -f1)
+    if [[ -z "$newest" || "$newest" == "0" ]]; then
+        newest=$(stat -c %Y "$venv" 2>/dev/null || echo 0)
+    fi
+    if (( newest < stale_thresh )); then
+        printf '%s\0' "$venv"
+    fi
+}
+
+# Find stale .venv/venv under CODE_ROOT (parent inactive >90d). Outputs NUL-
+# terminated paths. Mirrors find_stale_node_modules but with a tighter threshold
+# since Python venvs are cheaper to recreate.
+find_stale_venvs() {
+    local now_s
+    now_s=$(date +%s)
+    local stale_thresh=$((now_s - 90*86400))
+
+    local max_jobs
+    max_jobs=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    (( max_jobs < 8 )) && max_jobs=8
+
+    local tmp
+    tmp=$(mktemp -d)
+    local i=0 inflight=0
+    while IFS= read -r -d '' v; do
+        classify_venv "$v" "$stale_thresh" \
+            > "$tmp/v-$i" 2>/dev/null &
+        i=$((i+1))
+        inflight=$((inflight+1))
+        if (( inflight >= max_jobs )); then
+            wait -n 2>/dev/null || true
+            inflight=$((inflight-1))
+        fi
+    done < <(find "$CODE_ROOT" -maxdepth 5 -type d \( -name .venv -o -name venv \) -prune -print0 2>/dev/null)
+    wait 2>/dev/null || true
+
+    for ((j=0; j<i; j++)); do
+        [[ -s "$tmp/v-$j" ]] && cat "$tmp/v-$j"
+    done
+    rm -rf "$tmp"
+}
+
+# Probe stale venvs total. Emits "count|bytes".
+probe_python_venvs_total() {
+    local paths=()
+    while IFS= read -r -d '' p; do
+        [[ -z "$p" ]] && continue
+        paths+=("$p")
+    done < <(find_stale_venvs)
+
+    if (( ${#paths[@]} == 0 )); then
+        echo "0|0"
+        return
+    fi
+    local total
+    total=$(printf '%s\0' "${paths[@]}" \
+        | xargs -0 -n 32 -P "$(nproc 2>/dev/null || echo 4)" du -sb 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')
+    : "${total:=0}"
+    echo "${#paths[@]}|${total}"
+}
+
+# Probe the pnpm content-addressed store. Located via `pnpm config get store-dir`,
+# falling back to CODE_ROOT/.pnpm-store (the layout dotfiles uses). Probe is a
+# size check only — actual prune happens via `pnpm store prune`.
+probe_pnpm_store() {
+    local store_dir=""
+    if command -v pnpm &>/dev/null; then
+        store_dir=$(pnpm config get store-dir 2>/dev/null | { grep -v '^undefined$' || true; } | head -1)
+    fi
+    if [[ -z "$store_dir" || ! -d "$store_dir" ]]; then
+        # Try the project-local store layout (pnpm with `store-dir=.pnpm-store`).
+        if [[ -d "$CODE_ROOT/.pnpm-store" ]]; then
+            store_dir="$CODE_ROOT/.pnpm-store"
+        else
+            echo "0"
+            return
+        fi
+    fi
+    probe_du_path "$store_dir"
+}
+
 # Probe git bloat under ~/code. Emits zero or more "repo_name:size" lines.
 probe_git_bloat() {
     local raw
@@ -326,6 +525,11 @@ check_cleanup() {
         "conda:$HOME/miniconda3"
         "devcontainer_homes:$HOME/.devcontainer-homes"
         "steam:$HOME/.steam"
+        "claude_cli:$HOME/.cache/claude-cli-nodejs"
+        "go_build:$HOME/.cache/go-build"
+        "drkonqi:$HOME/.cache/drkonqi"
+        "wrangler:$HOME/.cache/.wrangler"
+        "puppeteer:$HOME/.cache/puppeteer"
     )
     local entry key path
     for entry in "${du_probes[@]}"; do
@@ -337,6 +541,22 @@ check_cleanup() {
 
     # --- node_modules (recency-aware; itself uses internal parallelism) ---
     ( probe_node_modules_total > "$TMPDIR_PARALLEL/node_modules" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- .next/cache/ across CODE_ROOT (tier-1: regenerable) ---
+    ( probe_next_cache_total > "$TMPDIR_PARALLEL/next_cache" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Rust target/ across CODE_ROOT (tier-2: expensive to rebuild) ---
+    ( probe_rust_target_total > "$TMPDIR_PARALLEL/rust_target" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Stale Python venvs across CODE_ROOT (tier-2: recency-aware) ---
+    ( probe_python_venvs_total > "$TMPDIR_PARALLEL/python_venvs" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- pnpm content-addressed store ---
+    ( probe_pnpm_store > "$TMPDIR_PARALLEL/pnpm_store" 2>/dev/null ) &
     pids+=($!)
 
     # --- Docker probes ---
@@ -375,6 +595,48 @@ check_cleanup() {
     if (( nm_count > 0 )); then
         items+=("node_modules:$nm_count:$nm_size")
         total_cleanable=$((total_cleanable + nm_size))
+    fi
+
+    # next_cache — .next/cache/ dirs (tier-1, always safe; regenerable)
+    local nc_raw nc_count nc_size
+    nc_raw=$(cat "$TMPDIR_PARALLEL/next_cache" 2>/dev/null || echo "0|0")
+    nc_count="${nc_raw%%|*}"
+    nc_size="${nc_raw#*|}"
+    : "${nc_count:=0}" "${nc_size:=0}"
+    if (( nc_size > THRESH_NEXT_CACHE )); then
+        items+=("next_cache:$nc_count:$nc_size")
+        total_cleanable=$((total_cleanable + nc_size))
+    fi
+
+    # rust_target — tier-2: don't add to tier-1 total
+    local rt_raw rt_count rt_size
+    rt_raw=$(cat "$TMPDIR_PARALLEL/rust_target" 2>/dev/null || echo "0|0")
+    rt_count="${rt_raw%%|*}"
+    rt_size="${rt_raw#*|}"
+    : "${rt_count:=0}" "${rt_size:=0}"
+    if (( rt_size > THRESH_RUST_TARGET )); then
+        items+=("rust_target:$rt_count:$rt_size")
+    fi
+
+    # python_venvs — tier-2: stale venvs (parent inactive >90d); don't add to tier-1
+    local pv_raw pv_count pv_size
+    pv_raw=$(cat "$TMPDIR_PARALLEL/python_venvs" 2>/dev/null || echo "0|0")
+    pv_count="${pv_raw%%|*}"
+    pv_size="${pv_raw#*|}"
+    : "${pv_count:=0}" "${pv_size:=0}"
+    if (( pv_size > THRESH_VENV )); then
+        items+=("python_venvs:$pv_count:$pv_size")
+    fi
+
+    # pnpm_store — tier-1: `pnpm store prune` is a safe, store-aware operation.
+    # The probe gives current size; actual freed bytes after prune may be less.
+    local pnpm_size
+    pnpm_size=$(cat "$TMPDIR_PARALLEL/pnpm_store" 2>/dev/null || echo 0)
+    : "${pnpm_size:=0}"
+    if (( pnpm_size > THRESH_PNPM_STORE )); then
+        # Pass current size as the estimate; actual freed = unreferenced subset.
+        items+=("pnpm_store:1:$pnpm_size")
+        # Don't add to total_cleanable — prune typically frees a fraction.
     fi
 
     # Helper: read a du-* value with a 0 default.
@@ -418,6 +680,38 @@ check_cleanup() {
     if (( hf_cache > THRESH_HF )); then
         items+=("hf_cache:1:$hf_cache")
         total_cleanable=$((total_cleanable + hf_cache))
+    fi
+
+    # New tier-1 cache categories: claude-cli-nodejs, go-build, drkonqi,
+    # wrangler, puppeteer. All safe to delete (regenerate on next use).
+    local claude_cli go_build drkonqi_cache wrangler_cache puppeteer_cache
+    claude_cli=$(_du claude_cli)
+    go_build=$(_du go_build)
+    drkonqi_cache=$(_du drkonqi)
+    wrangler_cache=$(_du wrangler)
+    puppeteer_cache=$(_du puppeteer)
+    : "${claude_cli:=0}" "${go_build:=0}" "${drkonqi_cache:=0}"
+    : "${wrangler_cache:=0}" "${puppeteer_cache:=0}"
+
+    if (( claude_cli > THRESH_CLAUDE_CLI )); then
+        items+=("claude_cli:1:$claude_cli")
+        total_cleanable=$((total_cleanable + claude_cli))
+    fi
+    if (( go_build > THRESH_GO_BUILD )); then
+        items+=("go_build:1:$go_build")
+        total_cleanable=$((total_cleanable + go_build))
+    fi
+    if (( drkonqi_cache > THRESH_DRKONQI )); then
+        items+=("drkonqi:1:$drkonqi_cache")
+        total_cleanable=$((total_cleanable + drkonqi_cache))
+    fi
+    if (( wrangler_cache > THRESH_WRANGLER )); then
+        items+=("wrangler:1:$wrangler_cache")
+        total_cleanable=$((total_cleanable + wrangler_cache))
+    fi
+    if (( puppeteer_cache > THRESH_PUPPETEER )); then
+        items+=("puppeteer:1:$puppeteer_cache")
+        total_cleanable=$((total_cleanable + puppeteer_cache))
     fi
 
     # Docker tier output: 5 lines (containers, builder, images, volumes, dangling-count)
@@ -517,13 +811,45 @@ ensure_cache() {
     fi
 
     if [[ "$need_refresh" == "true" ]]; then
-        check_cleanup > "$CACHE_FILE"
+        # Serialize concurrent refreshes (multiple shells starting at once) to
+        # avoid the 0-byte-cache race where two writers truncate the same file
+        # via `>`. flock is non-blocking via -n: if another refresh is already
+        # running, skip and let it own the rebuild.
+        local lock_file="${CACHE_FILE}.lock"
+        local tmp_file
+        tmp_file=$(mktemp "${CACHE_FILE}.XXXXXX")
+        (
+            exec 9>"$lock_file"
+            if flock -n 9; then
+                if check_cleanup > "$tmp_file"; then
+                    mv -f "$tmp_file" "$CACHE_FILE"
+                else
+                    rm -f "$tmp_file"
+                fi
+            else
+                rm -f "$tmp_file"
+            fi
+        )
     fi
 }
 
-# Read the cache and emit the human-friendly summary.
+# True iff cache exists and is the current version. Does NOT trigger a rebuild.
+cache_is_readable() {
+    [[ -f "$CACHE_FILE" && -s "$CACHE_FILE" ]] || return 1
+    local first_line
+    first_line=$(sed -n '1p' "$CACHE_FILE" 2>/dev/null || echo "")
+    [[ "$first_line" == "$CACHE_VERSION" ]]
+}
+
+# Read the cache and emit the human-friendly summary. Pure reader — never scans.
+# Cache is populated by `cleanup --refresh` (called from shell-status-refresh).
 show_suggestions() {
-    ensure_cache false
+    if ! cache_is_readable; then
+        # Silent — bare invocation runs at shell startup. If the cache hasn't
+        # been built yet, defer to `cleanup --refresh` instead of blocking the
+        # prompt. shell-status-refresh kicks off a background refresh.
+        return 0
+    fi
 
     local disk_pct total_cleanable
     disk_pct=$(sed -n '2p' "$CACHE_FILE")
@@ -561,6 +887,18 @@ show_suggestions() {
             node_modules)
                 other_lines+=("    rm $count stale node_modules: $(human_size "$size")  ${DIM}(parent inactive >180d)${NC}")
                 ;;
+            next_cache)
+                other_lines+=("    rm $count .next/cache dirs: $(human_size "$size")  ${DIM}(regenerable; keeps .next/ build)${NC}")
+                ;;
+            pnpm_store)
+                other_lines+=("    pnpm store prune: up to $(human_size "$size")  ${DIM}(unreferenced packages only)${NC}")
+                ;;
+            rust_target)
+                other_lines+=("  ${YELLOW}tier 2${NC} rm $count Rust target/ dirs:           $(human_size "$size")")
+                ;;
+            python_venvs)
+                other_lines+=("  ${YELLOW}tier 2${NC} rm $count stale .venv/venv dirs:       $(human_size "$size")  ${DIM}(parent inactive >90d)${NC}")
+                ;;
             pip_cache)
                 other_lines+=("    pip cache purge: $(human_size "$size")")
                 ;;
@@ -581,6 +919,21 @@ show_suggestions() {
                 ;;
             hf_cache)
                 other_lines+=("    HuggingFace cache: $(human_size "$size")  ${DIM}(huggingface-cli delete-cache)${NC}")
+                ;;
+            claude_cli)
+                other_lines+=("    rm Claude CLI cache: $(human_size "$size")")
+                ;;
+            go_build)
+                other_lines+=("    go clean -cache: $(human_size "$size")")
+                ;;
+            drkonqi)
+                other_lines+=("    rm KDE crash dumps: $(human_size "$size")  ${DIM}(drkonqi)${NC}")
+                ;;
+            wrangler)
+                other_lines+=("    rm Wrangler cache: $(human_size "$size")")
+                ;;
+            puppeteer)
+                other_lines+=("    prune Puppeteer Chrome versions: $(human_size "$size")  ${DIM}(keep newest)${NC}")
                 ;;
             docker_dangling)
                 # $count holds the number of dangling images; size is unreliable.
@@ -652,20 +1005,25 @@ is_enabled() {
 }
 
 # Returns 0 if the user confirms (or --yes is set).
-# Times out to "no" after 10 seconds.
+# Interactive (stdin is a tty): wait forever — no timeout. A destructive prompt
+# that auto-skips on distraction is a foot-gun.
+# Non-interactive: 30s timeout to "no", so piped/CI use never hangs.
 confirm() {
     local msg="$1"
     if [[ "$ASSUME_YES" == "true" ]]; then
         echo -e "${DIM}${msg} [auto-yes]${NC}"
         return 0
     fi
-    echo -ne "${msg} [y/N] (10s, default N): "
     local ans=""
-    if read -t 10 -r ans; then
-        :
+    if [[ -t 0 ]]; then
+        echo -ne "${msg} [y/N]: "
+        read -r ans || return 1
     else
-        echo "(timeout)"
-        return 1
+        echo -ne "${msg} [y/N] (30s, default N): "
+        if ! read -t 30 -r ans; then
+            echo "(timeout)"
+            return 1
+        fi
     fi
     case "${ans,,}" in
         y|yes) return 0 ;;
@@ -746,12 +1104,69 @@ do_cleanup() {
 
                 if [[ "$DRY_RUN" == "true" ]]; then
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
+                    freed=$((freed + nm_size))
                 elif confirm "  Delete all stale node_modules?"; then
                     for p in "${nm_paths[@]}"; do
                         rm -rf "$p" 2>/dev/null || true
                     done
                     echo -e "  ${GREEN}done${NC}"
                     freed=$((freed + nm_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- .next/cache (tier-1) -----
+    if is_enabled next_cache; then
+        local nc_size
+        nc_size=$(cache_size_for next_cache)
+        if (( nc_size > 0 )); then
+            local nc_paths=()
+            while IFS= read -r -d '' p; do
+                [[ -d "$p/cache" ]] && nc_paths+=("$p/cache")
+            done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name .next -prune -print0 2>/dev/null)
+
+            if (( ${#nc_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}.next/cache${NC}  (${YELLOW}$(human_size "$nc_size")${NC}, ${#nc_paths[@]} dirs)"
+                local shown=0
+                for p in "${nc_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#nc_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
+                    freed=$((freed + nc_size))
+                elif confirm "  Delete all .next/cache dirs?"; then
+                    for p in "${nc_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + nc_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- pnpm store prune (tier-1) -----
+    if is_enabled pnpm_store; then
+        local ps_size
+        ps_size=$(cache_size_for pnpm_store)
+        if (( ps_size > 0 )) && command -v pnpm &>/dev/null; then
+            if maybe_run "pnpm store prune" "$ps_size" "pnpm store prune"; then
+                # Re-measure to learn actual freed; if pnpm reports nothing,
+                # account it as 0 rather than the pre-prune size.
+                local store_dir new_size
+                store_dir=$(pnpm config get store-dir 2>/dev/null | { grep -v '^undefined$' || true; } | head -1)
+                [[ -z "$store_dir" || ! -d "$store_dir" ]] && store_dir="$CODE_ROOT/.pnpm-store"
+                if [[ -d "$store_dir" ]]; then
+                    new_size=$(du -sb "$store_dir" 2>/dev/null | cut -f1 || echo "$ps_size")
+                    freed=$((freed + ps_size - new_size))
                 fi
             fi
         fi
@@ -771,10 +1186,28 @@ do_cleanup() {
     if is_enabled uv_cache; then
         local s; s=$(cache_size_for uv_cache)
         if (( s > 0 )); then
-            local cmd="uv cache clean"
-            command -v uv >/dev/null || cmd="rm -rf ~/.cache/uv"
-            if maybe_run "uv cache" "$s" "$cmd"; then
-                freed=$((freed + s))
+            # `uv cache clean` (without --force) blocks indefinitely while any
+            # process is executing from ~/.cache/uv — common when MCP servers
+            # spawned via `uvx` are alive. Detect and warn; prefer `rm -rf` as
+            # a fallback because it's non-blocking. Skipping is also fine —
+            # uv re-populates on next use.
+            local uv_holders
+            uv_holders=$(pgrep -af 'uv|/.cache/uv/' 2>/dev/null \
+                | grep -vE 'pgrep|cleanup' \
+                | grep -E '/.cache/uv/|^[[:space:]]*[0-9]+[[:space:]]+uv ' \
+                | wc -l)
+            if (( uv_holders > 0 )) && command -v uv >/dev/null; then
+                echo ""
+                echo -e "${BOLD}uv cache${NC}  (${YELLOW}$(human_size "$s")${NC})"
+                echo -e "  ${YELLOW}skipped: ${uv_holders} process(es) are using ~/.cache/uv${NC}"
+                echo -e "  ${DIM}likely uvx-spawned tools (MCP servers, etc.). Close them and re-run,${NC}"
+                echo -e "  ${DIM}or run 'uv cache clean --force' manually to yank live archives.${NC}"
+            else
+                local cmd="uv cache clean"
+                command -v uv >/dev/null || cmd="rm -rf ~/.cache/uv"
+                if maybe_run "uv cache" "$s" "$cmd"; then
+                    freed=$((freed + s))
+                fi
             fi
         fi
     fi
@@ -818,6 +1251,67 @@ do_cleanup() {
         local s; s=$(cache_size_for thumbnails)
         if (( s > 0 )); then
             if maybe_run "thumbnail cache" "$s" "rm -rf ~/.cache/thumbnails/*"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Claude CLI cache -----
+    if is_enabled claude_cli; then
+        local s; s=$(cache_size_for claude_cli)
+        if (( s > 0 )); then
+            if maybe_run "Claude CLI cache" "$s" "rm -rf ~/.cache/claude-cli-nodejs"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Go build cache -----
+    if is_enabled go_build; then
+        local s; s=$(cache_size_for go_build)
+        if (( s > 0 )); then
+            local cmd="go clean -cache"
+            command -v go >/dev/null || cmd="rm -rf ~/.cache/go-build"
+            if maybe_run "Go build cache" "$s" "$cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- KDE drkonqi crash dumps -----
+    if is_enabled drkonqi; then
+        local s; s=$(cache_size_for drkonqi)
+        if (( s > 0 )); then
+            if maybe_run "KDE crash dumps" "$s" "rm -rf ~/.cache/drkonqi"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Wrangler cache -----
+    if is_enabled wrangler; then
+        local s; s=$(cache_size_for wrangler)
+        if (( s > 0 )); then
+            if maybe_run "Wrangler cache" "$s" "rm -rf ~/.cache/.wrangler"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Puppeteer Chrome versions (prune old, keep newest) -----
+    if is_enabled puppeteer; then
+        local s; s=$(cache_size_for puppeteer)
+        if (( s > 0 )) && [[ -d "$HOME/.cache/puppeteer" ]]; then
+            # Compose a script that keeps the newest version per dir.
+            local prune_cmd='for sub in chrome chrome-headless-shell; do
+                d="$HOME/.cache/puppeteer/$sub"
+                [[ -d "$d" ]] || continue
+                latest=$(ls "$d" 2>/dev/null | sort -V | tail -1)
+                for v in "$d"/*; do
+                    [[ -d "$v" && "$(basename "$v")" != "$latest" ]] && rm -rf "$v"
+                done
+            done'
+            if maybe_run "Puppeteer Chrome (keep newest)" "$s" "$prune_cmd"; then
                 freed=$((freed + s))
             fi
         fi
@@ -900,9 +1394,79 @@ do_cleanup() {
         fi
     fi
 
-    # Invalidate cache after real work
-    if [[ "$DRY_RUN" != "true" ]]; then
-        rm -f "$CACHE_FILE"
+    # ----- Rust target/ dirs (tier-2) -----
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled rust_target; then
+        local rt_size
+        rt_size=$(cache_size_for rust_target)
+        if (( rt_size > 0 )); then
+            local rt_paths=()
+            while IFS= read -r -d '' p; do
+                local parent; parent=$(dirname "$p")
+                [[ -f "$parent/Cargo.toml" ]] && rt_paths+=("$p")
+            done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name target -prune -print0 2>/dev/null)
+
+            if (( ${#rt_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Rust target/ dirs${NC}  (${YELLOW}$(human_size "$rt_size")${NC}, ${#rt_paths[@]} dirs)"
+                local shown=0
+                for p in "${rt_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#rt_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
+                    freed=$((freed + rt_size))
+                elif confirm "  Delete all Rust target/ dirs?"; then
+                    for p in "${rt_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + rt_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- Stale Python venvs (tier-2) -----
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled python_venvs; then
+        local pv_size
+        pv_size=$(cache_size_for python_venvs)
+        if (( pv_size > 0 )); then
+            local pv_paths=()
+            while IFS= read -r -d '' p; do
+                pv_paths+=("$p")
+            done < <(find_stale_venvs)
+
+            if (( ${#pv_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Stale Python venvs${NC}  (${YELLOW}$(human_size "$pv_size")${NC}, ${#pv_paths[@]} dirs)"
+                local shown=0
+                for p in "${pv_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#pv_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
+                    freed=$((freed + pv_size))
+                elif confirm "  Delete all stale venvs?"; then
+                    for p in "${pv_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + pv_size))
+                fi
+            fi
+        fi
     fi
 
     echo ""
@@ -911,12 +1475,368 @@ do_cleanup() {
     else
         echo -e "${BOLD}Total freed (estimate): $(human_size "$freed")${NC}"
         echo -e "Disk now: $(df -h / | tail -1 | awk '{print $5}')"
+        # Repopulate cache synchronously — same pattern as `updates --apply`.
+        # Cheap (sub-second after `freed > 0` removed paths from the walk),
+        # and guarantees the next bare invocation reflects post-cleanup state.
+        if (( freed > 0 )); then
+            echo "Refreshing cache..."
+            ensure_cache true
+        fi
     fi
 }
 
 refresh_cache() {
     ensure_cache true
     echo "Cache refreshed"
+}
+
+# ---------------------------------------------------------------------------
+# Dedupe: rmlint-driven duplicate detection (report-only by default)
+# ---------------------------------------------------------------------------
+#
+# Why this isn't wired into --clean:
+#  - Hardlinking writable files (node_modules, target/, .venv/) can silently
+#    corrupt data when a tool does an in-place write to one of the linked copies.
+#  - rmlint itself produces a SHELL SCRIPT and never deletes/links on its own.
+#    The user reviewing and running `./rmlint.sh` is the safety boundary.
+#  - Good targets are read-mostly trees (model caches, photos, music). Code
+#    directories have high false-positive risk.
+#
+# This action: install rmlint if missing, run it on PATH with build-dir
+# exclusions, print the saved-bytes estimate, then exit. User is responsible
+# for reviewing/executing the generated rmlint.sh.
+
+DEDUPE_EXCLUDES_DEFAULT=(
+    node_modules
+    target
+    .next
+    .venv
+    venv
+    __pycache__
+    .git
+    dist
+    build
+    .cache
+    .tox
+    .gradle
+)
+
+ensure_rmlint() {
+    if command -v rmlint &>/dev/null; then
+        return 0
+    fi
+    echo -e "${YELLOW}rmlint is not installed.${NC}"
+    echo -e "  ${DIM}\$ sudo apt-get install -y rmlint${NC}"
+    if ! confirm "  Install rmlint now (requires sudo)?"; then
+        echo -e "  ${DIM}skipped — cannot run --dedupe without rmlint${NC}"
+        return 1
+    fi
+    sudo apt-get install -y rmlint
+}
+
+do_dedupe() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        echo "Usage: cleanup --dedupe PATH [--include-builds] [--script|--preview]" >&2
+        echo "  Default: scan, show summary, prompt to hardlink duplicates." >&2
+        echo "  --script:  write ./rmlint.sh for offline review, don't prompt." >&2
+        echo "  --preview: scan only; no prompt, no script written." >&2
+        return 2
+    fi
+    if [[ ! -d "$target" ]]; then
+        echo "Not a directory: $target" >&2
+        return 2
+    fi
+
+    local include_builds=false
+    local mode="prompt"   # prompt | script | preview
+    shift
+    while (( $# > 0 )); do
+        case "$1" in
+            --include-builds) include_builds=true ;;
+            --script)         mode="script" ;;
+            --preview|--dry-run) mode="preview" ;;
+            *) echo "Unknown --dedupe flag: $1" >&2; return 2 ;;
+        esac
+        shift
+    done
+
+    # Filesystem safety check. Hardlinking requires (a) a filesystem that
+    # supports hardlinks reliably and (b) `du -sB1` accurately reflecting
+    # block-level dedup. ext4/btrfs/xfs are known-good. CIFS/NFS handle
+    # hardlinks unreliably or not at all, and `du` over the network gives
+    # numbers we don't control. Refuse to dedupe outside the allowlist.
+    local fs_type
+    fs_type=$(stat -f -c '%T' "$target" 2>/dev/null || echo unknown)
+    case "$fs_type" in
+        ext2/ext3|ext4|btrfs|xfs|reiserfs|jfs)
+            ;;
+        *)
+            echo -e "${RED}refusing to dedupe on filesystem type '${fs_type}'${NC}" >&2
+            echo -e "  ${DIM}Hardlink semantics are unreliable on this filesystem.${NC}" >&2
+            echo -e "  ${DIM}Supported: ext4, btrfs, xfs.${NC}" >&2
+            return 1
+            ;;
+    esac
+
+    ensure_rmlint || return 1
+
+    # Strategy:
+    #   1. Scan the whole target to JSON (with --no-crossdev so no group
+    #      spans filesystems — see safety note below).
+    #   2. Filter the JSON to drop duplicate groups touching excluded paths.
+    #   3. Re-emit rmlint.sh via `rmlint --replay` on the filtered JSON.
+    #
+    # CRITICAL: rmlint's sh formatter, when handler=hardlink, does
+    #   `rm -rf "$dup"; ln "$orig" "$dup"`.
+    # If `ln` fails (cross-device), the dup is already gone — data loss.
+    # `-x` (--no-crossdev) prevents rmlint from EVER pairing files on
+    # different filesystems, so the cross-device case can't arise.
+    #
+    # `-c sh:handler=hardlink` is explicit (no symlink fallback). The
+    # shortcut `-c sh:hardlink` is equivalent in practice because the
+    # fallback only triggers for duplicate *directories*, which we don't
+    # scan (--types=duplicates is file-only). Use the explicit form to
+    # avoid ambiguity for readers.
+    local raw_args=( --types=duplicates --hidden \
+        --no-crossdev \
+        -c sh:handler=hardlink \
+        -o json:./rmlint-raw.json \
+        -o pretty -o summary )
+
+    echo ""
+    echo -e "${BOLD}rmlint scan${NC}  target: ${CYAN}$target${NC}"
+    if [[ "$include_builds" == "false" ]]; then
+        echo -e "  ${DIM}post-filter excludes: ${DEDUPE_EXCLUDES_DEFAULT[*]}${NC}"
+        echo -e "  ${DIM}override with --include-builds (advanced; risky for code dirs)${NC}"
+    else
+        echo -e "  ${YELLOW}WARNING:${NC} scanning build/cache dirs. Review carefully before hardlinking."
+    fi
+    echo ""
+
+    local out_dir
+    out_dir=$(mktemp -d -t rmlint-XXXXXX)
+    (
+        cd "$out_dir" || exit 1
+        rmlint "${raw_args[@]}" "$target"
+    )
+    local rc=$?
+
+    if [[ ! -f "$out_dir/rmlint-raw.json" ]]; then
+        echo -e "${DIM}rmlint produced no output.${NC}"
+        rm -rf "$out_dir"
+        return $rc
+    fi
+
+    # Build the JS-style filter: keep duplicate groups iff NO member touches
+    # an excluded segment. Re-emit a filtered JSON for --replay. python3 is
+    # always present; jq is not.
+    local excludes_csv=""
+    if [[ "$include_builds" == "false" ]]; then
+        local first=true e
+        for e in "${DEDUPE_EXCLUDES_DEFAULT[@]}"; do
+            if $first; then excludes_csv="$e"; first=false
+            else excludes_csv="$excludes_csv,$e"; fi
+        done
+    fi
+
+    if ! python3 - "$out_dir/rmlint-raw.json" "$out_dir/rmlint-filtered.json" "$excludes_csv" <<'PY'
+import json, sys, os
+raw_path, filtered_path, excludes_csv = sys.argv[1], sys.argv[2], sys.argv[3]
+excludes = [e for e in excludes_csv.split(",") if e]
+
+with open(raw_path) as f:
+    data = json.load(f)
+
+if not isinstance(data, list) or len(data) < 2:
+    sys.stderr.write("rmlint JSON has unexpected shape (not a list or empty)\n")
+    sys.exit(2)
+
+# rmlint JSON: [header, dup_file*, footer]. Verify exactly one footer.
+footers = [e for e in data
+           if isinstance(e, dict) and "total_lint_size" in e]
+if len(footers) != 1:
+    sys.stderr.write(f"expected exactly 1 JSON footer, got {len(footers)}\n")
+    sys.exit(2)
+footer = footers[0]
+
+def has_excluded_segment(path):
+    parts = path.split(os.sep)
+    return any(seg in excludes for seg in parts)
+
+# Pass 1: find checksums where any member's path hits an exclude.
+bad_checksums = set()
+for entry in data:
+    if isinstance(entry, dict) and entry.get("type") == "duplicate_file":
+        if has_excluded_segment(entry.get("path", "")):
+            bad_checksums.add(entry.get("checksum"))
+
+# Pass 2: rebuild array, dropping bad groups; track removed counts.
+kept = []
+removed_dups = 0
+removed_bytes = 0
+for entry in data:
+    if not isinstance(entry, dict):
+        kept.append(entry); continue
+    if "total_lint_size" in entry:
+        continue   # append rewritten footer at the end
+    if entry.get("type") == "duplicate_file":
+        if entry.get("checksum") in bad_checksums:
+            if not entry.get("is_original"):
+                removed_dups += 1
+                removed_bytes += entry.get("size", 0)
+            continue
+    kept.append(entry)
+
+# Rewrite footer. `duplicates` counts non-original duplicate_file entries
+# (verified empirically: 1 group of 2 identical files → duplicates=1).
+new_footer = dict(footer)
+new_footer["duplicates"] = max(0, footer.get("duplicates", 0) - removed_dups)
+new_footer["total_lint_size"] = max(0, footer.get("total_lint_size", 0) - removed_bytes)
+sets = {e.get("checksum") for e in kept
+        if isinstance(e, dict) and e.get("type") == "duplicate_file"}
+new_footer["duplicate_sets"] = len(sets)
+kept.append(new_footer)
+
+with open(filtered_path, "w") as f:
+    json.dump(kept, f)
+PY
+    then
+        echo -e "${RED}filter step failed — aborting to avoid acting on unverified data${NC}" >&2
+        rm -rf "$out_dir"
+        return 1
+    fi
+
+    if [[ ! -f "$out_dir/rmlint-filtered.json" ]]; then
+        echo -e "${RED}filter wrote no output — aborting${NC}" >&2
+        rm -rf "$out_dir"
+        return 1
+    fi
+
+    # Re-emit rmlint.sh from the filtered JSON. -c sh:handler=hardlink MUST
+    # be set here — replay re-applies formatter config from the current
+    # command line, not from the saved JSON. Without it, rmlint.sh defaults
+    # to `remove_cmd` (delete). VERIFIED: tested both forms; replay without
+    # this flag emits `remove_cmd '...'` lines.
+    (
+        cd "$out_dir" || exit 1
+        rmlint --replay ./rmlint-filtered.json -c sh:handler=hardlink \
+            -o sh:./rmlint.sh -o summary "$target" >/dev/null 2>&1
+    )
+
+    # Defense-in-depth: positive whitelist for rmlint.sh action lines.
+    # With `--types=duplicates -c sh:handler=hardlink`, rmlint produces exactly
+    # two action-line shapes (verified against rmlint 2.10.2):
+    #   original_cmd  '<path>' # original         (cosmetic, prints "Keeping")
+    #   cp_hardlink   '<path>' '<path>' # duplicate
+    # Any other prefix (remove_cmd, cp_symlink, cp_clone, usercmd_cmd,
+    # handle_bad_symlink) means rmlint chose a different handler than we
+    # configured. Abort rather than trust.
+    if [[ -f "$out_dir/rmlint.sh" ]]; then
+        local bad_lines
+        bad_lines=$(grep -nE "# (duplicate|original)$" "$out_dir/rmlint.sh" 2>/dev/null \
+                    | grep -vE "^[0-9]+:(original_cmd|cp_hardlink) " || true)
+        if [[ -n "$bad_lines" ]]; then
+            echo -e "${RED}rmlint.sh contains unexpected action lines — refusing to run${NC}" >&2
+            echo -e "${DIM}${bad_lines}${NC}" >&2
+            rm -rf "$out_dir"
+            return 1
+        fi
+    fi
+
+    if [[ ! -f "$out_dir/rmlint.sh" ]]; then
+        echo -e "${DIM}rmlint produced no script — no duplicates after filtering.${NC}"
+        rm -rf "$out_dir"
+        return 0
+    fi
+
+    # Authoritative size from filtered JSON's footer.
+    local saved_bytes
+    saved_bytes=$(python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+for entry in reversed(data):
+    if isinstance(entry, dict) and "total_lint_size" in entry:
+        print(entry["total_lint_size"]); break
+' "$out_dir/rmlint-filtered.json" 2>/dev/null)
+    : "${saved_bytes:=0}"
+
+    if (( saved_bytes <= 0 )); then
+        echo -e "${DIM}no duplicates remain after filtering.${NC}"
+        rm -rf "$out_dir"
+        return 0
+    fi
+    local saved_human
+    saved_human=$(human_size "$saved_bytes")
+
+    case "$mode" in
+        preview)
+            echo ""
+            echo -e "${CYAN}preview: would dedupe up to ${saved_human}${NC}"
+            echo -e "  ${DIM}rerun without --preview to act, or with --script to save the rmlint.sh${NC}"
+            rm -rf "$out_dir"
+            return 0
+            ;;
+        script)
+            local dest="${PWD}/rmlint.sh"
+            cp "$out_dir/rmlint.sh" "$dest"
+            chmod +x "$dest"
+            rm -rf "$out_dir"
+            echo ""
+            echo -e "${GREEN}Wrote review script:${NC} ${BOLD}$dest${NC}  (~${saved_human})"
+            echo -e "  ${DIM}Script is configured to HARDLINK duplicates (not delete).${NC}"
+            echo -e "  ${DIM}\$ less rmlint.sh      # review${NC}"
+            echo -e "  ${DIM}\$ ./rmlint.sh -n      # dry-run${NC}"
+            echo -e "  ${DIM}\$ ./rmlint.sh         # execute (prompts before running)${NC}"
+            return 0
+            ;;
+        prompt)
+            echo ""
+            echo -e "${BOLD}Found duplicates worth up to ${YELLOW}${saved_human}${NC}${BOLD}.${NC}"
+            echo -e "  ${DIM}Action: hardlink duplicates. Files still exist by name but share${NC}"
+            echo -e "  ${DIM}disk blocks. Safe for read-only data; risky for files that get${NC}"
+            echo -e "  ${DIM}in-place writes (rare — most tools write atomically via rename).${NC}"
+            if ! confirm "  Hardlink duplicates now?"; then
+                local dest="${PWD}/rmlint.sh"
+                cp "$out_dir/rmlint.sh" "$dest"
+                chmod +x "$dest"
+                rm -rf "$out_dir"
+                echo -e "  ${DIM}skipped. Saved script for later: ${dest}${NC}"
+                return 0
+            fi
+
+            # Measure precisely: du -sB1 counts allocated blocks per inode.
+            # Hardlinks share inodes, so post-dedup du drops by exactly the
+            # blocks the duplicates used to consume — no noise from other
+            # filesystem activity.
+            # -x stays on the same filesystem as rmlint (--no-crossdev).
+            local du_before du_after
+            du_before=$(du -sxB1 "$target" 2>/dev/null | cut -f1)
+            : "${du_before:=0}"
+
+            chmod +x "$out_dir/rmlint.sh"
+            # -d  : skip rmlint.sh's own "are you sure" prompt (we already did)
+            # -p  : paranoid re-check — re-compare each pair byte-by-byte
+            #       before the `rm + ln`. Catches files that changed between
+            #       scan time and execute time. Costs an extra read pass; for
+            #       safety vs speed at this stage, safety wins.
+            ( cd "$out_dir" && ./rmlint.sh -d -p ) || rc=$?
+
+            du_after=$(du -sxB1 "$target" 2>/dev/null | cut -f1)
+            : "${du_after:=0}"
+            local freed=$((du_before - du_after))
+            if (( freed > 0 )); then
+                echo -e "  ${GREEN}freed $(human_size "$freed") in $target${NC}  ${DIM}(rmlint estimated ${saved_human})${NC}"
+            elif (( freed < 0 )); then
+                echo -e "  ${YELLOW}target grew by $(human_size "$((-freed))") during dedup — concurrent writes?${NC}"
+            else
+                echo -e "  ${DIM}no bytes freed — duplicates may already share blocks (reflinks/existing hardlinks), or all candidates were skipped.${NC}"
+            fi
+            rm -rf "$out_dir"
+            return $rc
+            ;;
+    esac
 }
 
 show_help() {
@@ -929,6 +1849,7 @@ USAGE:
   cleanup --clean             Execute cleanup with per-category prompts
   cleanup --clean --yes       Execute without prompts (CI / automation)
   cleanup --refresh           Re-scan and rebuild cache (prints output)
+  cleanup --dedupe PATH       Scan PATH for duplicates; prompt to hardlink
   cleanup --quiet             Single '!' if action is warranted (prompt use)
   cleanup --help              This message
 
@@ -936,13 +1857,22 @@ CLEAN FLAGS:
   --yes, -y                 Skip every per-category prompt
   --dry-run                 Same as --preview when combined with --clean
   --preview                 Dry-run regardless of other flags
-  --include-tier-2          Also run 'docker image prune -af' (all unused images)
+  --include-tier-2          Also run tier-2 actions: unused docker images,
+                            Rust target/ dirs, stale Python venvs
   --include-tier-3          Also run 'docker volume prune'    (DESTRUCTIVE)
   --skip-CATEGORY           Exclude a category (repeatable)
   --only-CATEGORY           Restrict to listed categories (repeatable)
 
+DEDUPE FLAGS:
+  --include-builds          Don't exclude build/cache dirs from scan
+                            (risky for code dirs; safe for media/photos)
+  --preview, --dry-run      Scan only; print saved-bytes estimate and exit
+  --script                  Don't prompt; write ./rmlint.sh for offline review
+
 CATEGORIES:
   node_modules        Stale project node_modules (parent inactive >180d)
+  next_cache          .next/cache/ dirs under ~/code  (tier 1, safe)
+  pnpm_store          pnpm content-addressed store    (via 'pnpm store prune')
   pip_cache           ~/.cache/pip
   uv_cache            ~/.cache/uv  (via 'uv cache clean')
   npm_cache           ~/.npm       (via 'npm cache clean --force')
@@ -950,17 +1880,31 @@ CATEGORIES:
   yarn_cache          ~/.yarn/cache
   thumbnails          ~/.cache/thumbnails
   hf_cache            ~/.cache/huggingface  (prefers huggingface-cli delete-cache)
+  claude_cli          ~/.cache/claude-cli-nodejs
+  go_build            ~/.cache/go-build     (via 'go clean -cache')
+  drkonqi             ~/.cache/drkonqi      (KDE crash dumps)
+  wrangler            ~/.cache/.wrangler    (Cloudflare CLI cache)
+  puppeteer           ~/.cache/puppeteer    (keeps newest Chrome version)
   docker_containers   tier 1, safe         (docker container prune -f)
   docker_builder      tier 1, safe         (docker builder prune -af)
   docker_dangling     tier 1, safe         (docker image prune -f)
   docker_images       tier 2, opt-in       (docker image prune -af)
   docker_volumes      tier 3, destructive  (docker volume prune -f)
+  rust_target         tier 2, opt-in       (rm target/ dirs; rebuild expensive)
+  python_venvs        tier 2, opt-in       (stale .venv; parent inactive >90d)
 
 EXAMPLES:
   cleanup --preview
   cleanup --clean --only-pip_cache --only-npm_cache
   cleanup --clean --skip-node_modules
   cleanup --clean --yes --include-tier-2
+  cleanup --dedupe ~/Pictures
+  cleanup --dedupe ~/.cache/huggingface
+
+OPTIONAL STRUCTURAL FIX:
+  To avoid duplicate Rust builds across projects, you can add this to your
+  shell rc (NOT enabled by default — some workflows assume in-tree target/):
+    export CARGO_TARGET_DIR=\$HOME/.cargo-target
 EOF
 }
 
@@ -1004,13 +1948,18 @@ main() {
             refresh_cache
             ;;
         --quiet|-q)
-            ensure_cache false
+            # Pure reader — never scans. If cache is missing or stale, stay silent.
+            cache_is_readable || exit 0
             local disk_pct total
             disk_pct=$(sed -n '2p' "$CACHE_FILE")
             total=$(sed -n '3p' "$CACHE_FILE")
             if (( disk_pct >= 80 || total > 5368709120 )); then
                 echo "!"
             fi
+            ;;
+        --dedupe)
+            shift
+            do_dedupe "$@"
             ;;
         "")
             show_suggestions
