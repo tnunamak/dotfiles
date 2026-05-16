@@ -156,7 +156,9 @@ python3 -c "import json,base64;d=json.load(open('/tmp/result.json'));open('/tmp/
 For game texture tiles, use `model: "sdxl-seamless-tile"` and put workflow
 knobs under `extensions.com.vividfish.workflow`. Useful controls are `steps`,
 `guidance`, `seed`, `negative_prompt`, `sampler`, `scheduler`, and
-`seam_blending`. `size` remains the OpenAI top-level field.
+`seam_blending`. `size` remains the OpenAI top-level field. `seam_blending`
+must be in `0..0.5`; higher values are not supported by the installed
+WAS/img2texture backend.
 
 ```bash
 curl -s -m 180 -X POST https://openai.vivid.fish/v1/images/generations \
