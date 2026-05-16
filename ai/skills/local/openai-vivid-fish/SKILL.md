@@ -151,7 +151,7 @@ python3 -c "import json,base64;d=json.load(open('/tmp/result.json'));open('/tmp/
 
 `n` (1-10) is honored: the proxy adaptively batches into ComfyUI rounds based on free VRAM, returning all `n` distinct images. If even a single image won't fit in free VRAM, the response is HTTP 503 with `Retry-After: 30` — the proxy never silently truncates.
 
-`response_format: "url"` returns hostname-aware, HMAC-signed URLs that resolve to `GET /v1/images/{id}/content`. URLs are valid for ~1 hour (configurable via `images.signed_url_ttl` in `proxy_config.yml`) and require the same bearer token as everything else. Cached image bytes evict after 24 h (`images.cache_ttl`).
+`response_format: "url"` returns hostname-aware, HMAC-signed URLs that resolve to `GET /v1/images/{id}/content`. URLs are valid for ~1 hour (configurable via `images.signed_url_ttl` in `proxy_config.yml`) and require the same bearer token as everything else. Cached image bytes evict after 24 h (`images.cache_ttl`). Every image result also includes gateway-native `asset_id`, `asset_url`, and `media_type`; use `asset_id` for later gateway-aware calls made by the same API key and `asset_url` for signed `/v1/assets/{asset_id}/content` fetches.
 
 For game texture tiles, use `model: "sdxl-seamless-tile"` and put workflow
 knobs under `extensions.com.vividfish.workflow`. Useful controls are `steps`,
@@ -189,6 +189,8 @@ Response headers exposed for observability:
 - `X-Image-Rounds`: how many ComfyUI submissions backed this request.
 - `X-Image-Returned`: how many images are in `data[]`.
 - `X-Proxy-Warning` (when present): non-fatal warnings (e.g. partial result).
+
+Chaining: video `input_reference` accepts prior image handles as `{"asset_id":"img_<sha256>"}` or `asset:img_<sha256>` when the same API key minted the asset. Asset-valued workflow controls such as future `control_image` can also use `{"asset_id":"img_<sha256>"}` when discovery shows the selected workflow supports that input. For image variants, use top-level `n`; for repeatability, use manifest-backed `extensions.com.vividfish.workflow.seed` only when discovery lists `seed`. For video variants, repeat calls with different top-level `seed`.
 
 Prompting tips: specificity beats description. Use `ONLY`, `exactly`, `do not change X`. Vague prompts cause complete regeneration.
 
@@ -240,6 +242,28 @@ Timing: ~2 min per call (per image-gen ref). Set generous client timeouts.
 
 Errors return JSON `{ "error": { "message": ..., "type": ..., "param": ..., "code": ... } }` with status 400/502/503.
 
+### Audio generation
+
+`POST /v1/audio/generate` is a gateway-native ComfyUI audio/music route. It returns audio bytes directly.
+
+ACE-Step music workflows accept top-level `tags` and `lyrics`:
+
+```bash
+curl -s -m 600 -X POST https://openai.vivid.fish/v1/audio/generate \
+  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ace-step-1.5-xl-turbo",
+    "tags": "dream pop, warm piano, soft drums",
+    "lyrics": "first line of the song\nsecond line of the song",
+    "duration": 20,
+    "seed": 1234
+  }' \
+  -o /tmp/music.wav
+```
+
+For ACE-Step, `prompt` remains accepted and maps to the workflow's `tags` input when `tags` is absent. If both are present, `tags` wins. TangoFlux uses `prompt` for SFX/ambient descriptions; top-level `lyrics` is ignored unless the selected workflow declares a lyrics binding. TangoFlux workflow controls such as `steps`, `guidance`, and `batch_size` stay under `extensions.com.vividfish.workflow`; keep `duration`, `seed`, `tags`, and `lyrics` top-level.
+
 ### Video generation
 
 Sora-2-shaped async API for local LTX-Video 2.3 generation via ComfyUI. Three endpoints work as a submit-poll-fetch flow. **Output mp4s and PNG images embed the full UI-format workflow in metadata, so dragging an output file into ComfyUI's web frontend rebuilds the editable graph (drag-drop loads nodes/links/groups).**
@@ -283,7 +307,7 @@ Sora-2-shaped async API for local LTX-Video 2.3 generation via ComfyUI. Three en
 | Long-form (>8 s, up to 50 s) | `ltx-2.3-long` | 30 s @ 768x416: ~4:41 warm; 30 s @ 1280x720: ~15:01 warm | yes (model-generated) | yes (anchors first chunk's frame 0) |
 | Photoreal, no audio | `wan-2.2` | ~3-6 min | no | yes (native `Wan22ImageToVideoLatent.start_image`; no strength knob) |
 
-Every video alias accepts `input_reference` for I2V. Pass an absolute path, https URL, or data URI. Omit it for T2V. See the I2V example below.
+Every video alias accepts `input_reference` for I2V. Pass an absolute path, https URL, data URI, or prior image `asset_id` minted by the same API key. Omit it for T2V. See the I2V example below.
 
 **Per-model prompting notes**
 
@@ -294,7 +318,7 @@ Every video alias accepts `input_reference` for I2V. Pass an absolute path, http
 - `seconds` (optional, default 5). Range per alias: 1-8 for `ltx-2.3`/`ltx-2.3-distilled-fast`/`ltx-2.3-detail`, 1-50 for `ltx-2.3-long`, fixed 3 for `wan-2.2` (out-of-range → 400). The proxy honors the requested duration exactly. For LTX, output durations land at `(seconds × 24 + 1) / 24` due to the 8N+1 LTX latent-stride frame count (e.g. requested 3 → 3.04 s, requested 8 → 8.04 s); this ~0.04 s codec rounding is inherent to the model and does not surface a header. If a request requires rounding outside that natural stride for any other reason, the response carries `X-Duration-Adjusted: requested=<r> actual=<a> reason=<reason>` so callers can react. For `ltx-2.3-long`, the proxy solves `(LENGTH, LOOPS)` against the RuneXX duration formula to hit any target ≥ 1 s — short requests use `LOOPS=0` with `LENGTH=seconds`; longer requests fix `LENGTH=10` and tune `LOOPS` to land on the target.
 - `seed` (optional int). Omitted -> random.
 - `negative_prompt` (optional string). Falls back to a sensible default in the workflow.
-- `input_reference` (optional): I2V reference image. Accepts an absolute file path, an `https://` URL, a `data:image/...;base64,...` URI, or a raw base64 string. When set, the workflow runs in I2V mode: frame 0 of the output is anchored to the reference image; subsequent frames are denoised by the prompt. Every video alias supports I2V via the same workflow (one workflow per alias handles both T2V and I2V). LTX aliases use `LTXVImgToVideoInplaceKJ` at strength 1.0 (T2V passthrough = strength 0.0); Wan 2.2 wires `start_image` into `Wan22ImageToVideoLatent` natively. The reference image is auto-resized by the model to the requested `size` (no client-side resize required).
+- `input_reference` (optional): I2V reference image. Accepts an absolute file path, an `https://` URL, a `data:image/...;base64,...` URI, a raw base64 string, `{"asset_id":"img_<sha256>"}`, or `asset:img_<sha256>` from the same API key. When set, the workflow runs in I2V mode: frame 0 of the output is anchored to the reference image; subsequent frames are denoised by the prompt. Every video alias supports I2V via the same workflow (one workflow per alias handles both T2V and I2V). LTX aliases use `LTXVImgToVideoInplaceKJ` at strength 1.0 (T2V passthrough = strength 0.0); Wan 2.2 wires `start_image` into `Wan22ImageToVideoLatent` natively. The reference image is auto-resized by the model to the requested `size` (no client-side resize required).
 - `image_strength` (optional float, 0.0-1.0, default 1.0). Only meaningful for LTX aliases when `input_reference` is set. 1.0 pins frame 0 hard to the reference; lower values let the sampler drift further from the reference. Wan 2.2 has no strength knob — passing this value is a no-op on `wan-2.2`.
 
 **Response shape (POST):**
@@ -347,7 +371,7 @@ curl -s -X POST https://openai.vivid.fish/v1/videos \
   }'
 ```
 
-`input_reference` also accepts `https://` URLs and `data:image/png;base64,...` URIs. The proxy uploads the image to ComfyUI's input cache, sets the workflow's LoadImage node to the uploaded filename, and (on LTX) flips `image_strength` to `1.0`. Omit `input_reference` to run T2V — the strength knob stays at `0.0` so the placeholder image is a passthrough no-op.
+`input_reference` also accepts `https://` URLs, `data:image/png;base64,...` URIs, and prior image asset handles from the same API key (`{"asset_id":"img_<sha256>"}` or `asset:img_<sha256>`). The proxy uploads the image to ComfyUI's input cache, sets the workflow's LoadImage node to the uploaded filename, and (on LTX) flips `image_strength` to `1.0`. Omit `input_reference` to run T2V — the strength knob stays at `0.0` so the placeholder image is a passthrough no-op.
 
 **Full submit-poll-fetch curl example:**
 
