@@ -135,7 +135,9 @@ Useful for sanity-checking what's hot before sending a large request, and for po
 
 ### Image generation (text-to-image)
 
-Default model: `flux2-klein-4b`. Texture model: `sdxl-seamless-tile`.
+Default model: `flux2-klein-4b`. Recommended texture model:
+`flux2-klein-4b-seamless-tile`; direct SDXL postprocess model:
+`sdxl-seamless-tile`.
 Response: `data[].b64_json` (base64 PNG) or `data[].url` (signed URL)
 depending on `response_format`.
 
@@ -153,41 +155,47 @@ python3 -c "import json,base64;d=json.load(open('/tmp/result.json'));open('/tmp/
 
 `response_format: "url"` returns hostname-aware, HMAC-signed URLs that resolve to `GET /v1/images/{id}/content`. URLs are valid for ~1 hour (configurable via `images.signed_url_ttl` in `proxy_config.yml`) and require the same bearer token as everything else. Cached image bytes evict after 24 h (`images.cache_ttl`). Every image result also includes gateway-native `asset_id`, `asset_url`, and `media_type`; use `asset_id` for later gateway-aware calls made by the same API key and `asset_url` for signed `/v1/assets/{asset_id}/content` fetches.
 
-For game texture tiles, use `model: "sdxl-seamless-tile"` and put workflow
-knobs under `extensions.com.vividfish.workflow`. Useful controls are `steps`,
-`guidance`, `seed`, `negative_prompt`, `sampler`, `scheduler`, and
-`seam_blending`. `size` remains the OpenAI top-level field. `seam_blending`
-must be in `0..0.5`; higher values are not supported by the installed
-WAS/img2texture backend.
+For game texture tiles, prefer `model: "flux2-klein-4b-seamless-tile"` and put
+workflow knobs under `extensions.com.vividfish.workflow`. It is gateway
+composed: Flux2 txt2img, 50%/50% circular offset, seam-cross mask, Flux2
+inpaint repair, then offset back. Useful controls are base `steps`, `guidance`,
+`seed`, plus `seam_mask_width`, `seam_mask_feather`, `seam_denoise`,
+`seam_steps`, `seam_guidance`, and optional `seam_prompt`.
 
 ```bash
 curl -s -m 180 -X POST https://openai.vivid.fish/v1/images/generations \
   -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sdxl-seamless-tile",
+    "model": "flux2-klein-4b-seamless-tile",
     "prompt": "hand-painted underwater basalt floor texture, game asset, tileable",
     "size": "1024x1024",
     "n": 1,
     "response_format": "b64_json",
     "extensions": {
       "com.vividfish.workflow": {
-        "steps": 28,
-        "guidance": 7.0,
+        "steps": 5,
+        "guidance": 3.5,
         "seed": 4242,
-        "negative_prompt": "text, logo, watermark, frame, border, visible seam",
-        "sampler": "dpmpp_2m",
-        "scheduler": "karras",
-        "seam_blending": 0.4
+        "seam_mask_width": 96,
+        "seam_mask_feather": 32,
+        "seam_denoise": 0.58,
+        "seam_steps": 8
       }
     }
   }' \
   -o /tmp/tile.json
 ```
 
+`sdxl-seamless-tile` remains available as a direct SDXL workflow with
+postprocessing. Its controls are `steps`, `guidance`, `seed`,
+`negative_prompt`, `sampler`, `scheduler`, and `seam_blending`; `seam_blending`
+must be in `0..0.5`. It is not the full circular SDXL stack.
+
 Response headers exposed for observability:
 - `X-Image-Rounds`: how many ComfyUI submissions backed this request.
 - `X-Image-Returned`: how many images are in `data[]`.
+- `X-Image-Seamless-Tile-Strategy` (tile route): currently `offset-inpaint`.
 - `X-Proxy-Warning` (when present): non-fatal warnings (e.g. partial result).
 
 Chaining: video `input_reference` accepts prior image handles as `{"asset_id":"img_<sha256>"}` or `asset:img_<sha256>` when the same API key minted the asset. Asset-valued workflow controls such as future `control_image` can also use `{"asset_id":"img_<sha256>"}` when discovery shows the selected workflow supports that input. For image variants, use top-level `n`; for repeatability, use manifest-backed `extensions.com.vividfish.workflow.seed` only when discovery lists `seed`. For video variants, repeat calls with different top-level `seed`.
