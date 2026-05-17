@@ -38,6 +38,8 @@ When working inside the daisy project, prefer the project helpers in `~/applicat
 | `POST /v1/audio/speech` | Voxtral TTS | OpenAI-compatible TTS, voice-mapped | ~2-10s |
 | `POST /v1/audio/transcriptions` | Parakeet STT | Multipart audio → transcript | ~1-5s |
 | `POST /v1/images/generations` | ComfyUI | Text-to-image (`flux2-klein-4b`) | ~30s |
+| `POST /gateway/v1/media/jobs` | proxy + ComfyUI | Durable async media jobs; for images send `{"intent":"image.generate","request":{...}}` | <1s submit |
+| `GET /gateway/v1/media/jobs/{id}`, `GET /gateway/v1/media/jobs/{id}/content` | proxy | Poll/fetch durable image job outputs | <500ms |
 | `POST /v1/images/edits` | ComfyUI | Image edit; multipart with input image | ~2min |
 | `POST /v1/videos` | ComfyUI | Submit video job (Sora-shaped, async) | <1s submit |
 | `GET /v1/videos/{id}` | ComfyUI | Poll job status (`queued` -> `running` -> `succeeded`/`failed`) | <500ms |
@@ -152,6 +154,21 @@ python3 -c "import json,base64;d=json.load(open('/tmp/result.json'));open('/tmp/
 ```
 
 `n` (1-10) is honored: the proxy adaptively batches into ComfyUI rounds based on free VRAM, returning all `n` distinct images. If even a single image won't fit in free VRAM, the response is HTTP 503 with `Retry-After: 30` — the proxy never silently truncates.
+
+For unattended batches or clients that cannot keep a long HTTP request open,
+prefer the durable job surface:
+
+```bash
+curl -s -X POST https://openai.vivid.fish/gateway/v1/media/jobs \
+  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: image-batch-001" \
+  -d '{"intent":"image.generate","request":{"model":"flux2-klein-4b","prompt":"a tabby cat under neon","n":1,"size":"1024x1024"}}'
+```
+
+Poll `GET /gateway/v1/media/jobs/{job_id}` and fetch
+`GET /gateway/v1/media/jobs/{job_id}/content` when `status` is `succeeded`.
+Durable image jobs always return signed URL-backed assets, not base64 blobs.
 
 `response_format: "url"` returns hostname-aware, HMAC-signed URLs that resolve to `GET /v1/images/{id}/content`. URLs are valid for ~1 hour (configurable via `images.signed_url_ttl` in `proxy_config.yml`) and require the same bearer token as everything else. Cached image bytes evict after 24 h (`images.cache_ttl`). Every image result also includes gateway-native `asset_id`, `asset_url`, and `media_type`; use `asset_id` for later gateway-aware calls made by the same API key and `asset_url` for signed `/v1/assets/{asset_id}/content` fetches.
 
@@ -270,7 +287,18 @@ curl -s -m 600 -X POST https://openai.vivid.fish/v1/audio/generate \
   -o /tmp/music.wav
 ```
 
-For ACE-Step, `prompt` remains accepted and maps to the workflow's `tags` input when `tags` is absent. If both are present, `tags` wins. TangoFlux uses `prompt` for SFX/ambient descriptions; top-level `lyrics` is ignored unless the selected workflow declares a lyrics binding. TangoFlux workflow controls such as `steps`, `guidance`, and `batch_size` stay under `extensions.com.vividfish.workflow`; keep `duration`, `seed`, `tags`, and `lyrics` top-level.
+For ACE-Step, `prompt` remains accepted and maps to the workflow's `tags` input when `tags` is absent. If both are present, `tags` wins. TangoFlux uses `prompt` for SFX/ambient descriptions; top-level `lyrics` is ignored unless the selected workflow declares a lyrics binding. Workflow controls stay under `extensions.com.vividfish.workflow`; keep `duration`, `seed`, `tags`, and `lyrics` top-level. ACE-Step exposes `bpm`, `cfg`, `cfg_scale`, `denoise`, `keyscale`, `language`, `min_p`, `sampler`, `scheduler`, `steps`, `temperature`, `timesignature`, `top_k`, and `top_p`. TangoFlux exposes `steps`, `guidance`, and `batch_size`. Fetch `/gateway/v1/extensions` for the live list.
+
+For lyric clarity, especially rap, keep `tags` and `lyrics` distinct:
+`tags` should describe genre, instruments, tempo, and vocal treatment; `lyrics`
+should include structure tags such as `[verse]`, `[chorus]`, or
+`[verse - rap]`. Avoid cramming four lyric lines into a 5-second clip. Use
+8-12 seconds for short intelligibility samples and 20+ seconds for a verse,
+with short lines and clean-vocal tags such as `dry clear male rap vocal`,
+`clean enunciation`, `moderate tempo`, `no mumble rap`, and `no heavy vocal
+effects`. If working inside Daisy, use the `music-video` skill's
+`generate-audio-samples-via-vivid` helper and local STT transcription before
+claiming a vocal sample is clear.
 
 ### Video generation
 
