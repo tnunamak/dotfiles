@@ -1,11 +1,11 @@
 ---
-name: openai-vivid-fish
-description: Use the local openai.vivid.fish proxy for OpenAI-compatible chat, embeddings, image generation/editing, TTS, STT, audio generation, video jobs, model/voice listing, gateway-native capabilities/receipts, Anthropic Messages, Ollama-compatible chat/generate, and Telegram media replies. Triggers on "openai.vivid.fish", "vivid fish", local LLM/TTS/STT, image gen/edit, audio/video generation, gateway discovery, receipts, voice notes, Telegram audio, or any request mentioning the proxy at openai.vivid.fish or its helpers in ~/applications/daisy/scripts.
+name: ai-gateway-vivid-fish
+description: Use Vivid Fish AI Gateway (the local OpenAI-compatible AI gateway, formerly openai-proxy/openai.vivid.fish) for chat, embeddings, image generation/editing, TTS, STT, audio generation, video jobs, model/voice listing, gateway-native capabilities/receipts, Anthropic Messages, Ollama-compatible chat/generate, and Telegram media replies. Triggers on "Vivid Fish AI Gateway", "AI Gateway", "ai.vivid.fish", "openai.vivid.fish", "vivid fish", local LLM/TTS/STT, image gen/edit, audio/video generation, gateway discovery, receipts, voice notes, Telegram audio, or helpers in ~/applications/daisy/scripts.
 ---
 
-# openai.vivid.fish
+# Vivid Fish AI Gateway
 
-`https://openai.vivid.fish/v1` is a self-hosted OpenAI-compatible gateway, served externally via Traefik (192.168.1.4 → host:5000). It is implemented by `~/applications/openai-proxy/proxy.py` and routes to local backends:
+`https://ai.vivid.fish/v1` is the canonical public base URL for the self-hosted AI gateway, served externally via Traefik (192.168.1.4 -> host:5000). The older `https://openai.vivid.fish/v1` host remains a compatibility alias for existing OpenAI-shaped app configs. The gateway is implemented by `~/applications/openai-proxy/proxy.py` and routes to local backends:
 
 - **TabbyAPI** (Qwen3-VL) — chat/completions/vision (port 5050)
 - **GGUF backend** — koboldcpp or llama-turbo on port 5051 (mutually exclusive via systemd `Conflicts=`; swap with `llm-switch {kobold|turbo|tabby}`)
@@ -15,18 +15,30 @@ description: Use the local openai.vivid.fish proxy for OpenAI-compatible chat, e
 
 When working inside the daisy project, prefer the project helpers in `~/applications/daisy/scripts/`. For other agents/contexts, hit the HTTP API directly with curl using the examples below.
 
+Use unauthenticated discovery before assuming a backend:
+
+```bash
+curl -fsS "$BASE/health"
+curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-proxy"
+```
+
 ## Auth
 
-- API key env var: `VIVID_OPENAI_API_KEY` (Daisy reads from `~/applications/daisy/.env`).
-- Base URL env var: `VIVID_OPENAI_BASE_URL` (`https://openai.vivid.fish/v1`).
-- Pass as `Authorization: Bearer $VIVID_OPENAI_API_KEY`.
-- If the env var is missing, source `~/applications/daisy/.env` or fail loudly with the missing-key message — do **not** print the key value or guess.
+- Runtime App API key env var: `AI_GATEWAY_API_KEY` or legacy `VIVID_OPENAI_API_KEY` / `OPENAI_PROXY_API_KEY` (Daisy reads from `~/applications/daisy/.env`).
+- Base URL env var: `AI_GATEWAY_BASE_URL` or legacy `VIVID_OPENAI_BASE_URL`; prefer `https://ai.vivid.fish/v1` for new setup.
+- Pass App keys as `Authorization: Bearer $AI_GATEWAY_API_KEY` (or the legacy env var already in use). App keys start with `opk_`.
+- Admin/control-plane keys start with `oak_` and are only for `/admin/api/*`; never put an `oak_...` key into an OpenAI-compatible app.
+- If the env var is missing, source the relevant project `.env` or fail loudly with the missing-key message — do **not** print the key value or guess.
 
 ## Endpoint surface
 
 | Method + Path | Backend | Purpose | Typical timing |
 |---|---|---|---|
 | `GET /health` | proxy | Liveness; public, no auth | <100ms |
+| `GET /.well-known/ai-gateway` | proxy | Public gateway metadata and discovery links | <100ms |
+| `GET /admin` | proxy | Admin dashboard; requires `oak_...` bearer key or signed OIDC session | <100ms |
+| `GET /admin/login` | proxy | OIDC browser login when configured; returns 501 until OIDC config exists | <100ms |
+| `POST /admin/api/apps`, `POST /admin/api/apps/{id}/keys` | proxy | Admin control plane for registering Apps and minting one-time `opk_...` App keys | <100ms |
 | `GET /v1/models` | active LLM backend + proxy catalog | List configured roles, optional aliases, and currently loaded GGUF | <1s |
 | `GET /v1/voices`, `GET /v1/audio/voices` | proxy (static) | List TTS voices | <100ms |
 | `POST /v1/chat/completions` | tabby (default) or kobold (auto-routed by `model`) | Chat completion (vision-capable on tabby) | varies |
@@ -47,13 +59,13 @@ When working inside the daisy project, prefer the project helpers in `~/applicat
 | `GET /v1/images/{id}/content` | proxy (cache) | Fetch a cached image referenced by a `response_format: "url"` result. Auth-gated; URL is HMAC-signed with a TTL. | <100ms |
 | `* /<any other>` | tabby | Catch-all proxy to TabbyAPI (admin/model load endpoints, etc.). If tabby is unavailable, the proxy returns 503 with `Retry-After` rather than silently routing to kobold (which has a different surface). | varies |
 
-Everything except `/health` requires the bearer token. There is **no auth tier system** — any valid proxy key passes for every endpoint, including `/v1/models` and `/v1/model/list`.
+Public routes are `/health` and `/.well-known/*`. Runtime routes (`/v1`, `/api`, `/gateway/v1`) require an App bearer token. Admin routes (`/admin`, `/admin/api/*`) require an admin bearer token or a signed OIDC dashboard session. App keys cannot administer the gateway.
 
 ### Chat completions
 
 ```bash
-curl -s https://openai.vivid.fish/v1/chat/completions \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s https://ai.vivid.fish/v1/chat/completions \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -81,8 +93,8 @@ curl -s https://openai.vivid.fish/v1/chat/completions \
 The newer (spring 2025) OpenAI surface. Modern SDKs (`@ai-sdk/openai` v6+ in particular) default to it. The proxy implements it as a translation layer over `/v1/chat/completions`, so every routing decision (model resolution, backend selection, vision detection) flows through the same code path as chat completions.
 
 ```bash
-curl -s https://openai.vivid.fish/v1/responses \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s https://ai.vivid.fish/v1/responses \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -96,8 +108,8 @@ curl -s https://openai.vivid.fish/v1/responses \
 
 ```bash
 # Second turn references first by id; the proxy reconstructs context server-side
-curl -s https://openai.vivid.fish/v1/responses \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" -H "Content-Type: application/json" \
+curl -s https://ai.vivid.fish/v1/responses \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" -H "Content-Type: application/json" \
   -d '{"model":"default","previous_response_id":"resp_…","input":"What did I just ask?","reasoning":{"effort":"minimal"}}'
 ```
 
@@ -120,8 +132,8 @@ Send `"store": false` to skip persistence (no `previous_response_id` chaining po
 ### Models list
 
 ```bash
-curl -s https://openai.vivid.fish/v1/models \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY"
+curl -s https://ai.vivid.fish/v1/models \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY"
 ```
 
 Returns a unified catalog:
@@ -144,8 +156,8 @@ Response: `data[].b64_json` (base64 PNG) or `data[].url` (signed URL)
 depending on `response_format`.
 
 ```bash
-curl -s -m 120 -X POST https://openai.vivid.fish/v1/images/generations \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -m 120 -X POST https://ai.vivid.fish/v1/images/generations \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"flux2-klein-4b","prompt":"a tabby cat under neon","n":1,"size":"1024x1024","response_format":"b64_json"}' \
   -o /tmp/result.json
@@ -159,8 +171,8 @@ For unattended batches or clients that cannot keep a long HTTP request open,
 prefer the durable job surface:
 
 ```bash
-curl -s -X POST https://openai.vivid.fish/gateway/v1/media/jobs \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -X POST https://ai.vivid.fish/gateway/v1/media/jobs \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: image-batch-001" \
   -d '{"intent":"image.generate","request":{"model":"flux2-klein-4b","prompt":"a tabby cat under neon","n":1,"size":"1024x1024"}}'
@@ -180,8 +192,8 @@ inpaint repair, then offset back. Useful controls are base `steps`, `guidance`,
 `seam_steps`, `seam_guidance`, and optional `seam_prompt`.
 
 ```bash
-curl -s -m 180 -X POST https://openai.vivid.fish/v1/images/generations \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -m 180 -X POST https://ai.vivid.fish/v1/images/generations \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "flux2-klein-4b-seamless-tile",
@@ -224,8 +236,8 @@ Prompting tips: specificity beats description. Use `ONLY`, `exactly`, `do not ch
 Edits an existing image. Requires both `image` and `prompt`. Model defaults to `flux2-klein-4b-edit`; if you pass `flux2-klein-4b` the proxy auto-appends `-edit`. Size is auto-detected from the image when omitted.
 
 ```bash
-curl -s -m 240 -X POST https://openai.vivid.fish/v1/images/edits \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -m 240 -X POST https://ai.vivid.fish/v1/images/edits \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -F "model=flux2-klein-4b-edit" \
   -F "prompt=replace the sky with aurora; do not change the foreground" \
   -F "image=@/path/to/input.png;type=image/png" \
@@ -250,8 +262,8 @@ Multipart fields:
 ControlNet/conditioning controls are only usable when discovery shows a real workflow manifest that exposes them. For multipart image edits, an asset-valued workflow control can reference an extra form field without making that field a public OpenAI parameter:
 
 ```bash
-curl -s -m 240 -X POST https://openai.vivid.fish/v1/images/edits \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -m 240 -X POST https://ai.vivid.fish/v1/images/edits \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -F "model=flux2-klein-4b-edit-controlnet" \
   -F "prompt=preserve the geometry, paint it as underwater rock" \
   -F "image=@/path/to/input.png;type=image/png" \
@@ -274,8 +286,8 @@ Errors return JSON `{ "error": { "message": ..., "type": ..., "param": ..., "cod
 ACE-Step music workflows accept top-level `tags` and `lyrics`:
 
 ```bash
-curl -s -m 600 -X POST https://openai.vivid.fish/v1/audio/generate \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -m 600 -X POST https://ai.vivid.fish/v1/audio/generate \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "ace-step-1.5-xl-turbo",
@@ -395,8 +407,8 @@ Once `status=succeeded`, fetch the MP4 from `/content`. On `status=failed`, the 
 **I2V usage example** (anchor frame 0 to a reference image, then animate from the prompt):
 
 ```bash
-curl -s -X POST https://openai.vivid.fish/v1/videos \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -X POST https://ai.vivid.fish/v1/videos \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "ltx-2.3",
@@ -413,8 +425,8 @@ curl -s -X POST https://openai.vivid.fish/v1/videos \
 
 ```bash
 # 1. Submit
-SUBMIT=$(curl -s -X POST https://openai.vivid.fish/v1/videos \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+SUBMIT=$(curl -s -X POST https://ai.vivid.fish/v1/videos \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"ltx-2.3-distilled","prompt":"A goldfish swimming in clear water","seconds":3,"size":"1280x720"}')
 
@@ -423,8 +435,8 @@ echo "video_id: $VIDEO_ID"
 
 # 2. Poll until terminal status
 while :; do
-  POLL=$(curl -s -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
-    "https://openai.vivid.fish/v1/videos/$VIDEO_ID")
+  POLL=$(curl -s -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+    "https://ai.vivid.fish/v1/videos/$VIDEO_ID")
   STATUS=$(echo "$POLL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')
   echo "status: $STATUS"
   case "$STATUS" in
@@ -434,8 +446,8 @@ while :; do
 done
 
 # 3. Fetch the mp4
-[ "$STATUS" = "succeeded" ] && curl -s -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
-  "https://openai.vivid.fish/v1/videos/$VIDEO_ID/content" -o /tmp/out.mp4 && file /tmp/out.mp4
+[ "$STATUS" = "succeeded" ] && curl -s -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  "https://ai.vivid.fish/v1/videos/$VIDEO_ID/content" -o /tmp/out.mp4 && file /tmp/out.mp4
 ```
 
 **Timing expectations (RTX 3090, 720p / 3-5 s):**
@@ -483,15 +495,15 @@ When Tim asks for a video over Telegram, run the submit-poll-fetch-send sequence
 
 ```bash
 # 1. Submit job
-SUBMIT=$(curl -fsS -X POST "$VIVID_OPENAI_BASE_URL/videos" \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+SUBMIT=$(curl -fsS -X POST "$AI_GATEWAY_BASE_URL/videos" \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"ltx-2.3-distilled","prompt":"<one-paragraph shooting-script prompt>","seconds":3,"size":"1280x720"}')
 ID=$(echo "$SUBMIT" | jq -r .id)
 
 # 2. Poll every 5-10s until terminal status
 while :; do
-  POLL=$(curl -fsS -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" "$VIVID_OPENAI_BASE_URL/videos/$ID")
+  POLL=$(curl -fsS -H "Authorization: Bearer $AI_GATEWAY_API_KEY" "$AI_GATEWAY_BASE_URL/videos/$ID")
   STATUS=$(echo "$POLL" | jq -r .status)
   case "$STATUS" in succeeded|failed|canceled) break ;; esac
   sleep 5
@@ -500,8 +512,8 @@ done
 
 # 3. Fetch mp4
 OUT=/tmp/daisy-video-${ID}.mp4
-curl -fsS -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
-  "$VIVID_OPENAI_BASE_URL/videos/$ID/content" -o "$OUT"
+curl -fsS -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  "$AI_GATEWAY_BASE_URL/videos/$ID/content" -o "$OUT"
 
 # 4. Send to Telegram
 /home/tnunamak/applications/daisy/scripts/send-telegram-video-via-vivid \
@@ -568,8 +580,8 @@ If you forget the quotes, the audio chain still runs — but the result will be 
 ### Text-to-speech
 
 ```bash
-curl -s -X POST https://openai.vivid.fish/v1/audio/speech \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -X POST https://ai.vivid.fish/v1/audio/speech \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"tts-1","input":"Hello world.","voice":"nova","response_format":"opus","speed":1.0}' \
   -o /tmp/out.opus
@@ -580,8 +592,8 @@ Body is forwarded to Voxtral after voice mapping. Unknown voices fall back to `n
 ### Speech-to-text
 
 ```bash
-curl -s -X POST https://openai.vivid.fish/v1/audio/transcriptions \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY" \
+curl -s -X POST https://ai.vivid.fish/v1/audio/transcriptions \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -F "file=@/path/to/audio.ogg" \
   -F "model=whisper-1" \
   -F "response_format=json"
@@ -592,8 +604,8 @@ Returns `{"text": "..."}`. The proxy forwards multipart untouched to Parakeet.
 ### Voices list
 
 ```bash
-curl -s https://openai.vivid.fish/v1/voices \
-  -H "Authorization: Bearer $VIVID_OPENAI_API_KEY"
+curl -s https://ai.vivid.fish/v1/voices \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY"
 ```
 
 The listing is the authoritative set of voices the speech endpoint accepts. Each entry includes `voice_id`, `name`, `language`, `gender`, `description`, and `mapped_to` (the underlying Voxtral voice). All `it_*`, `nl_*`, `pt_*`, `ar_*`, `hi_*` voices appear here.
@@ -601,7 +613,7 @@ The listing is the authoritative set of voices the speech endpoint accepts. Each
 ### Health
 
 ```bash
-curl -s https://openai.vivid.fish/health
+curl -s https://ai.vivid.fish/health
 ```
 
 Returns `{status, auth_enabled, proxy_keys_configured}`. No auth required.
@@ -654,7 +666,7 @@ No helper exists yet for `/v1/images/edits` — use the curl recipe above.
 
 ## Rules
 
-- **Never print** `VIVID_OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, or any other secret in output, logs, or error messages.
+- **Never print** `AI_GATEWAY_API_KEY`, `TELEGRAM_BOT_TOKEN`, or any other secret in output, logs, or error messages.
 - Prefer daisy helpers over raw curl when on daisy; otherwise use the curl recipes here.
 - Generated artifacts live under `~/applications/daisy/tmp/` unless the user specifies a path. For non-daisy contexts use `/tmp/` or the user-specified path.
 - If a helper or curl call fails, report the concise error + the helper/endpoint name. Do not retry blindly — check `GET /health` and `GET /v1/models` first.
