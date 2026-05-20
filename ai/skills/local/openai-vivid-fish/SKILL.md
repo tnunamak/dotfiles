@@ -1,6 +1,6 @@
 ---
 name: ai-gateway-vivid-fish
-description: Use Vivid Fish AI Gateway (the local OpenAI-compatible AI gateway, formerly openai-proxy/openai.vivid.fish) for chat, embeddings, image generation/editing, TTS, STT, audio generation, video jobs, model/voice listing, gateway-native capabilities/receipts, Anthropic Messages, Ollama-compatible chat/generate, and Telegram media replies. Triggers on "Vivid Fish AI Gateway", "AI Gateway", "ai.vivid.fish", "openai.vivid.fish", "vivid fish", local LLM/TTS/STT, image gen/edit, audio/video generation, gateway discovery, receipts, voice notes, Telegram audio, or helpers in ~/applications/daisy/scripts.
+description: Use Vivid Fish AI Gateway (the local OpenAI-compatible AI gateway, formerly openai-proxy/openai.vivid.fish) for chat, embeddings, image generation/editing, TTS, STT, audio generation, video jobs, model/voice listing, gateway-native capabilities/receipts, Anthropic Messages, Ollama-compatible chat/generate/model routes, and Telegram media replies. Triggers on "Vivid Fish AI Gateway", "AI Gateway", "ai.vivid.fish", "openai.vivid.fish", "vivid fish", local LLM/TTS/STT, image gen/edit, audio/video generation, gateway discovery, receipts, voice notes, Telegram audio, or helpers in ~/applications/daisy/scripts.
 ---
 
 # Vivid Fish AI Gateway
@@ -46,6 +46,10 @@ curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-
 | `POST /openai/v1/responses` | translates to chat/completions | OpenAI Responses API (spring 2025). Stateful conversations via `previous_response_id`, function tools, `text.format` (json_object/json_schema), streaming SSE. Hosted tools NOT supported. | varies |
 | `GET /openai/v1/responses/{id}` | proxy SQLite (`data/responses.db`) | Retrieve a stored response | <100ms |
 | `DELETE /openai/v1/responses/{id}` | proxy SQLite | Delete a stored response | <100ms |
+| `POST /anthropic/v1/messages` | chat pipeline | Anthropic Messages-compatible responses and SSE streaming; `/v1/messages` remains a convenience route | varies |
+| `GET /ollama/api/tags` | proxy catalog | Ollama-compatible model list; `/api/tags` remains a convenience route | <100ms |
+| `POST /ollama/api/chat`, `POST /ollama/api/generate` | chat pipeline | Ollama-compatible chat/generate with NDJSON streaming; `/api/chat` and `/api/generate` remain convenience routes | varies |
+| `POST /ollama/api/show`, `GET /ollama/api/ps`, `GET /ollama/api/version` | proxy catalog/status | Ollama-compatible read-only model metadata/status; mutating Ollama model routes return unsupported-operation | <100ms |
 | `POST /openai/v1/embeddings` | tabby | Embeddings | <2s |
 | `POST /openai/v1/audio/speech` | Voxtral TTS | OpenAI-compatible TTS, voice-mapped | ~2-10s |
 | `POST /openai/v1/audio/transcriptions` | Parakeet STT | Multipart audio → transcript | ~1-5s |
