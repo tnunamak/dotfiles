@@ -5,7 +5,7 @@ description: Use Vivid Fish AI Gateway (the local OpenAI-compatible AI gateway, 
 
 # Vivid Fish AI Gateway
 
-`https://ai.vivid.fish/v1` is the canonical public base URL for the self-hosted AI gateway, served externally via Traefik (192.168.1.4 -> host:5000). The older `https://openai.vivid.fish/v1` host remains a compatibility alias for existing OpenAI-shaped app configs. The gateway is implemented by `~/applications/openai-proxy/proxy.py` and routes to local backends:
+`https://ai.vivid.fish` is the canonical public host for the self-hosted AI gateway, served externally via Traefik (192.168.1.4 -> host:5000). New OpenAI-compatible setup should use `https://ai.vivid.fish/openai/v1`; `/v1` remains a convenience route for existing OpenAI-shaped app configs. The older `https://openai.vivid.fish` host remains a compatibility alias. The gateway is implemented by `~/applications/openai-proxy/proxy.py` and routes to local backends:
 
 - **TabbyAPI** (Qwen3-VL) — chat/completions/vision (port 5050)
 - **GGUF backend** — koboldcpp or llama-turbo on port 5051 (mutually exclusive via systemd `Conflicts=`; swap with `llm-switch {kobold|turbo|tabby}`)
@@ -25,7 +25,7 @@ curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-
 ## Auth
 
 - Runtime App API key env var: `AI_GATEWAY_API_KEY` or legacy `VIVID_OPENAI_API_KEY` / `OPENAI_PROXY_API_KEY` (Daisy reads from `~/applications/daisy/.env`).
-- Base URL env var: `AI_GATEWAY_BASE_URL` or legacy `VIVID_OPENAI_BASE_URL`; prefer `https://ai.vivid.fish/v1` for new setup.
+- Base URL env var: `AI_GATEWAY_BASE_URL` or legacy `VIVID_OPENAI_BASE_URL`; prefer `https://ai.vivid.fish/openai/v1` for new OpenAI-compatible setup.
 - Pass App keys as `Authorization: Bearer $AI_GATEWAY_API_KEY` (or the legacy env var already in use). App keys start with `opk_`.
 - Admin/control-plane keys start with `oak_` and are only for `/admin/api/*`; never put an `oak_...` key into an OpenAI-compatible app.
 - If the env var is missing, source the relevant project `.env` or fail loudly with the missing-key message — do **not** print the key value or guess.
@@ -39,32 +39,34 @@ curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-
 | `GET /admin` | proxy | Admin dashboard; requires `oak_...` bearer key or signed OIDC session | <100ms |
 | `GET /admin/login` | proxy | OIDC browser login when configured; returns 501 until OIDC config exists | <100ms |
 | `POST /admin/api/apps`, `POST /admin/api/apps/{id}/keys` | proxy | Admin control plane for registering Apps and minting one-time `opk_...` App keys | <100ms |
-| `GET /v1/models` | active LLM backend + proxy catalog | List configured roles, optional aliases, and currently loaded GGUF | <1s |
-| `GET /v1/voices`, `GET /v1/audio/voices` | proxy (static) | List TTS voices | <100ms |
-| `POST /v1/chat/completions` | tabby (default) or kobold (auto-routed by `model`) | Chat completion (vision-capable on tabby) | varies |
-| `POST /v1/completions` | tabby/kobold | Text completion | varies |
-| `POST /v1/responses` | translates to chat/completions | OpenAI Responses API (spring 2025). Stateful conversations via `previous_response_id`, function tools, `text.format` (json_object/json_schema), streaming SSE. Hosted tools NOT supported. | varies |
-| `GET /v1/responses/{id}` | proxy SQLite (`data/responses.db`) | Retrieve a stored response | <100ms |
-| `DELETE /v1/responses/{id}` | proxy SQLite | Delete a stored response | <100ms |
-| `POST /v1/embeddings` | tabby | Embeddings | <2s |
-| `POST /v1/audio/speech` | Voxtral TTS | OpenAI-compatible TTS, voice-mapped | ~2-10s |
-| `POST /v1/audio/transcriptions` | Parakeet STT | Multipart audio → transcript | ~1-5s |
-| `POST /v1/images/generations` | ComfyUI | Text-to-image (`flux2-klein-4b`) | ~30s |
+| `GET /openai/v1/models` | active LLM backend + proxy catalog | Canonical OpenAI-compatible model list; `/v1/models` remains a convenience route | <1s |
+| `GET /openai/v1/voices`, `GET /openai/v1/audio/voices` | proxy (static) | List TTS voices; `/v1/*` remains a convenience route | <100ms |
+| `POST /openai/v1/chat/completions` | tabby (default) or kobold (auto-routed by `model`) | Chat completion (vision-capable on tabby); `/v1/chat/completions` remains a convenience route | varies |
+| `POST /openai/v1/completions` | tabby/kobold | Text completion | varies |
+| `POST /openai/v1/responses` | translates to chat/completions | OpenAI Responses API (spring 2025). Stateful conversations via `previous_response_id`, function tools, `text.format` (json_object/json_schema), streaming SSE. Hosted tools NOT supported. | varies |
+| `GET /openai/v1/responses/{id}` | proxy SQLite (`data/responses.db`) | Retrieve a stored response | <100ms |
+| `DELETE /openai/v1/responses/{id}` | proxy SQLite | Delete a stored response | <100ms |
+| `POST /openai/v1/embeddings` | tabby | Embeddings | <2s |
+| `POST /openai/v1/audio/speech` | Voxtral TTS | OpenAI-compatible TTS, voice-mapped | ~2-10s |
+| `POST /openai/v1/audio/transcriptions` | Parakeet STT | Multipart audio → transcript | ~1-5s |
+| `POST /openai/v1/images/generations` | ComfyUI | Text-to-image (`flux2-klein-4b`) | ~30s |
 | `POST /gateway/v1/media/jobs` | proxy + ComfyUI | Durable async media jobs; for images send `{"intent":"image.generate","request":{...}}` | <1s submit |
 | `GET /gateway/v1/media/jobs/{id}`, `GET /gateway/v1/media/jobs/{id}/content` | proxy | Poll/fetch durable image job outputs | <500ms |
-| `POST /v1/images/edits` | ComfyUI | Image edit; multipart with input image | ~2min |
-| `POST /v1/videos` | ComfyUI | Submit video job (Sora-shaped, async) | <1s submit |
-| `GET /v1/videos/{id}` | ComfyUI | Poll job status (`queued` -> `running` -> `succeeded`/`failed`) | <500ms |
-| `GET /v1/videos/{id}/content` | ComfyUI | Fetch rendered MP4 once `status=succeeded` | <2s |
-| `GET /v1/images/{id}/content` | proxy (cache) | Fetch a cached image referenced by a `response_format: "url"` result. Auth-gated; URL is HMAC-signed with a TTL. | <100ms |
-| `* /<any other>` | proxy | Unknown routes return 404 instead of falling through to a backend. Tabby-native operations are not public compatibility routes; use the local Tabby port until the explicit provider-native namespace is added. | varies |
+| `POST /openai/v1/images/edits` | ComfyUI | Image edit; multipart with input image | ~2min |
+| `POST /openai/v1/videos` | ComfyUI | Submit video job (Sora-shaped, async) | <1s submit |
+| `GET /openai/v1/videos/{id}` | ComfyUI | Poll job status (`queued` -> `running` -> `succeeded`/`failed`) | <500ms |
+| `GET /openai/v1/videos/{id}/content` | ComfyUI | Fetch rendered MP4 once `status=succeeded` | <2s |
+| `GET /openai/v1/images/{id}/content` | proxy (cache) | Fetch a cached image referenced by a `response_format: "url"` result. Auth-gated; URL is HMAC-signed with a TTL. | <100ms |
+| `GET /gateway/v1/providers`, `GET /gateway/v1/providers/{provider}` | proxy | Provider-native discovery projected through the caller's App profile policy | <100ms |
+| `* /gateway/v1/providers/{provider}/{path...}` | proxy + selected provider | Policy-gated provider-native passthrough; requires `provider-native`, `native_passthrough`, provider, and operation permission on the App profile | varies |
+| `* /<any other>` | proxy | Unknown routes return 404 instead of falling through to a backend. There is no legacy root Tabby shim or root catch-all backend passthrough. | varies |
 
-Public routes are `/health` and `/.well-known/*`. Runtime routes (`/v1`, `/api`, `/gateway/v1`) require an App bearer token. Admin routes (`/admin`, `/admin/api/*`) require an admin bearer token or a signed OIDC dashboard session. App keys cannot administer the gateway.
+Public routes are `/health` and `/.well-known/*`. Runtime routes (`/openai/v1`, `/anthropic/v1`, `/ollama/api`, convenience `/v1` and `/api`, and `/gateway/v1`) require an App bearer token. Admin routes (`/admin`, `/admin/api/*`) require an admin bearer token or a signed OIDC dashboard session. App keys cannot administer the gateway.
 
 ### Chat completions
 
 ```bash
-curl -s https://ai.vivid.fish/v1/chat/completions \
+curl -s https://ai.vivid.fish/openai/v1/chat/completions \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -93,7 +95,7 @@ curl -s https://ai.vivid.fish/v1/chat/completions \
 The newer (spring 2025) OpenAI surface. Modern SDKs (`@ai-sdk/openai` v6+ in particular) default to it. The proxy implements it as a translation layer over `/v1/chat/completions`, so every routing decision (model resolution, backend selection, vision detection) flows through the same code path as chat completions.
 
 ```bash
-curl -s https://ai.vivid.fish/v1/responses \
+curl -s https://ai.vivid.fish/openai/v1/responses \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -108,7 +110,7 @@ curl -s https://ai.vivid.fish/v1/responses \
 
 ```bash
 # Second turn references first by id; the proxy reconstructs context server-side
-curl -s https://ai.vivid.fish/v1/responses \
+curl -s https://ai.vivid.fish/openai/v1/responses \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" -H "Content-Type: application/json" \
   -d '{"model":"default","previous_response_id":"resp_…","input":"What did I just ask?","reasoning":{"effort":"minimal"}}'
 ```
@@ -132,7 +134,7 @@ Send `"store": false` to skip persistence (no `previous_response_id` chaining po
 ### Models list
 
 ```bash
-curl -s https://ai.vivid.fish/v1/models \
+curl -s https://ai.vivid.fish/openai/v1/models \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY"
 ```
 
@@ -156,7 +158,7 @@ Response: `data[].b64_json` (base64 PNG) or `data[].url` (signed URL)
 depending on `response_format`.
 
 ```bash
-curl -s -m 120 -X POST https://ai.vivid.fish/v1/images/generations \
+curl -s -m 120 -X POST https://ai.vivid.fish/openai/v1/images/generations \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"flux2-klein-4b","prompt":"a tabby cat under neon","n":1,"size":"1024x1024","response_format":"b64_json"}' \
@@ -192,7 +194,7 @@ inpaint repair, then offset back. Useful controls are base `steps`, `guidance`,
 `seam_steps`, `seam_guidance`, and optional `seam_prompt`.
 
 ```bash
-curl -s -m 180 -X POST https://ai.vivid.fish/v1/images/generations \
+curl -s -m 180 -X POST https://ai.vivid.fish/openai/v1/images/generations \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -236,7 +238,7 @@ Prompting tips: specificity beats description. Use `ONLY`, `exactly`, `do not ch
 Edits an existing image. Requires both `image` and `prompt`. Model defaults to `flux2-klein-4b-edit`; if you pass `flux2-klein-4b` the proxy auto-appends `-edit`. Size is auto-detected from the image when omitted.
 
 ```bash
-curl -s -m 240 -X POST https://ai.vivid.fish/v1/images/edits \
+curl -s -m 240 -X POST https://ai.vivid.fish/openai/v1/images/edits \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -F "model=flux2-klein-4b-edit" \
   -F "prompt=replace the sky with aurora; do not change the foreground" \
@@ -262,7 +264,7 @@ Multipart fields:
 ControlNet/conditioning controls are only usable when discovery shows a real workflow manifest that exposes them. For multipart image edits, an asset-valued workflow control can reference an extra form field without making that field a public OpenAI parameter:
 
 ```bash
-curl -s -m 240 -X POST https://ai.vivid.fish/v1/images/edits \
+curl -s -m 240 -X POST https://ai.vivid.fish/openai/v1/images/edits \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -F "model=flux2-klein-4b-edit-controlnet" \
   -F "prompt=preserve the geometry, paint it as underwater rock" \
@@ -286,7 +288,7 @@ Errors return JSON `{ "error": { "message": ..., "type": ..., "param": ..., "cod
 ACE-Step music workflows accept top-level `tags` and `lyrics`:
 
 ```bash
-curl -s -m 600 -X POST https://ai.vivid.fish/v1/audio/generate \
+curl -s -m 600 -X POST https://ai.vivid.fish/openai/v1/audio/generate \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -407,7 +409,7 @@ Once `status=succeeded`, fetch the MP4 from `/content`. On `status=failed`, the 
 **I2V usage example** (anchor frame 0 to a reference image, then animate from the prompt):
 
 ```bash
-curl -s -X POST https://ai.vivid.fish/v1/videos \
+curl -s -X POST https://ai.vivid.fish/openai/v1/videos \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -425,7 +427,7 @@ curl -s -X POST https://ai.vivid.fish/v1/videos \
 
 ```bash
 # 1. Submit
-SUBMIT=$(curl -s -X POST https://ai.vivid.fish/v1/videos \
+SUBMIT=$(curl -s -X POST https://ai.vivid.fish/openai/v1/videos \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"ltx-2.3-distilled","prompt":"A goldfish swimming in clear water","seconds":3,"size":"1280x720"}')
@@ -436,7 +438,7 @@ echo "video_id: $VIDEO_ID"
 # 2. Poll until terminal status
 while :; do
   POLL=$(curl -s -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-    "https://ai.vivid.fish/v1/videos/$VIDEO_ID")
+    "https://ai.vivid.fish/openai/v1/videos/$VIDEO_ID")
   STATUS=$(echo "$POLL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')
   echo "status: $STATUS"
   case "$STATUS" in
@@ -447,7 +449,7 @@ done
 
 # 3. Fetch the mp4
 [ "$STATUS" = "succeeded" ] && curl -s -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  "https://ai.vivid.fish/v1/videos/$VIDEO_ID/content" -o /tmp/out.mp4 && file /tmp/out.mp4
+  "https://ai.vivid.fish/openai/v1/videos/$VIDEO_ID/content" -o /tmp/out.mp4 && file /tmp/out.mp4
 ```
 
 **Timing expectations (RTX 3090, 720p / 3-5 s):**
@@ -580,7 +582,7 @@ If you forget the quotes, the audio chain still runs — but the result will be 
 ### Text-to-speech
 
 ```bash
-curl -s -X POST https://ai.vivid.fish/v1/audio/speech \
+curl -s -X POST https://ai.vivid.fish/openai/v1/audio/speech \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"tts-1","input":"Hello world.","voice":"nova","response_format":"opus","speed":1.0}' \
@@ -592,7 +594,7 @@ Body is forwarded to Voxtral after voice mapping. Unknown voices fall back to `n
 ### Speech-to-text
 
 ```bash
-curl -s -X POST https://ai.vivid.fish/v1/audio/transcriptions \
+curl -s -X POST https://ai.vivid.fish/openai/v1/audio/transcriptions \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   -F "file=@/path/to/audio.ogg" \
   -F "model=whisper-1" \
@@ -604,7 +606,7 @@ Returns `{"text": "..."}`. The proxy forwards multipart untouched to Parakeet.
 ### Voices list
 
 ```bash
-curl -s https://ai.vivid.fish/v1/voices \
+curl -s https://ai.vivid.fish/openai/v1/voices \
   -H "Authorization: Bearer $AI_GATEWAY_API_KEY"
 ```
 
@@ -669,7 +671,7 @@ No helper exists yet for `/v1/images/edits` — use the curl recipe above.
 - **Never print** `AI_GATEWAY_API_KEY`, `TELEGRAM_BOT_TOKEN`, or any other secret in output, logs, or error messages.
 - Prefer daisy helpers over raw curl when on daisy; otherwise use the curl recipes here.
 - Generated artifacts live under `~/applications/daisy/tmp/` unless the user specifies a path. For non-daisy contexts use `/tmp/` or the user-specified path.
-- If a helper or curl call fails, report the concise error + the helper/endpoint name. Do not retry blindly — check `GET /health` and `GET /v1/models` first.
+- If a helper or curl call fails, report the concise error + the helper/endpoint name. Do not retry blindly — check `GET /health` and `GET /openai/v1/models` first.
 - Image edits take ~2 minutes; set client timeouts ≥ 240s.
 - LLM requests can stall if the wrong backend is hot. If `/v1/models` shows the wrong model, ask the user before invoking `llm-switch` (it restarts a systemd service).
 
