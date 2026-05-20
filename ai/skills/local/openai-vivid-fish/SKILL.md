@@ -57,7 +57,7 @@ curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-
 | `GET /v1/videos/{id}` | ComfyUI | Poll job status (`queued` -> `running` -> `succeeded`/`failed`) | <500ms |
 | `GET /v1/videos/{id}/content` | ComfyUI | Fetch rendered MP4 once `status=succeeded` | <2s |
 | `GET /v1/images/{id}/content` | proxy (cache) | Fetch a cached image referenced by a `response_format: "url"` result. Auth-gated; URL is HMAC-signed with a TTL. | <100ms |
-| `* /<any other>` | tabby | Catch-all proxy to TabbyAPI (admin/model load endpoints, etc.). If tabby is unavailable, the proxy returns 503 with `Retry-After` rather than silently routing to kobold (which has a different surface). | varies |
+| `* /<any other>` | proxy | Unknown routes return 404 instead of falling through to a backend. Tabby-native operations are not public compatibility routes; use the local Tabby port until the explicit provider-native namespace is added. | varies |
 
 Public routes are `/health` and `/.well-known/*`. Runtime routes (`/v1`, `/api`, `/gateway/v1`) require an App bearer token. Admin routes (`/admin`, `/admin/api/*`) require an admin bearer token or a signed OIDC dashboard session. App keys cannot administer the gateway.
 
