@@ -11,6 +11,7 @@ description: Use Vivid Fish AI Gateway (the local OpenAI-compatible AI gateway, 
 - **GGUF backend** — koboldcpp or llama-turbo on port 5051 (mutually exclusive via systemd `Conflicts=`; swap with `llm-switch {kobold|turbo|tabby}`)
 - **Voxtral-4B (vLLM)** — TTS (port 8001)
 - **Parakeet TDT 0.6B** — STT (port 5092)
+- **nomic-embed-text-v1.5 (llama.cpp CPU)** — embeddings (port 5061, CPU-only; no GPU budget claim)
 - **ComfyUI** — image generation + edit (port 7890), default image model `flux2-klein-4b`; video via LTX-2.3 22B (`ltx-2.3` / `ltx-2.3-distilled`, dev Q4_K_M GGUF + distilled-LoRA, audio-video joint output)
 
 When working inside the daisy project, prefer the project helpers in `~/applications/daisy/scripts/`. For other agents/contexts, hit the HTTP API directly with curl using the examples below.
@@ -49,8 +50,9 @@ curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-
 | `POST /anthropic/v1/messages` | chat pipeline | Anthropic Messages-compatible responses and SSE streaming; `/v1/messages` remains a convenience route | varies |
 | `GET /ollama/api/tags` | proxy catalog | Ollama-compatible model list; `/api/tags` remains a convenience route | <100ms |
 | `POST /ollama/api/chat`, `POST /ollama/api/generate` | chat pipeline | Ollama-compatible chat/generate with NDJSON streaming; `/api/chat` and `/api/generate` remain convenience routes | varies |
+| `POST /ollama/api/embed`, `POST /ollama/api/embeddings` | embeddings backend | Ollama-compatible current and legacy embeddings; `/api/embed` and `/api/embeddings` remain convenience routes | varies |
 | `POST /ollama/api/show`, `GET /ollama/api/ps`, `GET /ollama/api/version` | proxy catalog/status | Ollama-compatible read-only model metadata/status; mutating Ollama model routes return unsupported-operation | <100ms |
-| `POST /openai/v1/embeddings` | tabby | Embeddings | <2s |
+| `POST /openai/v1/embeddings` | nomic CPU embeddings | OpenAI-compatible embeddings (`nomic-embed-text-v1.5`, 768-d); no GPU budget claim | varies |
 | `POST /openai/v1/audio/speech` | Voxtral TTS | OpenAI-compatible TTS, voice-mapped | ~2-10s |
 | `POST /openai/v1/audio/transcriptions` | Parakeet STT | Multipart audio → transcript | ~1-5s |
 | `POST /openai/v1/images/generations` | ComfyUI | Text-to-image (`flux2-klein-4b`) | ~30s |
