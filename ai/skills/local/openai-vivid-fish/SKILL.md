@@ -56,8 +56,8 @@ curl -fsS "$BASE/.well-known/ai-gateway" || curl -fsS "$BASE/.well-known/openai-
 | `POST /openai/v1/audio/speech` | Voxtral TTS | OpenAI-compatible TTS, voice-mapped | ~2-10s |
 | `POST /openai/v1/audio/transcriptions` | Parakeet STT | Multipart audio → transcript | ~1-5s |
 | `POST /openai/v1/images/generations` | ComfyUI | Text-to-image (`flux2-klein-4b`) | ~30s |
-| `POST /gateway/v1/media/jobs` | proxy + ComfyUI | Durable async media jobs; for images send `{"intent":"image.generate","request":{...}}` | <1s submit |
-| `GET /gateway/v1/media/jobs/{id}`, `GET /gateway/v1/media/jobs/{id}/content` | proxy | Poll/fetch durable image job outputs | <500ms |
+| `POST /gateway/v1/media/jobs` | proxy + ComfyUI | Durable async media jobs for `image.generate`, `audio.generate`, `music.generate`, `sfx.generate`, and `video.generate` | <1s submit |
+| `GET /gateway/v1/media/jobs/{id}`, `GET /gateway/v1/media/jobs/{id}/events`, `GET /gateway/v1/media/jobs/{id}/content` | proxy | Poll/fetch durable media job events and signed output asset handles | <500ms |
 | `POST /openai/v1/images/edits` | ComfyUI | Image edit; multipart with input image | ~2min |
 | `POST /openai/v1/videos` | ComfyUI | Submit video job (Sora-shaped, async) | <1s submit |
 | `GET /openai/v1/videos/{id}` | ComfyUI | Poll job status (`queued` -> `running` -> `succeeded`/`failed`) | <500ms |
@@ -186,9 +186,14 @@ curl -s -X POST https://ai.vivid.fish/gateway/v1/media/jobs \
   -d '{"intent":"image.generate","request":{"model":"flux2-klein-4b","prompt":"a tabby cat under neon","n":1,"size":"1024x1024"}}'
 ```
 
-Poll `GET /gateway/v1/media/jobs/{job_id}` and fetch
+Poll `GET /gateway/v1/media/jobs/{job_id}`; use
+`GET /gateway/v1/media/jobs/{job_id}/events` for queued/running progress; fetch
 `GET /gateway/v1/media/jobs/{job_id}/content` when `status` is `succeeded`.
-Durable image jobs always return signed URL-backed assets, not base64 blobs.
+Durable image/audio/video jobs return signed URL-backed asset handles, not
+base64 blobs. The same surface also accepts audio/video work, e.g.
+`{"intent":"music.generate","request":{...}}`,
+`{"intent":"sfx.generate","request":{...}}`, or
+`{"intent":"video.generate","request":{...}}`.
 
 `response_format: "url"` returns hostname-aware, HMAC-signed URLs that resolve to `GET /v1/images/{id}/content`. URLs are valid for ~1 hour (configurable via `images.signed_url_ttl` in `proxy_config.yml`) and require the same bearer token as everything else. Cached image bytes evict after 24 h (`images.cache_ttl`). Every image result also includes gateway-native `asset_id`, `asset_url`, and `media_type`; use `asset_id` for later gateway-aware calls made by the same API key and `asset_url` for signed `/v1/assets/{asset_id}/content` fetches.
 
@@ -331,6 +336,21 @@ Sora-2-shaped async API for local LTX-Video 2.3 generation via ComfyUI. Three en
 | `POST /v1/videos` | Submit; returns `{id, status: "queued"}` quickly |
 | `GET  /v1/videos/{id}` | Poll status; transitions `queued` → `running` → `succeeded` / `failed` |
 | `GET  /v1/videos/{id}/content` | Download MP4 (Content-Type `video/mp4`); only valid when `status=succeeded` |
+
+For unattended agents, prefer the durable media-job surface:
+
+```bash
+curl -s -X POST https://ai.vivid.fish/gateway/v1/media/jobs \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"intent":"video.generate","request":{"model":"ltx-2.3","prompt":"A red fox walking through snow","seconds":5}}'
+```
+
+Then poll `/gateway/v1/media/jobs/{job_id}` or
+`/gateway/v1/media/jobs/{job_id}/events`; fetch
+`/gateway/v1/media/jobs/{job_id}/content` after success to receive signed
+`vid_*` asset URLs. The direct `/v1/videos` flow remains useful when the
+client already understands Sora-style submit/poll/fetch.
 
 **Request body (POST /v1/videos):**
 
