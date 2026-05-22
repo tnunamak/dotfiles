@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/rtk-rewrite.sh"
+            "command": "rtk hook claude"
           }
         ]
       }
@@ -29,7 +29,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.tmux/plugins/tmux-assistant-resurrect/hooks/claude-session-track.sh"
+            "command": "bash '/home/tnunamak/.tmux/plugins/tmux-assistant-resurrect/hooks/claude-session-track.sh'"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/tnunamak/.nvm/versions/node/v25.8.2/bin/node\" \"/home/tnunamak/.claude/hooks/context-mode-cache-heal.mjs\""
           }
         ]
       }
@@ -40,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.tmux/plugins/tmux-assistant-resurrect/hooks/claude-session-cleanup.sh"
+            "command": "bash '/home/tnunamak/.tmux/plugins/tmux-assistant-resurrect/hooks/claude-session-cleanup.sh'"
           }
         ]
       }
@@ -54,8 +62,9 @@
     "typescript-lsp@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
-    "vercel@claude-plugins-official": true,
-    "codex@openai-codex": true
+    "vercel@claude-plugins-official": false,
+    "codex@openai-codex": true,
+    "context-mode@context-mode": true
   },
   "extraKnownMarketplaces": {
     "compound-engineering-plugin": {
@@ -69,9 +78,17 @@
         "source": "git",
         "url": "https://github.com/openai/codex-plugin-cc.git"
       }
+    },
+    "context-mode": {
+      "source": {
+        "source": "github",
+        "repo": "mksglu/context-mode"
+      }
     }
   },
   "alwaysThinkingEnabled": false,
-  "effortLevel": "high",
-  "skipDangerousModePermissionPrompt": true
+  "effortLevel": "xhigh",
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "cleanupPeriodDays": 180
 }
