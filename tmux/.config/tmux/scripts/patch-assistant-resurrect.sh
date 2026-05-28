@@ -32,15 +32,14 @@ fi
 
 applied=0
 
-# Patch 1: bare-trailing --resume regex
-# Upstream's `'s/--resume[= ] *[^ ]*//'` requires `=` or space after --resume,
-# so a bare trailing `--resume` is left in place and re-issued at restore time,
-# which Bun crashes on. Fix accepts both `--resume <id>` and `--resume=<id>`.
-if grep -qF "'s/--resume[= ] *[^ ]*//'" "$ASSISTANT_SAVE"; then
-  sed -i "s|'s/--resume\[= \] \*\[^ \]\*//'|'s/--resume(=[^ ]*)?( +[^ -][^ ]*)?//'|" "$ASSISTANT_SAVE"
-  log "applied patch 1: bare-trailing --resume regex"
-  applied=$((applied + 1))
-fi
+# Patch 1 (bare-trailing --resume regex) was RETIRED 2026-05-28.
+# Upstream PR #30 (commit f710f70) replaced the hardcoded resume sed with
+# _discover_session_flags + _strip_long_opt, whose regex
+# `s/<flag>(=[^ ]*| +[^- ][^ ]*)?//g` makes the value optional — so bare
+# `--resume`, `--resume=<id>`, and `--resume <id>` are all stripped, for every
+# session flag (resume|continue|session-id|fork-session|from-pr). That is the
+# same fix this patch used to apply, now upstream and generalized. No local
+# patch needed; the old grep guard could never match the new code anyway.
 
 # Patch 2: canonicalize grouped session names at save time
 # Upstream saves pane addresses under the most recent grouped session
