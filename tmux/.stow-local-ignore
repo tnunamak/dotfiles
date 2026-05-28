@@ -1,0 +1,6 @@
+# TPM installs tmux plugins at runtime into ~/.tmux/plugins
+# (per tmux.conf TMUX_PLUGIN_MANAGER_PATH). If a plugins/ tree ever
+# reappears inside this package, stow must NOT symlink it into
+# ~/.config/tmux/plugins. Stow does not honor .gitignore (see GNU
+# Stow manual section 4.3), so this package-local ignore is required.
+.config/tmux/plugins
