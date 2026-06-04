@@ -1,0 +1,23 @@
+{
+  "skill_name": "agent-steering-audit",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "Audit this long Codex session for steering drift. I care about where my instructions stopped affecting the agent's behavior and what I can learn for future prompting.",
+      "expected_output": "An evidence-backed audit plan and artifact stack that uses mechanical extraction only as a locator, writes contrastive audit cards, separates evidence from inference, and avoids claiming an automatic score.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "Find cases where ABD was acknowledged but not operationalized. I want to understand whether the agent kept lane state live or just repeated the words back.",
+      "expected_output": "A focused dispatch/object-continuity audit with cards naming worker lanes, authority, state, evidence, owner gates, and counterexamples.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Compare high-output windows against actual steering burden. I remember some windows where the agent was flying, but I do not know how to identify them.",
+      "expected_output": "A contrastive analysis separating clean/mostly-clean flying from high-output/high-friction and live-evidence firefighting, with candidate windows, controls, and caveats.",
+      "files": []
+    }
+  ]
+}
