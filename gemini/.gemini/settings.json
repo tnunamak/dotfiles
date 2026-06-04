@@ -28,16 +28,10 @@
       "type": "http"
     },
     "linear": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://mcp.linear.app/mcp",
-        "--header",
-        "Authorization:${LINEAR_AUTH}"
-      ],
-      "env": {
-        "LINEAR_AUTH": "Bearer ${LINEAR_API_KEY}"
+      "url": "https://mcp.linear.app/mcp",
+      "type": "http",
+      "headers": {
+        "Authorization": "Bearer LINEAR_API_KEY_REDACTED"
       }
     },
     "playwright": {

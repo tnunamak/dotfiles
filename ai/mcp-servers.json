@@ -1,67 +1,88 @@
 {
-  "codex": {
-    "servers": {
-      "playwright": {
-        "url": "http://127.0.0.1:3100"
-      },
-      "linear": {
-        "url": "https://mcp.linear.app/mcp",
-        "bearer_token_env_var": "LINEAR_API_KEY"
-      },
-      "vana-knowledge-base": {
-        "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
-        "bearer_token_env_var": "VANA_KB_TOKEN"
-      }
+  "agents": {
+    "codex": {},
+    "claude": {
+      "scope": "user"
+    },
+    "gemini": {
+      "scope": "user"
     }
   },
-  "claude": {
-    "servers": {
-      "codex-cli": {
-        "scope": "user",
-        "transport": "stdio",
-        "command": "npx",
-        "args": [
-          "-y",
-          "codex-mcp-server"
-        ]
+  "legacyServerNames": [
+    "amplitude",
+    "searxng-test"
+  ],
+  "servers": {
+    "codex-cli": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "codex-mcp-server"
+      ],
+      "agents": [
+        "claude",
+        "gemini"
+      ],
+      "reason": "Bridge for non-Codex agents; circular/useless in Codex itself."
+    },
+    "excalidraw": {
+      "transport": "http",
+      "url": "https://mcp.excalidraw.com",
+      "agents": [
+        "codex",
+        "claude",
+        "gemini"
+      ]
+    },
+    "linear": {
+      "transport": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "auth": {
+        "bearerTokenEnv": "LINEAR_API_KEY"
       },
-      "linear": {
-        "scope": "user",
-        "transport": "http",
-        "url": "https://mcp.linear.app/mcp",
-        "header_env_var": "LINEAR_API_KEY"
+      "agents": [
+        "codex",
+        "claude",
+        "gemini"
+      ]
+    },
+    "playwright": {
+      "transport": "http",
+      "url": "http://127.0.0.1:3100",
+      "agents": [
+        "codex",
+        "claude",
+        "gemini"
+      ]
+    },
+    "searxng": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-searxng"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://searxng.home"
       },
-      "vana-knowledge-base": {
-        "scope": "user",
-        "transport": "http",
-        "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
-        "header_env_var": "VANA_KB_TOKEN"
-      }
-    }
-  },
-  "gemini": {
-    "servers": {
-      "codex-cli": {
-        "scope": "user",
-        "transport": "stdio",
-        "command": "npx",
-        "args": [
-          "-y",
-          "codex-mcp-server"
-        ]
+      "agents": [
+        "codex",
+        "claude",
+        "gemini"
+      ]
+    },
+    "vana-knowledge-base": {
+      "transport": "http",
+      "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
+      "auth": {
+        "bearerTokenEnv": "VANA_KB_TOKEN"
       },
-      "linear": {
-        "scope": "user",
-        "transport": "http",
-        "url": "https://mcp.linear.app/mcp",
-        "header_env_var": "LINEAR_API_KEY"
-      },
-      "vana-knowledge-base": {
-        "scope": "user",
-        "transport": "http",
-        "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
-        "header_env_var": "VANA_KB_TOKEN"
-      }
+      "agents": [
+        "codex",
+        "claude",
+        "gemini"
+      ]
     }
   }
 }

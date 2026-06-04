@@ -5,10 +5,12 @@
 @fission-ai/openspec
 @google/gemini-cli
 @googleworkspace/cli
+@mermaid-js/mermaid-cli
 @openai/codex
 @playwright/mcp
 @posthog/cli
 @sentry/cli
+context-mode
 neonctl
 pnpm
 prisma
