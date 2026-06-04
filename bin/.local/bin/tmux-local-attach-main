@@ -15,6 +15,17 @@ LOCK_FILE="${STATE_DIR}/attach-main.lock"
 RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
 RESTORE_STAMP_FILE="${STATE_DIR}/main.restore-stamp"
 RESTORE_TTL=45
+# Two-strikes orphan-clone reaper: each attach creates a `main-N` grouped clone
+# but nothing destroys it when the terminal closes (destroy-unattached is off —
+# see the post-mortem note near the attach call). Detached clones therefore leak
+# and inflate every tmux-resurrect save (hundreds of clones x N windows). We reap
+# a clone only if it has NO client now AND had none on the PREVIOUS attach. That
+# two-strikes rule is safe against SDDM/Wayland detach storms: a display-server
+# restart detaches every client at one instant, but they reattach together within
+# seconds — long before the next user-initiated launch — so a live clone is never
+# detached across two separate attach events. DETACHED_SEEN_FILE holds the set
+# seen detached last time.
+DETACHED_SEEN_FILE="${STATE_DIR}/main.detached-seen"
 
 mkdir -p "$STATE_DIR"
 
@@ -121,6 +132,54 @@ find_target_group() {
 window_exists_in() {
   local seed="$1" idx="$2"
   tmux list-windows -t "=$seed" -F '#{window_index}' 2>/dev/null | grep -Fxq -- "$idx"
+}
+
+# Reap leaked grouped-session clones. A clone is reaped only if it has no client
+# now AND was recorded detached on the previous attach (two strikes). `attached`
+# is taken from list-clients (authoritative per-session client presence), NOT
+# #{session_attached}, which reports group-wide attachment for grouped sessions.
+# Never reaps a session that currently has a client, nor the seed/group anchor.
+reap_orphan_clones() {
+  local group="$1" seed="$2"
+
+  # Sessions with a live client right now (authoritative).
+  local clients
+  clients=$(tmux list-clients -F '#{client_session}' 2>/dev/null | sort -u)
+
+  # Currently-detached clones in this group: name main-N, in the group, no client.
+  local detached_now=""
+  local sname sgrp
+  while IFS='|' read -r sname sgrp; do
+    [[ "$sgrp" == "$group" ]] || continue
+    case "$sname" in main-[0-9]*) ;; *) continue ;; esac
+    [[ "$sname" == "$seed" ]] && continue
+    grep -Fxq -- "$sname" <<< "$clients" && continue   # has a client → keep
+    detached_now+="${sname}"$'\n'
+  done < <(tmux list-sessions -F '#{session_name}|#{session_group}' 2>/dev/null)
+
+  # Reap any clone detached now that was ALSO detached last time (two strikes).
+  if [[ -f "$DETACHED_SEEN_FILE" ]]; then
+    local s
+    while IFS= read -r s; do
+      [[ -n "$s" ]] || continue
+      if grep -Fxq -- "$s" "$DETACHED_SEEN_FILE" 2>/dev/null; then
+        tmux kill-session -t "=$s" 2>/dev/null || true
+      fi
+    done <<< "$detached_now"
+  fi
+
+  # Record the still-detached set (minus any we just reaped) for next time.
+  local still
+  still=$(tmux list-sessions -F '#{session_name}|#{session_group}' 2>/dev/null \
+    | awk -F'|' -v g="$group" '$2==g && $1 ~ /^main-[0-9]+$/ {print $1}')
+  : > "$DETACHED_SEEN_FILE"
+  local s
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    grep -Fxq -- "$s" <<< "$clients" && continue
+    [[ "$s" == "$seed" ]] && continue
+    printf '%s\n' "$s" >> "$DETACHED_SEEN_FILE"
+  done <<< "$still"
 }
 
 # Pop a window index from the restore queue (if it's fresh and valid).
@@ -248,6 +307,14 @@ target="$(
           done
         fi
       fi
+    fi
+
+    # Reap leaked detached clones from prior terminals (two-strikes safe).
+    # Runs under the same lock as clone creation, so no race with a concurrent
+    # launch. Skipped while a restore is in flight (the queue is non-empty),
+    # since restore transiently creates clones the post-restore hook will use.
+    if [[ -n "$group" && ! -s "$RESTORE_QUEUE_FILE" ]]; then
+      reap_orphan_clones "$group" "$seed" || true
     fi
 
     # Pick a window: restore queue first, then smart selection
