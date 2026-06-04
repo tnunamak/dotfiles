@@ -171,11 +171,13 @@ for entry in "${simple_bulk_managers[@]}"; do
 done
 
 # ============================================================================
-# Python package managers: npm, pip --user, pipx (single Python invocation)
+# Package managers: npm, pipx (single Python invocation)
+# Per STRATEGY.md: Python CLI tools live in pipx or uv. No pip --user lane \u2014
+# PEP 668 blocks pip-into-user-site on this distro, and a tripwire that fires
+# an unfixable upgrade command is worse than no tripwire.
 # ============================================================================
 
 detail_npm=()
-detail_pip=()
 detail_pipx=()
 
 python_pkg_output=$(python3 <<'PYEOF'
@@ -196,19 +198,6 @@ try:
         results["npm_cmd"] = "npm install -g " + " ".join(
             f"{name}@latest" for name in sorted(data.keys())
         )
-except Exception:
-    pass
-
-# pip --user
-try:
-    r = subprocess.run(["pip", "list", "--user", "--outdated", "--format=json"],
-                       capture_output=True, text=True, timeout=30)
-    data = json.loads(r.stdout) if r.stdout.strip() else []
-    if data:
-        results["pip"] = [
-            f"{p['name']} {p['version']} \u2192 {p['latest_version']}"
-            for p in sorted(data, key=lambda x: x["name"])
-        ]
 except Exception:
     pass
 
@@ -239,20 +228,16 @@ PYEOF
 ) || python_pkg_output="{}"
 
 # Extract dynamic upgrade commands from python output
-IFS=$'\t' read -r npm_upgrade_cmd pip_upgrade_cmd < <(echo "$python_pkg_output" | python3 -c "
+npm_upgrade_cmd=$(echo "$python_pkg_output" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-npm_cmd = d.get('npm_cmd', 'npm update -g')
-pip_pkgs = [p.split()[0] for p in d.get('pip', [])]
-pip_cmd = 'pip install --user --upgrade ' + ' '.join(pip_pkgs) if pip_pkgs else ''
-print(npm_cmd + '\t' + pip_cmd)
-" 2>/dev/null) || { npm_upgrade_cmd="npm update -g"; pip_upgrade_cmd=""; }
+print(d.get('npm_cmd', 'npm update -g'))
+" 2>/dev/null) || npm_upgrade_cmd="npm update -g"
 
 # Parse results into bash arrays
 # Format: "detail_key|display_name|upgrade_cmd"
 python_managers=(
   "npm|npm globals|$npm_upgrade_cmd"
-  "pip|pip --user|$pip_upgrade_cmd"
   "pipx|pipx|pipx upgrade-all"
 )
 

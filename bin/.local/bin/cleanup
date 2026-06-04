@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-CACHE_VERSION=4
+CACHE_VERSION=5
 CACHE_FILE="/tmp/.cleanup-cache-$(id -u)"
 CACHE_MAX_AGE=3600  # 1h — safety net only; state-changing actions (--clean,
                     # shell startup) refresh the cache proactively.
@@ -45,6 +45,14 @@ THRESH_GO_BUILD=209715200   # 200M
 THRESH_DRKONQI=104857600    # 100M (KDE crash dumps)
 THRESH_WRANGLER=104857600   # 100M
 THRESH_PUPPETEER=536870912  # 512M (large; only flag if multiple Chrome versions cached)
+THRESH_PLAYWRIGHT=1073741824 # 1G (stale browser builds + mcp-chrome hash sprawl)
+THRESH_BROWSER_CACHE=524288000 # 500M (Brave/Chrome/Firefox/Google disk caches)
+THRESH_GRADLE=1073741824    # 1G (Gradle caches/ — stops daemons, keeps wrapper/jdks)
+THRESH_PIPENV=524288000     # 500M (pipenv download cache)
+THRESH_NODE_GYP=209715200   # 200M (native-addon build headers)
+THRESH_TORCH_EXT=209715200  # 200M (compiled PyTorch CUDA extensions)
+THRESH_TSC_CACHE=104857600  # 100M (TypeScript compiler cache)
+THRESH_BUN_CACHE=536870912  # 512M (bun install cache)
 
 # Code roots to scan for build artifacts (.next, target, venv). Kept narrow to
 # avoid trawling unrelated mounts. CODE_ROOT can be overridden via env for tests.
@@ -75,6 +83,14 @@ CATEGORIES=(
     drkonqi
     wrangler
     puppeteer
+    playwright
+    browser_caches
+    gradle_cache
+    pipenv_cache
+    node_gyp
+    torch_ext
+    tsc_cache
+    bun_cache
 )
 
 human_size() {
@@ -86,6 +102,58 @@ human_size() {
     else
         printf "%.0fK" "$(echo "scale=0; $bytes/1024" | bc)"
     fi
+}
+
+# Playwright browser cache prune selection. Emits (newline-separated) the dirs
+# under ~/.cache/ms-playwright that are SAFE to delete:
+#   - versioned browsers (chromium-NNNN, chromium_headless_shell-NNNN): all but
+#     the newest version per family (sort -V).
+#   - mcp-chrome* hash-keyed builds (chromium-MCP downloads per @playwright/mcp
+#     version): all but the most-recently-used (newest mtime), so the build the
+#     live playwright-mcp service is using is preserved.
+# Single source of truth shared by playwright_prunable_bytes() and the prune
+# action, so the previewed size and the actual deletion can never diverge.
+playwright_prune_dirs() {
+    local root="$HOME/.cache/ms-playwright"
+    [[ -d "$root" ]] || return 0
+    local fam newest d v
+    # Versioned browser families: keep newest version each.
+    for fam in chromium chromium_headless_shell; do
+        newest=$(ls -d "$root/${fam}-"* 2>/dev/null | sort -V | tail -1)
+        [[ -n "$newest" ]] || continue
+        for d in "$root/${fam}-"*; do
+            [[ -d "$d" && "$d" != "$newest" ]] && echo "$d"
+        done
+    done
+    # mcp-* hash-keyed browser builds (mcp-chrome-HASH, mcp-chromium-HASH,
+    # mcp-chrome-for-testing-HASH): keep the single most-recently-used build
+    # (the one the live playwright-mcp service is on), prune the rest. NEVER
+    # touch *-profile dirs — those hold browser session/cookie state, not a
+    # re-downloadable browser. The bare "mcp-chrome" dir (no hash) is also a
+    # build and prunable.
+    local builds=()
+    for d in "$root/mcp-chrome" "$root/mcp-chrome-"* "$root/mcp-chromium-"*; do
+        [[ -d "$d" ]] || continue
+        [[ "$d" == *-profile ]] && continue
+        builds+=("$d")
+    done
+    if (( ${#builds[@]} > 0 )); then
+        newest=$(ls -dt "${builds[@]}" 2>/dev/null | head -1)
+        for d in "${builds[@]}"; do
+            [[ "$d" != "$newest" ]] && echo "$d"
+        done
+    fi
+}
+
+# Sum bytes of the prunable Playwright dirs (0 if none / dir absent).
+playwright_prunable_bytes() {
+    local total=0 d sz
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        sz=$(du -sbx "$d" 2>/dev/null | cut -f1)
+        total=$(( total + ${sz:-0} ))
+    done < <(playwright_prune_dirs)
+    echo "$total"
 }
 
 # Render age of a file as "Xs/Xm/Xh/Xd ago", or "" if file missing.
@@ -530,6 +598,17 @@ check_cleanup() {
         "drkonqi:$HOME/.cache/drkonqi"
         "wrangler:$HOME/.cache/.wrangler"
         "puppeteer:$HOME/.cache/puppeteer"
+        "playwright:$HOME/.cache/ms-playwright"
+        "browser_brave:$HOME/.cache/BraveSoftware"
+        "browser_chrome:$HOME/.cache/google-chrome"
+        "browser_firefox:$HOME/.cache/mozilla"
+        "browser_google:$HOME/.cache/Google"
+        "gradle_cache:$HOME/.gradle/caches"
+        "pipenv_cache:$HOME/.cache/pipenv"
+        "node_gyp:$HOME/.cache/node-gyp"
+        "torch_ext:$HOME/.cache/torch_extensions"
+        "tsc_cache:$HOME/.cache/typescript"
+        "bun_cache:$HOME/.bun/install/cache"
     )
     local entry key path
     for entry in "${du_probes[@]}"; do
@@ -712,6 +791,50 @@ check_cleanup() {
     if (( puppeteer_cache > THRESH_PUPPETEER )); then
         items+=("puppeteer:1:$puppeteer_cache")
         total_cleanable=$((total_cleanable + puppeteer_cache))
+    fi
+    # Playwright: flag only the PRUNABLE bytes (stale browser versions + stale
+    # mcp-chrome* hash builds), not the whole cache — newest + in-use stay.
+    local playwright_prunable
+    playwright_prunable=$(playwright_prunable_bytes)
+    : "${playwright_prunable:=0}"
+    if (( playwright_prunable > THRESH_PLAYWRIGHT )); then
+        items+=("playwright:1:$playwright_prunable")
+        total_cleanable=$((total_cleanable + playwright_prunable))
+    fi
+
+    # Browser disk caches: sum Brave + Chrome + Firefox + Google (all pure cache).
+    local browser_total
+    browser_total=$(( $(_du browser_brave) + $(_du browser_chrome) \
+                    + $(_du browser_firefox) + $(_du browser_google) ))
+    if (( browser_total > THRESH_BROWSER_CACHE )); then
+        items+=("browser_caches:1:$browser_total")
+        total_cleanable=$((total_cleanable + browser_total))
+    fi
+
+    # Misc tier-1 regenerable caches: gradle, pipenv, node-gyp, torch, tsc, bun.
+    local gradle_c pipenv_c nodegyp_c torch_c tsc_c bun_c
+    gradle_c=$(_du gradle_cache); pipenv_c=$(_du pipenv_cache)
+    nodegyp_c=$(_du node_gyp); torch_c=$(_du torch_ext)
+    tsc_c=$(_du tsc_cache); bun_c=$(_du bun_cache)
+    : "${gradle_c:=0}" "${pipenv_c:=0}" "${nodegyp_c:=0}"
+    : "${torch_c:=0}" "${tsc_c:=0}" "${bun_c:=0}"
+    if (( gradle_c > THRESH_GRADLE )); then
+        items+=("gradle_cache:1:$gradle_c"); total_cleanable=$((total_cleanable + gradle_c))
+    fi
+    if (( pipenv_c > THRESH_PIPENV )); then
+        items+=("pipenv_cache:1:$pipenv_c"); total_cleanable=$((total_cleanable + pipenv_c))
+    fi
+    if (( nodegyp_c > THRESH_NODE_GYP )); then
+        items+=("node_gyp:1:$nodegyp_c"); total_cleanable=$((total_cleanable + nodegyp_c))
+    fi
+    if (( torch_c > THRESH_TORCH_EXT )); then
+        items+=("torch_ext:1:$torch_c"); total_cleanable=$((total_cleanable + torch_c))
+    fi
+    if (( tsc_c > THRESH_TSC_CACHE )); then
+        items+=("tsc_cache:1:$tsc_c"); total_cleanable=$((total_cleanable + tsc_c))
+    fi
+    if (( bun_c > THRESH_BUN_CACHE )); then
+        items+=("bun_cache:1:$bun_c"); total_cleanable=$((total_cleanable + bun_c))
     fi
 
     # Docker tier output: 5 lines (containers, builder, images, volumes, dangling-count)
@@ -934,6 +1057,30 @@ show_suggestions() {
                 ;;
             puppeteer)
                 other_lines+=("    prune Puppeteer Chrome versions: $(human_size "$size")  ${DIM}(keep newest)${NC}")
+                ;;
+            playwright)
+                other_lines+=("    prune Playwright stale browsers: $(human_size "$size")  ${DIM}(keep newest + in-use)${NC}")
+                ;;
+            browser_caches)
+                other_lines+=("    rm browser caches: $(human_size "$size")  ${DIM}(Brave/Chrome/Firefox/Google)${NC}")
+                ;;
+            gradle_cache)
+                other_lines+=("    prune Gradle caches: $(human_size "$size")  ${DIM}(stops daemons, keeps wrapper/jdks)${NC}")
+                ;;
+            pipenv_cache)
+                other_lines+=("    rm pipenv cache: $(human_size "$size")")
+                ;;
+            node_gyp)
+                other_lines+=("    rm node-gyp cache: $(human_size "$size")")
+                ;;
+            torch_ext)
+                other_lines+=("    rm PyTorch extensions cache: $(human_size "$size")")
+                ;;
+            tsc_cache)
+                other_lines+=("    rm TypeScript cache: $(human_size "$size")")
+                ;;
+            bun_cache)
+                other_lines+=("    bun pm cache rm: $(human_size "$size")")
                 ;;
             docker_dangling)
                 # $count holds the number of dangling images; size is unreliable.
@@ -1312,6 +1459,96 @@ do_cleanup() {
                 done
             done'
             if maybe_run "Puppeteer Chrome (keep newest)" "$s" "$prune_cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Playwright stale browsers (prune old versions + stale mcp-chrome builds) -----
+    if is_enabled playwright; then
+        local s; s=$(playwright_prunable_bytes)
+        if (( s > 0 )); then
+            # Re-derive the exact dir list at run time (same selector as the size
+            # calc) and rm each. Keeps newest version per family + in-use mcp build.
+            local prune_cmd='while IFS= read -r d; do [[ -n "$d" ]] && rm -rf "$d"; done < <(playwright_prune_dirs)'
+            if maybe_run "Playwright stale browsers (keep newest + in-use)" "$s" "$prune_cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Browser disk caches (Brave/Chrome/Firefox/Google) -----
+    if is_enabled browser_caches; then
+        # Size is the summed item persisted under the browser_caches key (the
+        # individual browser_* probe keys are not cached, only their sum).
+        local s; s=$(cache_size_for browser_caches)
+        if (( s > 0 )); then
+            local prune_cmd='rm -rf ~/.cache/BraveSoftware ~/.cache/google-chrome ~/.cache/mozilla ~/.cache/Google'
+            if maybe_run "Browser caches" "$s" "$prune_cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Gradle caches (stop daemons first; keep wrapper/ + jdks/) -----
+    if is_enabled gradle_cache; then
+        local s; s=$(cache_size_for gradle_cache)
+        if (( s > 0 )) && [[ -d "$HOME/.gradle/caches" ]]; then
+            # Stop daemons so we don't delete caches out from under a live build.
+            local prune_cmd='command -v gradle >/dev/null && gradle --stop >/dev/null 2>&1; pkill -f "GradleDaemon" 2>/dev/null; rm -rf ~/.gradle/caches'
+            if maybe_run "Gradle caches (keep wrapper/jdks)" "$s" "$prune_cmd"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- pipenv download cache -----
+    if is_enabled pipenv_cache; then
+        local s; s=$(cache_size_for pipenv_cache)
+        if (( s > 0 )); then
+            if maybe_run "pipenv cache" "$s" "rm -rf ~/.cache/pipenv"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- node-gyp header cache -----
+    if is_enabled node_gyp; then
+        local s; s=$(cache_size_for node_gyp)
+        if (( s > 0 )); then
+            if maybe_run "node-gyp cache" "$s" "rm -rf ~/.cache/node-gyp"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- PyTorch compiled extensions cache -----
+    if is_enabled torch_ext; then
+        local s; s=$(cache_size_for torch_ext)
+        if (( s > 0 )); then
+            if maybe_run "PyTorch extensions cache" "$s" "rm -rf ~/.cache/torch_extensions"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- TypeScript compiler cache -----
+    if is_enabled tsc_cache; then
+        local s; s=$(cache_size_for tsc_cache)
+        if (( s > 0 )); then
+            if maybe_run "TypeScript cache" "$s" "rm -rf ~/.cache/typescript"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Bun install cache -----
+    if is_enabled bun_cache; then
+        local s; s=$(cache_size_for bun_cache)
+        if (( s > 0 )); then
+            # Prefer the bun-native command (keeps cache dir structure sane).
+            local prune_cmd='command -v bun >/dev/null && bun pm cache rm >/dev/null 2>&1 || rm -rf ~/.bun/install/cache'
+            if maybe_run "Bun install cache" "$s" "$prune_cmd"; then
                 freed=$((freed + s))
             fi
         fi
@@ -1885,6 +2122,14 @@ CATEGORIES:
   drkonqi             ~/.cache/drkonqi      (KDE crash dumps)
   wrangler            ~/.cache/.wrangler    (Cloudflare CLI cache)
   puppeteer           ~/.cache/puppeteer    (keeps newest Chrome version)
+  playwright          ~/.cache/ms-playwright (keeps newest browser + in-use mcp build)
+  browser_caches      ~/.cache/{Brave,chrome,mozilla,Google}  (pure disk cache)
+  gradle_cache        ~/.gradle/caches      (stops daemons, keeps wrapper/jdks)
+  pipenv_cache        ~/.cache/pipenv       (download cache)
+  node_gyp            ~/.cache/node-gyp     (native-addon headers)
+  torch_ext           ~/.cache/torch_extensions (recompiled on next use)
+  tsc_cache           ~/.cache/typescript   (TS compiler cache)
+  bun_cache           ~/.bun/install/cache  (bun pm cache rm)
   docker_containers   tier 1, safe         (docker container prune -f)
   docker_builder      tier 1, safe         (docker builder prune -af)
   docker_dangling     tier 1, safe         (docker image prune -f)

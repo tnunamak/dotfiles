@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Mint a PDPP owner self-export bearer token by driving the AS device flow
+# server-to-server, mirroring apps/web/src/app/dashboard/lib/owner-token.ts
+# (function mintOwnerToken).
+#
+# Defaults BASE_URL and PDPP_OWNER_PASSWORD from environment, so if you have
+# sourced ~/.shell_secrets in your shell, this just works:
+#
+#   pdpp-mint-owner-token
+#
+# Or override explicitly:
+#   BASE_URL=https://pdpp.example.com PDPP_OWNER_PASSWORD=... pdpp-mint-owner-token
+#
+# Prints the access_token to stdout on success. Errors go to stderr.
+set -euo pipefail
+
+BASE_URL="${BASE_URL:-${PDPP_BASE_URL:-}}"
+: "${BASE_URL:?BASE_URL or PDPP_BASE_URL required (e.g. https://pdpp.vivid.fish)}"
+: "${PDPP_OWNER_PASSWORD:?PDPP_OWNER_PASSWORD required (set in ~/.shell_secrets)}"
+CLIENT_ID="pdpp-polyfill-owner-bootstrap"
+
+COOKIE_JAR="$(mktemp)"
+trap 'rm -f "$COOKIE_JAR"' EXIT
+
+# 1. POST /owner/login -> Set-Cookie: pdpp_owner_session=...
+login_status=$(curl -sS -o /dev/null -w "%{http_code}" \
+  -c "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d "{\"password\":\"$PDPP_OWNER_PASSWORD\"}" \
+  "$BASE_URL/owner/login")
+case "$login_status" in
+  200|302) ;;
+  *) echo "owner/login failed: HTTP $login_status" >&2; exit 1 ;;
+esac
+
+# 2. POST /oauth/device_authorization -> {device_code, user_code}
+device_json=$(curl -fsS -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d "{\"client_id\":\"$CLIENT_ID\"}" \
+  "$BASE_URL/oauth/device_authorization")
+device_code=$(echo "$device_json" | jq -r .device_code)
+user_code=$(echo "$device_json"   | jq -r .user_code)
+
+# 3. POST /device/approve {user_code}
+curl -fsS -o /dev/null -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d "{\"user_code\":\"$user_code\"}" \
+  "$BASE_URL/device/approve"
+
+# 4. POST /oauth/token (device_code grant) -> {access_token}
+token_json=$(curl -fsS -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d "{\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\",\"device_code\":\"$device_code\",\"client_id\":\"$CLIENT_ID\"}" \
+  "$BASE_URL/oauth/token")
+echo "$token_json" | jq -r .access_token
