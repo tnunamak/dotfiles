@@ -1,6 +1,56 @@
 # Memo: `/tmp` RAM exhaustion from tmux-resurrect pane-content snapshots
 
-_Status: open problem, documented for investigation. No fix applied. Recorded 2026-06-04._
+_Status: ROOT-CAUSED + fix VALIDATED in harness (2026-06-04). Live 53GB reclaimed. Patches committed to dotfiles; activate via next reboot's tmux-restore.service ExecStartPre (NOT applied live yet — live stress-testing on the 259-clone env caused save pile-ups, so activation is deferred to a clean boot). See "Resolution" below._
+
+## Resolution (2026-06-04)
+
+**Root cause (confirmed, not the memo's original hedge):** `strip_assistant_pane_contents()`
+in the fork's `save-assistant-sessions.sh` does `mktemp -d` (line 877) with NO trap and NO
+disk-backed TMPDIR, extracts the full ~1GB `pane_contents.tar.gz` to delete assistant panes,
+then `rm -rf` at line 906. When a save is SIGKILL'd mid-strip (overlapping 5-min saves; the
+strip is slow), the GB-sized dir leaks in `/tmp` (tmpfs = RAM). The 49 tiny plain-file orphans
+are the same story for the line-661 named temps (EXIT trap can't catch SIGKILL).
+
+**Ideal fix (chosen): don't capture assistant pane scrollback at all.** Assistant TUIs relaunch
+fresh on restore, so their captured scrollback is discarded anyway — the strip was remedial
+surgery undoing work that shouldn't happen. Skipping capture makes the archive ~1GB smaller,
+deletes the leaky strip function entirely, and is restore-safe (every restore path guards on
+`pane_contents_file_exists`). Non-assistant pane contents are preserved (user wants those).
+
+**Delivery, split by ownership:**
+- **Upstream tmux-resurrect `save.sh`** (NOT owned; no PR — avoid maintainer): runtime Patch 3
+  in `patch-assistant-resurrect.sh` makes `dump_pane_contents` skip assistant panes.
+- **Fork `timvw/tmux-assistant-resurrect`** (owned, has Docker test suite): committed + tested +
+  pushed. Add batch `assistant_subtree_pids` to `lib-detect.sh` (one `ps` snapshot + one awk pass,
+  proven equivalent to `pane_has_assistant` but ~0.013s vs 0.34s/42s — per-pane was the slowness
+  that *caused* the SIGKILL leak). Remove `strip_assistant_pane_contents()` + its call. Add a
+  regression test asserting batch == authoritative.
+
+**Perf proof (2026-06-04):** per-pane `pane_has_assistant` over the grouped-session pane list =
+42s (would re-cause SIGKILL). Batch `assistant_subtree_pids` = 0.013s, exact match vs authoritative
+(agree=27 missed=0 extra=0 on unique pane pids).
+
+**Critical bug found during live testing (fixed):** `assistant_subtree_pids` prints pids
+NEWLINE-separated, but the patch's skip check is a space-glob `case " $_ar_skip " in *" $pid "*`.
+Newlines never match the space-glob → every assistant pane was captured anyway. Only surfaced on
+the real 259-grouped-clone env (the single-session harness scenario false-greened past it, partly
+because the silent claude stub had no scrollback to capture). Fix: normalize with
+`tr '\n' ' '` in the patch. The harness scenario was then hardened: `GROUPED_CLONES=20` +
+stubs that print marker scrollback + content-based assertions. Discriminator proof: buggy
+(newline) patch → harness FAILS (assistant content captured); fixed patch → harness PASSES 9/0.
+
+**Lesson:** validate in the harness BEFORE touching live. Live stress-testing here (triggering
+saves + killing them mid-flight) orphaned `tmux_spinner.sh` processes twice ("Saving..." stuck in
+status) and piled up overlapping saves on the 259-clone env. The harness with `GROUPED_CLONES`
+replicates the failure mode faithfully — use it.
+
+**Harness scenario:** `pane-capture-skip` (in `devcontainer/scripts/tmux-restore-test/`). Run:
+`bash run.sh --scenario pane-capture-skip` (fixed, expect PASS) or
+`bash run.sh --scripts-dir <buggy-scripts> --scenario pane-capture-skip` (buggy, expect FAIL).
+
+---
+
+_Original investigation notes below (recorded 2026-06-04, pre-fix)._
 
 ## Summary
 

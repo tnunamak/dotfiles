@@ -44,6 +44,7 @@ docker exec -it -u tester -e XDG_RUNTIME_DIR=/run/user/1000 tmux-restore-test zs
 | `no-backups-dir` | `backups/` dir entirely removed. | Both pass when live dir has saves. |
 | `cliff-shrink` | No crash, but session shrinks 8 → 1 window across saves. | **OLD fails:** cliff guard works one save behind, doesn't catch. |
 | `empty-live-dir` | First save only; live copy deleted. | **OLD fails:** post-save-backup never made backup (early-exit on first dangling-`last` save). |
+| `pane-capture-skip` | Patch 3: assistant panes skipped at pane-content capture time. 4 windows (0,1 = claude stubs with marker scrollback; 2,3 = plain), `GROUPED_CLONES=20` to mirror the real many-clone env. Asserts assistant content (any clone) absent, plain content present, no `/tmp` leak. | **Buggy (newline-delimited skip set) fails:** the space-glob skip check never matches newline-separated pids, so assistant content is captured across all clones. Run buggy via `--scripts-dir <dir-with-newline-bug>`. Fixed passes 9/0. |
 
 ## Architecture
 

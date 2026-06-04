@@ -135,6 +135,43 @@ fi
 run_saves "$SAVES_BEFORE"
 echo "[populate:$SCENARIO] phase A: ran $SAVES_BEFORE saves with $WINDOW_COUNT windows"
 
+# --- Optional: capture-skip test (Patch 3) ---
+# Echo a marker into every pane so each has scrollback, then run ONE save with
+# pane-content capture and stage the resulting archive for the assertion script.
+# Assistant panes (windows 0..LAUNCH_ASSISTANTS-1) must be ABSENT from the
+# archive; plain panes (the rest) must be PRESENT. We stage a copy because the
+# crash simulation below mutates/removes the live archive.
+if [[ "${CAPTURE_SKIP_TEST:-0}" == "1" ]]; then
+  echo "[populate:$SCENARIO] capture-skip: seeding pane scrollback + running capture save"
+  # Assistant panes run the claude stub (no shell to echo into), so they have no
+  # extra scrollback — that's fine, the point is they must not be captured.
+  # Seed plain panes with a marker so they have content worth capturing.
+  for w in $(tmux list-windows -t "$SESSION" -F '#{window_index}'); do
+    if (( w >= LAUNCH_ASSISTANTS )); then
+      tmux send-keys -t "$SESSION:$w" "echo CAPTURE_MARKER_win_$w" Enter 2>/dev/null || true
+    fi
+  done
+  sleep 1
+  # A fresh save with capture on. tmux.conf sets @resurrect-capture-pane-contents on.
+  rm -f "$RESURRECT_DIR/pane_contents.tar.gz"
+  tmux rename-window -t "$SESSION:0" "cap-$RANDOM" 2>/dev/null || true
+  bash "$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh" >/dev/null 2>&1 || true
+  sleep 1
+  if [[ -f "$RESURRECT_DIR/pane_contents.tar.gz" ]]; then
+    cp "$RESURRECT_DIR/pane_contents.tar.gz" "$RESURRECT_DIR/capture-test-archive.tar.gz"
+    echo "[populate:$SCENARIO] capture-skip: staged archive; entries:"
+    gzip -dc "$RESURRECT_DIR/capture-test-archive.tar.gz" 2>/dev/null | tar tf - 2>/dev/null | grep 'pane-' | sed 's/^/    /'
+  else
+    echo "[populate:$SCENARIO] capture-skip: WARNING no pane_contents.tar.gz produced"
+  fi
+  # Leak check MUST run here (pre-reboot): /tmp is cleared on the simulated
+  # reboot, so checking in assert would be meaningless. Record the count of
+  # leaked tmp.* dirs to a file the assertion script reads.
+  leaked_now="$(find /tmp -maxdepth 1 -name 'tmp.*' -type d 2>/dev/null | wc -l)"
+  echo "$leaked_now" > "$RESURRECT_DIR/capture-test-tmp-leak-count"
+  echo "[populate:$SCENARIO] capture-skip: /tmp/tmp.* dirs after capture save: $leaked_now"
+fi
+
 # --- Phase B (optional): shrink and save again ---
 # Mimics the "user closed some windows just before crash" or "broken state"
 if (( SHRINK_TO > 0 )); then

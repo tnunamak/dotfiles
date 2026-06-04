@@ -77,12 +77,19 @@ mkdir -p "$HOME/.local/bin"
 # Pass through args (e.g. --resume <id>) so the plugin's argv-based
 # session-id detector finds them. exec -a NAME bash -c also keeps the
 # program name in argv[0], satisfying the plugin's regex match.
+# The stubs print a marker line on start so the pane has real scrollback —
+# required by the pane-capture-skip scenario: tmux-resurrect only captures panes
+# with content (pane_has_any_content), so a silent stub would be excluded
+# regardless of Patch 3, giving a false-green skip test. The marker gives the
+# assistant pane genuine content that Patch 3 must actively skip.
 cat > "$HOME/.local/bin/claude" <<'EOF'
 #!/usr/bin/env bash
+echo "ASSISTANT_TUI_SCROLLBACK_claude_marker"
 exec -a "claude $*" bash -c 'while :; do sleep 3600 & wait; done'
 EOF
 cat > "$HOME/.local/bin/codex" <<'EOF'
 #!/usr/bin/env bash
+echo "ASSISTANT_TUI_SCROLLBACK_codex_marker"
 exec -a "codex $*" bash -c 'while :; do sleep 3600 & wait; done'
 EOF
 chmod +x "$HOME/.local/bin/claude" "$HOME/.local/bin/codex"

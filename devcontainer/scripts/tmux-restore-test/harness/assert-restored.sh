@@ -13,6 +13,13 @@ EXPECTED_ASSISTANTS="${EXPECTED_ASSISTANTS:-0}"
 # both patches (canonicalize + --resume regex). Used by durability scenarios
 # to confirm tmux-restore.service's ExecStartPre re-applied them.
 CHECK_PATCH_PRESENT="${CHECK_PATCH_PRESENT:-0}"
+# CHECK_CAPTURE_SKIP=1 asserts Patch 3 worked: the pane_contents.tar.gz produced
+# by populate's pre-crash save contains NO assistant pane entries (they were
+# skipped at capture time) but DOES contain plain-pane entries, and the save
+# left no leaked /tmp/tmp.* dirs. The archive is staged by populate-state.sh at
+# $RESURRECT_DIR/capture-test-archive.tar.gz (the live one is consumed by the
+# crash simulation).
+CHECK_CAPTURE_SKIP="${CHECK_CAPTURE_SKIP:-0}"
 RESURRECT_DIR="$HOME/.tmux/resurrect"
 PASS=0
 FAIL=0
@@ -177,6 +184,66 @@ if (( CHECK_PATCH_PRESENT )); then
     echo "$fresh_bad" | sed 's/^/    /'
   else
     pass "post-restore save uses canonical session names"
+  fi
+fi
+
+# --- Check 8 (optional): Patch 3 skips assistant panes at capture time ---
+if (( CHECK_CAPTURE_SKIP )); then
+  echo "--- capture-skip checks ---"
+  ARC="$RESURRECT_DIR/capture-test-archive.tar.gz"
+  # The patch must be present for this test to mean anything.
+  SAVE_SH="$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+  if grep -qF 'AR-Patch3' "$SAVE_SH"; then
+    pass "Patch 3 marker present in tmux-resurrect save.sh"
+  else
+    fail "Patch 3 marker MISSING from save.sh (patch did not apply)"
+  fi
+
+  if [[ ! -f "$ARC" ]]; then
+    fail "capture-test archive missing ($ARC) — populate did not stage it"
+  else
+    entries="$(gzip -dc "$ARC" 2>/dev/null | tar tf - 2>/dev/null | grep 'pane-' | sed 's|.*/pane-||')"
+    echo "captured pane entries:"; echo "$entries" | sed 's/^/    /'
+    # Extract the actual CONTENT of the archive so we assert on text, not just
+    # addresses. The claude stub prints ASSISTANT_TUI_SCROLLBACK_*_marker on
+    # start, so the assistant panes have real content that MUST be skipped — a
+    # silent stub would be excluded by tmux-resurrect's own empty-pane check and
+    # give a false-green. The plain panes echo CAPTURE_MARKER_win_*.
+    body="$(gzip -dc "$ARC" 2>/dev/null | tar xfO - 2>/dev/null)"
+    # Assistant panes (windows 0,1): NO clone of their address (main:0.0, main:1.0,
+    # main-N:0.0, main-N:1.0 across all grouped clones) and no marker text may
+    # appear. The grouped-clone case is the one the newline bug regressed on —
+    # the content (marker text) check is the robust, address-independent assertion.
+    if echo "$entries" | grep -qE '(^|^main-[0-9]+):?0\.0$|(^|^main-[0-9]+):?1\.0$' \
+       || echo "$entries" | grep -qE ':0\.0$|:1\.0$' \
+       || echo "$body" | grep -q 'ASSISTANT_TUI_SCROLLBACK'; then
+      fail "assistant pane content WAS captured (Patch 3 did not skip it)"
+      echo "    assistant-addressed entries found:"; echo "$entries" | grep -E ':0\.0$|:1\.0$' | head -5 | sed 's/^/      /'
+    else
+      pass "assistant pane contents skipped across all grouped clones (address + marker absent)"
+    fi
+    # Plain panes (windows 2,3): at least one clone address present AND marker text.
+    if echo "$entries" | grep -qE ':2\.0$' && echo "$entries" | grep -qE ':3\.0$' \
+       && echo "$body" | grep -q 'CAPTURE_MARKER_win_'; then
+      pass "non-assistant pane contents preserved (addresses + marker text present)"
+    else
+      fail "non-assistant pane contents missing (expected window 2 and 3 addresses + marker text)"
+    fi
+  fi
+
+  # No leaked /tmp/tmp.* dirs from the capture-test save. The count was recorded
+  # by populate-state.sh PRE-reboot (the simulated reboot clears /tmp, so we
+  # cannot check it here directly).
+  LEAK_FILE="$RESURRECT_DIR/capture-test-tmp-leak-count"
+  if [[ -f "$LEAK_FILE" ]]; then
+    leaked="$(cat "$LEAK_FILE")"
+    if [[ "$leaked" == "0" ]]; then
+      pass "no leaked /tmp/tmp.* dirs after capture-test save (recorded pre-reboot)"
+    else
+      fail "$leaked leaked /tmp/tmp.* dir(s) after capture-test save (recorded pre-reboot)"
+    fi
+  else
+    fail "capture-test tmp-leak-count not recorded (populate block did not run)"
   fi
 fi
 

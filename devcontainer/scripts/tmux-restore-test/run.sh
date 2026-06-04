@@ -151,7 +151,24 @@ SECOND_SERVICE_RESTART=0
 # sessions in the JSON and that they restored cleanly. 0 = skip checks.
 EXPECTED_ASSISTANTS=0
 CHECK_PATCH_PRESENT=0
+CHECK_CAPTURE_SKIP=0
 case "$SCENARIO" in
+  pane-capture-skip)
+    # Validates Patch 3: assistant panes are skipped when tmux-resurrect captures
+    # pane contents. 4 windows: 0,1 run claude stubs (assistant), 2,3 plain shells.
+    # GROUPED_CLONES=20 mirrors the user's real environment (hundreds of grouped
+    # session clones), where each pane's pid appears under many addresses
+    # (main:0.0, main-0:0.0, ... main-19:0.0). This is the discriminating setup:
+    # the original newline-delimited skip set silently captured EVERY clone of
+    # each assistant pane (the space-glob never matched newline-separated pids);
+    # the fix (newline→space normalization) skips them all. A single-session
+    # scenario would NOT catch that bug.
+    # populate seeds scrollback + runs a capture save + stages the archive;
+    # assert verifies NO assistant content (any clone) is captured, plain content
+    # IS, and no /tmp leak. no-crash (DELETE_LIVE_LAST=0) — only the save matters.
+    SCENARIO_VARS+=(-e WINDOW_COUNT=4 -e SAVES_BEFORE=1 -e DELETE_LIVE_LAST=0 \
+                    -e LAUNCH_ASSISTANTS=2 -e GROUPED_CLONES=20 -e CAPTURE_SKIP_TEST=1)
+    CHECK_CAPTURE_SKIP=1 ;;
   dangling-symlink)
     # Baseline: 4 saves, then delete the live copy of the most recent.
     # backups/ + best.txt remain, so OLD scripts can recover via best.txt.
@@ -332,11 +349,14 @@ fi
 
 echo ""
 echo ">>> phase 3: assertions"
-EXPECTED_WINDOWS=8
+# Most scenarios use 8 windows; the capture-skip scenario uses 4.
+EXPECTED_WINDOWS="${EXPECTED_WINDOWS:-8}"
+[[ "$SCENARIO" == "pane-capture-skip" ]] && EXPECTED_WINDOWS=4
 ASSERT_VARS=(
   -e EXPECTED_WINDOWS="$EXPECTED_WINDOWS"
   -e EXPECTED_ASSISTANTS="$EXPECTED_ASSISTANTS"
   -e CHECK_PATCH_PRESENT="$CHECK_PATCH_PRESENT"
+  -e CHECK_CAPTURE_SKIP="$CHECK_CAPTURE_SKIP"
 )
 user_exec "${ASSERT_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
 exit_code=$?
