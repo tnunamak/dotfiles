@@ -65,13 +65,13 @@ To update the devcontainer config from upstream:
 # Review the diff, then commit if happy
 ```
 
-To apply the dotfiles-managed MCP definitions to Claude and Codex:
+To apply the dotfiles-managed MCP definitions to Codex, Claude, and Gemini:
 
 ```bash
 ./sync-mcps.sh
 ```
 
-The shared MCP definitions live in `ai/mcp-servers.json`. `sync-mcps.sh` keeps the repo free of secrets: Codex reads `LINEAR_API_KEY` from the environment at runtime, while Claude writes the current bearer header into local `~/.claude.json`, so rerun the sync after rotating that key.
+The shared MCP definitions live in `ai/mcp-servers.json` as one canonical server list with per-agent availability. `sync-mcps.sh` renders that list for Codex, Claude, and Gemini. It keeps the repo free of secrets: Codex reads token env vars at runtime, while Claude/Gemini write current bearer headers into local config, so rerun the sync after rotating those keys.
 
 ## tmux (session persistence)
 

@@ -146,12 +146,20 @@ if ! command -v gog &>/dev/null; then
 fi
 
 # rtk (CLI proxy that reduces LLM token consumption)
+# Hook command is `rtk hook claude` (built-in subcommand), wired in stowed claude/.claude/settings.json.
 if ! command -v rtk &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 fi
-# rtk init: --no-patch to avoid overwriting stowed settings.json (hook is already in it)
-if [[ ! -f ~/.claude/hooks/rtk-rewrite.sh ]]; then
-  rtk init --global --no-patch
+
+# Foundry (Ethereum toolkit: cast, forge, anvil, chisel)
+# Keep ~/.foundry/bin in PATH before running the installer so its profile-file
+# patcher sees the path already present; stowed shell config owns PATH setup.
+export PATH="$HOME/.foundry/bin:$PATH"
+if ! command -v foundryup &>/dev/null; then
+  curl -fsSL https://foundry.paradigm.xyz | bash
+fi
+if ! command -v cast &>/dev/null || ! command -v forge &>/dev/null || ! command -v anvil &>/dev/null; then
+  foundryup
 fi
 
 # Set zsh as default shell
@@ -174,6 +182,10 @@ NO_FOLD_PKGS=(bin nvim claude tmux)
 # Remove files that tools create before stow can link them
 # (claude/rtk init write ~/.claude/settings.json as a regular file)
 [[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]] && rm ~/.claude/settings.json
+# (gemini-cli writes ~/.gemini/settings.json as a regular file on first run;
+#  also ~/.codex/hooks.json if anything has touched it)
+[[ -f ~/.gemini/settings.json && ! -L ~/.gemini/settings.json ]] && rm ~/.gemini/settings.json
+[[ -f ~/.codex/hooks.json && ! -L ~/.codex/hooks.json ]] && rm ~/.codex/hooks.json
 
 for pkg in "${PACKAGES[@]}"; do
   extra_flags=()
@@ -217,6 +229,72 @@ fi
 if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   systemctl --user daemon-reload
   systemctl --user enable tmux-restore.service 2>/dev/null || true
+fi
+
+# Codex: disable alternate-screen mode so the TUI runs inline and kitty's
+# native scrollback works. tui.alternate_screen=auto only opts out for
+# Zellij; on kitty+tmux the user still gets a bounded alt-screen viewport
+# that wraps. Idempotently insert the [tui] section if missing.
+# Upstream config: github.com/openai/codex/pull/8555
+CODEX_CONFIG="$HOME/.codex/config.toml"
+if [[ -f "$CODEX_CONFIG" ]] && ! grep -qF '[tui]' "$CODEX_CONFIG"; then
+  # Find first existing TOML section ([projects...], [profiles...], etc.)
+  # and insert our block before it. If no sections exist, append at end.
+  first_section_line=$(grep -n '^\[' "$CODEX_CONFIG" | head -1 | cut -d: -f1)
+  if [[ -n "$first_section_line" ]]; then
+    sed -i "${first_section_line}i [tui]\nalternate_screen = \"never\"\n" "$CODEX_CONFIG"
+  else
+    printf '\n[tui]\nalternate_screen = "never"\n' >> "$CODEX_CONFIG"
+  fi
+  echo "Patched Codex config: tui.alternate_screen=never"
+fi
+
+# Codex: register context-mode MCP server. Stow can't manage config.toml because
+# Codex mutates it (per-project trust levels), so we idempotently append.
+if [[ -f "$CODEX_CONFIG" ]] && ! grep -qF '[mcp_servers.context-mode]' "$CODEX_CONFIG"; then
+  printf '\n[mcp_servers.context-mode]\ncommand = "context-mode"\n' >> "$CODEX_CONFIG"
+  echo "Patched Codex config: registered context-mode MCP server"
+fi
+
+# Codex: enable hooks. The feature flag was renamed from `codex_hooks` to
+# `hooks`; migrate older configs and ensure the current flag is enabled.
+# https://developers.openai.com/codex/hooks
+if [[ -f "$CODEX_CONFIG" ]]; then
+  if grep -qE '^\s*codex_hooks\s*=' "$CODEX_CONFIG"; then
+    sed -i 's/^\([[:space:]]*\)codex_hooks\([[:space:]]*=\)/\1hooks\2/' "$CODEX_CONFIG"
+    echo "Patched Codex config: migrated codex_hooks to hooks"
+  fi
+
+  if ! grep -qE '^\s*hooks\s*=\s*true' "$CODEX_CONFIG"; then
+    if grep -qF '[features]' "$CODEX_CONFIG"; then
+      sed -i '/^\[features\]/a hooks = true' "$CODEX_CONFIG"
+    else
+      printf '\n[features]\nhooks = true\n' >> "$CODEX_CONFIG"
+    fi
+    echo "Patched Codex config: enabled hooks"
+  fi
+fi
+
+# Claude Code: install plugins. `enabledPlugins` in settings.json only takes
+# effect after the marketplace is cloned to ~/.claude/plugins/marketplaces/<name>/
+# and the plugin is installed. Both are runtime state Claude Code mutates, so
+# we drive them imperatively via the CLI. `marketplace add` and `install` are
+# both idempotent (no-op if already present).
+if command -v claude &>/dev/null; then
+  # marketplace_name:source_spec — source_spec is what `claude plugin marketplace add` accepts
+  declare -A CC_MARKETPLACES=(
+    [context-mode]="mksglu/context-mode"
+  )
+  for mp in "${!CC_MARKETPLACES[@]}"; do
+    if ! claude plugin marketplace list 2>/dev/null | grep -qF "$mp"; then
+      claude plugin marketplace add "${CC_MARKETPLACES[$mp]}" || echo "WARN: failed to add marketplace $mp"
+    fi
+  done
+  for plugin in context-mode@context-mode; do
+    if ! claude plugin list 2>/dev/null | grep -qF "$plugin"; then
+      claude plugin install "$plugin" || echo "WARN: failed to install $plugin"
+    fi
+  done
 fi
 
 # Patch koboldcpp's environment.yaml. The upstream file has three problems for

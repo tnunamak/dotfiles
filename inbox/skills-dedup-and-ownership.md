@@ -54,7 +54,7 @@ Since `setup.sh` already changed to use `npx skills add -g` for upstream suites 
 ### Files created/moved
 - `ai/skills/impeccable/` — 21 skills moved here from `~/.agents/skills/` (originally installed by `npx skills add pbakaus/impeccable`)
 - `ai/skills/local/` — 13 skills:
-  - `autoresearch-tasks`, `skill-creator`, `skill-to-evals` (moved from `claude/` stow package)
+  - `autoresearch-tasks`, `skill-creator`, `skill-to-evals-v2` (moved from `claude/` stow package)
   - `cognitive-load` (moved from pdpp, added missing YAML frontmatter)
   - `css-clamp-calculation`, `karpathy-guidelines`, `tailwind-merge-recipe`, `tailwind-sort` (moved from pdpp)
   - `nextjs`, `shadcn`, `vercel-composition-patterns`, `vercel-react-best-practices`, `web-design-guidelines` (moved from pdpp — **these are the ones that need dedup resolution**)

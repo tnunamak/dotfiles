@@ -50,6 +50,16 @@ devc --rebuild ~/code/my-project  # rebuild from scratch
 
 Or link manually: `link-devcontainer` / `unlink-devcontainer`.
 
+### Python
+
+- Use `uv` for everything Python (`uv venv`, `uv pip`, `uv run`) — never raw `pip`/`venv`. It's faster and hardlinks from a shared cache, so per-project deps don't duplicate on disk.
+
+### `/tmp` is RAM-backed (Ubuntu 25.10)
+
+- On this machine `/tmp` is a `tmpfs` mounted by systemd's `tmp.mount`, sized at 50% of RAM (the Ubuntu 25.10 default). Files written there consume physical memory (spillable to swap), not disk.
+- Don't clone repos or run builds (`cargo`/`tauri`/`pnpm` dev trees, etc.) under `/tmp` — a debug build tree there can silently eat tens of GB of RAM. Use a disk-backed path for checkouts and build output.
+- `~/.tmp` is a disk-backed scratch directory (on the root NVMe, not tmpfs) — prefer it over `/tmp` for anything large or long-lived.
+
 ### AI / context hygiene
 
 - Respect `.gitignore` and `.aiignore` (if present) when gathering context for the model.

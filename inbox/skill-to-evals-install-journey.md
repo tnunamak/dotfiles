@@ -23,10 +23,10 @@ Vendored the files into `claude/.claude/skills/skill-to-evals/` and let stow sym
 
 ### Current state: `ai/skills/local/` (working)
 
-The skill now lives at `ai/skills/local/skill-to-evals/` and is symlinked into `~/.claude/skills/skill-to-evals` by setup.sh's local-skills loop. The old stow copy was cleaned up.
+The skill now lives at `ai/skills/local/skill-to-evals-v2/` and is symlinked into `~/.claude/skills/skill-to-evals-v2` by setup.sh's local-skills loop. The old stow copy was cleaned up.
 
 Validated 2026-04-18:
-- `~/.claude/skills/skill-to-evals` → symlink to `~/code/dotfiles/ai/skills/local/skill-to-evals`
+- `~/.claude/skills/skill-to-evals-v2` -> symlink to `~/code/dotfiles/ai/skills/local/skill-to-evals-v2`
 - Both `SKILL.md` and `PROJECT_NOTES.md` present
 - Claude Code discovers and lists the skill
 
