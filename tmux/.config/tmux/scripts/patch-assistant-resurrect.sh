@@ -12,6 +12,14 @@
 set -euo pipefail
 
 ASSISTANT_SAVE="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
+# Upstream tmux-resurrect's save script (NOT owned — patched in place here rather
+# than via a PR). Patch 3 makes its pane-content capture skip assistant panes.
+RESURRECT_SAVE="$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+# Our own helper (committed in dotfiles, stowed here) defining
+# assistant_subtree_pids. Patch 3 sources it into tmux-resurrect's save.sh.
+SUBTREE_LIB="$HOME/.config/tmux/scripts/lib-assistant-subtree.sh"
+# The fork's save script still contains the old, leaky strip function (Patch 5
+# removes it). Same file 2a/2b patch.
 LOG="$HOME/.tmux/resurrect/patch-assistant-resurrect.log"
 
 log() {
@@ -78,8 +86,78 @@ if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTAN
   applied=$((applied + 1))
 fi
 
+# Patch 3: skip assistant panes when tmux-resurrect captures pane contents.
+# Upstream `dump_pane_contents` (in tmux-resurrect/scripts/save.sh) captures the
+# scrollback of EVERY pane into pane_contents.tar.gz. Assistant (Claude/Codex/
+# OpenCode) TUIs are relaunched fresh on restore, so their captured scrollback is
+# useless — and capturing it bloated the archive by ~1GB and drove a /tmp tmpfs
+# RAM leak (the old strip step's mktemp -d leaked GB-sized dirs when a save was
+# SIGKILLed mid-strip). This patch sources our lib-assistant-subtree.sh, takes
+# ONE ps snapshot, and skips capture for any pane whose process subtree contains
+# an assistant (assistant_subtree_pids — fast, batched). Non-assistant scrollback
+# is unaffected. Marker `# AR-Patch3` makes it idempotent across TPM updates.
+if [[ -f "$RESURRECT_SAVE" ]] &&
+   ! grep -qF 'AR-Patch3' "$RESURRECT_SAVE" &&
+   grep -qF 'dump_pane_contents() {' "$RESURRECT_SAVE"; then
+  awk -v lib="$SUBTREE_LIB" '
+    /^dump_pane_contents\(\) \{$/ && !done1 {
+      print
+      print "\t# AR-Patch3 (patch-assistant-resurrect.sh): skip assistant panes at"
+      print "\t# capture time so their scrollback never enters pane_contents.tar.gz."
+      print "\t_ar_lib=\"" lib "\"; _ar_skip=\"\""
+      print "\t# assistant_subtree_pids prints one pid per line; the space-glob skip"
+      print "\t# check below needs them space-separated, so normalize newlines."
+      print "\t[ -f \"$_ar_lib\" ] && . \"$_ar_lib\" && _ar_skip=\" $(assistant_subtree_pids 2>/dev/null | tr \"\\n\" \" \") \""
+      done1=1; next
+    }
+    /capture_pane_contents "\$\{session_name\}/ && !done2 {
+      match($0, /^[ \t]*/); ws=substr($0,1,RLENGTH)
+      print ws "case \" $_ar_skip \" in *\" $pane_pid \"*) continue ;; esac"
+      print
+      done2=1; next
+    }
+    { print }
+  ' "$RESURRECT_SAVE" >"${RESURRECT_SAVE}.artmp" &&
+  cat "${RESURRECT_SAVE}.artmp" >"$RESURRECT_SAVE" &&
+  rm -f "${RESURRECT_SAVE}.artmp"
+  if grep -qF 'AR-Patch3' "$RESURRECT_SAVE"; then
+    log "applied patch 3: skip assistant panes in tmux-resurrect pane-content capture"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 3 failed to apply (anchors not found in $RESURRECT_SAVE)"
+    rm -f "${RESURRECT_SAVE}.artmp"
+  fi
+fi
+
+# Patch 5: remove the now-vestigial, still-leaky strip_assistant_pane_contents()
+# from the fork's save-assistant-sessions.sh. With Patch 3 active, assistant panes
+# never enter pane_contents.tar.gz, so the strip finds nothing — but it still does
+# a full ~1GB extract into an unguarded `mktemp -d`, retaining the exact /tmp leak
+# surface this whole change exists to remove. We delete the call site (replacing
+# the `if [ "$count" -gt 0 ]; then strip_assistant_pane_contents; fi` block with a
+# no-op marker) and leave the function definition harmlessly unreferenced.
+# Idempotent: guarded by the AR-Patch5 marker.
+if [[ -f "$ASSISTANT_SAVE" ]] &&
+   ! grep -qF 'AR-Patch5' "$ASSISTANT_SAVE" &&
+   grep -qF 'strip_assistant_pane_contents' "$ASSISTANT_SAVE"; then
+  # Replace the guarded call (3 lines) with a marker comment. The call always
+  # appears as exactly:
+  #     if [ "$count" -gt 0 ]; then
+  #         strip_assistant_pane_contents
+  #     fi
+  perl -0777 -i -pe '
+    s/\tif \[ "\$count" -gt 0 \]; then\n\t\tstrip_assistant_pane_contents\n\tfi\n/\t# AR-Patch5: strip_assistant_pane_contents call removed — assistant panes\n\t# are now skipped at capture time (see patch-assistant-resurrect.sh Patch 3),\n\t# so the leaky extract\/strip\/repack is no longer needed.\n/;
+  ' "$ASSISTANT_SAVE"
+  if grep -qF 'AR-Patch5' "$ASSISTANT_SAVE"; then
+    log "applied patch 5: removed strip_assistant_pane_contents call (leak surface)"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 5 failed to apply (call-site pattern not found in $ASSISTANT_SAVE)"
+  fi
+fi
+
 if (( applied == 0 )); then
-  # Nothing to do; both patches already in place. Don't spam the log.
+  # Nothing to do; all patches already in place. Don't spam the log.
   exit 0
 fi
 
