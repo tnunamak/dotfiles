@@ -117,14 +117,17 @@ if [[ -f "$RESURRECT_SAVE" ]] &&
       done2=1; next
     }
     { print }
-  ' "$RESURRECT_SAVE" >"${RESURRECT_SAVE}.artmp" &&
-  cat "${RESURRECT_SAVE}.artmp" >"$RESURRECT_SAVE" &&
-  rm -f "${RESURRECT_SAVE}.artmp"
-  if grep -qF 'AR-Patch3' "$RESURRECT_SAVE"; then
+  ' "$RESURRECT_SAVE" >"${RESURRECT_SAVE}.artmp"
+  # Validate the transform BEFORE replacing the live file: the marker must be
+  # present AND the result must be syntactically valid bash. Only then overwrite
+  # save.sh — a broken transform must never clobber a working save script.
+  if grep -qF 'AR-Patch3' "${RESURRECT_SAVE}.artmp" && bash -n "${RESURRECT_SAVE}.artmp" 2>/dev/null; then
+    cat "${RESURRECT_SAVE}.artmp" >"$RESURRECT_SAVE"
+    rm -f "${RESURRECT_SAVE}.artmp"
     log "applied patch 3: skip assistant panes in tmux-resurrect pane-content capture"
     applied=$((applied + 1))
   else
-    log "warning: patch 3 failed to apply (anchors not found in $RESURRECT_SAVE)"
+    log "warning: patch 3 NOT applied (marker missing or bash -n failed) — save.sh left untouched"
     rm -f "${RESURRECT_SAVE}.artmp"
   fi
 fi
@@ -145,14 +148,20 @@ if [[ -f "$ASSISTANT_SAVE" ]] &&
   #     if [ "$count" -gt 0 ]; then
   #         strip_assistant_pane_contents
   #     fi
-  perl -0777 -i -pe '
+  # Transform to a temp file, validate (marker present + bash -n), then swap —
+  # never edit ASSISTANT_SAVE in place, since it also carries the 2a/2b
+  # boot-restore patches and must not be left corrupt.
+  perl -0777 -pe '
     s/\tif \[ "\$count" -gt 0 \]; then\n\t\tstrip_assistant_pane_contents\n\tfi\n/\t# AR-Patch5: strip_assistant_pane_contents call removed — assistant panes\n\t# are now skipped at capture time (see patch-assistant-resurrect.sh Patch 3),\n\t# so the leaky extract\/strip\/repack is no longer needed.\n/;
-  ' "$ASSISTANT_SAVE"
-  if grep -qF 'AR-Patch5' "$ASSISTANT_SAVE"; then
+  ' "$ASSISTANT_SAVE" >"${ASSISTANT_SAVE}.artmp"
+  if grep -qF 'AR-Patch5' "${ASSISTANT_SAVE}.artmp" && bash -n "${ASSISTANT_SAVE}.artmp" 2>/dev/null; then
+    cat "${ASSISTANT_SAVE}.artmp" >"$ASSISTANT_SAVE"
+    rm -f "${ASSISTANT_SAVE}.artmp"
     log "applied patch 5: removed strip_assistant_pane_contents call (leak surface)"
     applied=$((applied + 1))
   else
-    log "warning: patch 5 failed to apply (call-site pattern not found in $ASSISTANT_SAVE)"
+    rm -f "${ASSISTANT_SAVE}.artmp"
+    log "warning: patch 5 NOT applied (marker missing or bash -n failed) — file left untouched"
   fi
 fi
 
