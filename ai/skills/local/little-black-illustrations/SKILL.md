@@ -1,14 +1,11 @@
 ---
 name: little-black-illustrations
-description: Generate hand-drawn, whimsical body illustrations for articles (default style targets Chinese-language posts). Use when the user asks to illustrate an article, post, blog, Notion doc, workflow doc, methodology, process, structure, state, metaphor, or argument — triggers on "whimsical/quirky illustration", "hand-drawn diagram", "article illustration", "body illustration", "illustration suggestions", "shot list", or "remove the title / edit the image". Defaults to the "Little Black" (小黑) mascot, pure-white hand-drawn line art, sparse red/orange/blue annotations, and a clean but imaginative visual style. On-image text/annotations are written in Chinese by default since the source articles are Chinese; ask the user if the target language differs.
+description: Generate hand-drawn, whimsical body illustrations for articles. Use when the user asks to illustrate an article, post, blog, Notion doc, workflow doc, methodology, process, structure, state, metaphor, or argument — triggers on "whimsical/quirky illustration", "hand-drawn diagram", "article illustration", "body illustration", "illustration suggestions", "shot list", or "remove the title / edit the image". Uses the "Little Black" mascot, pure-white hand-drawn line art, sparse red/orange/blue English annotations, and a clean but imaginative visual style.
 ---
 
 # Little Black — Whimsical Article Illustrations
 
-> Translated from the original Chinese skill `ian-xiaohei-illustrations` by helloianneo.
-> The *instructions* below are in English; the *on-image annotations* the skill produces
-> stay Chinese by default because the target articles are Chinese. If the user is
-> illustrating a non-Chinese article, ask which language the labels should be in.
+> Translated and adapted from the original Chinese skill `ian-xiaohei-illustrations` by helloianneo.
 
 ## Core positioning
 
