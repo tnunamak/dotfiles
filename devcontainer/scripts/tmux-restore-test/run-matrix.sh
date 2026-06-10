@@ -18,6 +18,8 @@ SCENARIOS=(
   double-crash
   assistant-grouped-naming
   assistant-grouped-naming-unpatched
+  assistant-empty-group-race
+  assistant-empty-group-race-unpatched
   assistant-tpm-wipe-recovery
   second-boot-restore-failure
   kitty-attach-clean-boot
@@ -45,6 +47,7 @@ VERSIONS=(
 # silent regression that leaves us thinking the bug was caught when it wasn't.
 NEGATIVE_SCENARIOS=(
   assistant-grouped-naming-unpatched
+  assistant-empty-group-race-unpatched
 )
 
 # Build once

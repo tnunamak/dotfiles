@@ -86,6 +86,39 @@ if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTAN
   applied=$((applied + 1))
 fi
 
+# Patch 2c: harden canonicalization against a transient #{session_group} miss.
+# (Incident 2026-06-08.) Upstream PR #30 upstreamed the 2a/2b logic, but its
+# canonicalization is `session_group=$(... '#{session_group}'); [ -n ] && name=$group`.
+# That trusts #{session_group} alone. During the autosave that became the last
+# pre-crash save, the panes were listed under a grouped CLONE (main-4) while
+# #{session_group} came back EMPTY for that target — either because the clone was
+# being torn down mid-save (display-message errored, swallowed by `|| true`) or
+# tmux hadn't populated the field yet. Result: 19 panes written as `main-4:N.0`,
+# and the boot restore (only `main` exists) logged "restored 0 of 19".
+#
+# Fix: add a suffix-strip FALLBACK. After the upstream group resolution, if the
+# name STILL looks like a grouped clone (`<base>-<N>`) AND a session with that
+# bare `<base>` exists, strip the `-<N>`. This catches the empty-#{session_group}
+# race without touching legitimately-named sessions (the `has-session <base>`
+# guard means we only strip when the canonical base actually exists). Idempotent
+# via the AR-Patch2c marker.
+if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE" &&
+   ! grep -qF 'AR-Patch2c' "$ASSISTANT_SAVE"; then
+  # Insert the fallback immediately after the existing `fi` that closes the
+  # `if [ -n "$session_group" ]; then session_name="$session_group"; fi` block,
+  # i.e. right before the `printf ... >>"$PANE_FILE"` line. We anchor on the
+  # printf line and prepend the fallback above it.
+  perl -0777 -i -pe '
+    s{(\n\t\tprintf '"'"'%s:%s\.%s\|%s\|%s\\n'"'"' "\$session_name")}{\n\t\t# AR-Patch2c (patch-assistant-resurrect.sh): fallback when #{session_group}\n\t\t# was empty but the name is still a grouped clone (<base>-<N>). Strip the\n\t\t# numeric suffix only if the canonical base session actually exists.\n\t\tcase "\$session_name" in\n\t\t\t*-[0-9]*)\n\t\t\t\t_ar_base="\${session_name%-*}"\n\t\t\t\tif [ "\$_ar_base" != "\$session_name" ] \&\& tmux has-session -t "=\$_ar_base" 2>/dev/null; then\n\t\t\t\t\tsession_name="\$_ar_base"\n\t\t\t\tfi\n\t\t\t\t;;\n\t\tesac$1}
+  ' "$ASSISTANT_SAVE"
+  if grep -qF 'AR-Patch2c' "$ASSISTANT_SAVE" && bash -n "$ASSISTANT_SAVE" 2>/dev/null; then
+    log "applied patch 2c: suffix-strip fallback for empty #{session_group}"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 2c NOT applied cleanly (marker missing or bash -n failed) — review $ASSISTANT_SAVE"
+  fi
+fi
+
 # Patch 3: skip assistant panes when tmux-resurrect captures pane contents.
 # Upstream `dump_pane_contents` (in tmux-resurrect/scripts/save.sh) captures the
 # scrollback of EVERY pane into pane_contents.tar.gz. Assistant (Claude/Codex/

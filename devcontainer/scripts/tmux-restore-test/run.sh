@@ -130,6 +130,8 @@ INSTALL_VARS=()
 case "$SCENARIO" in
   assistant-grouped-naming-unpatched)
     INSTALL_VARS+=(-e PATCH_PLUGIN=0) ;;
+  assistant-empty-group-race-unpatched)
+    INSTALL_VARS+=(-e PATCH_PLUGIN=0) ;;
 esac
 user_exec "${INSTALL_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/install-dotfiles.sh
 
@@ -247,6 +249,27 @@ case "$SCENARIO" in
     SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2 -e UNPATCH_PLUGIN_AFTER_SAVE=1)
     EXPECTED_ASSISTANTS=3
     CHECK_PATCH_PRESENT=1 ;;
+  assistant-empty-group-race)
+    # Incident 2026-06-08. Upstream PR #30 upstreamed the 2a/2b canonicalization,
+    # but it trusts #{session_group} alone. When that query returns EMPTY while a
+    # pane is still listed under a grouped clone (main-N) — the clone being torn
+    # down mid-save, display-message erroring, swallowed by `|| true` — the pane
+    # is saved verbatim as 'main-N:' and the next boot restores 0 of N.
+    # FORCE_EMPTY_SESSION_GROUP=1 deterministically reproduces that race via a
+    # tmux shim. With the PATCHED plugin (Patch 2c suffix-strip fallback), the
+    # save must STILL produce canonical 'main:' addresses. This is the
+    # discriminator the pre-existing assistant-grouped-naming scenario missed —
+    # that one only exercised the happy path where #{session_group} resolves.
+    SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2 -e FORCE_EMPTY_SESSION_GROUP=1)
+    EXPECTED_ASSISTANTS=3 ;;
+  assistant-empty-group-race-unpatched)
+    # Negative control: same empty-#{session_group} race, but PATCH_PLUGIN=0 so
+    # only vanilla upstream canonicalization runs (no Patch 2c). The save MUST
+    # produce 'main-N:' addresses and the restore MUST log "restored 0 of N",
+    # proving the bug is real and that Patch 2c is what fixes it. If this
+    # scenario ever PASSES, the discriminator is broken (false confidence).
+    SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2 -e FORCE_EMPTY_SESSION_GROUP=1)
+    EXPECTED_ASSISTANTS=3 ;;
   second-boot-restore-failure)
     # Reproduces a production bug: after a successful first-boot restore,
     # a forced `systemctl restart tmux.service` (second run of tmux-restore.service)

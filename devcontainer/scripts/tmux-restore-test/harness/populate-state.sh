@@ -132,8 +132,47 @@ if (( GROUPED_CLONES > 0 )); then
   tmux list-sessions
 fi
 
+# --- Optional: force #{session_group} to come back EMPTY during the save ---
+# (Incident 2026-06-08.) The upstream canonicalization trusts #{session_group}
+# alone: `g=$(tmux display-message -t "$name" -p '#{session_group}'); [ -n "$g" ]
+# && name=$g`. If that query returns empty while a pane is still listed under a
+# grouped CLONE (main-N) — which happens when the clone is being torn down
+# mid-save, so display-message errors and `|| true` swallows it — the pane is
+# saved verbatim as `main-N:`, and the next boot restores 0 of N.
+# This knob shadows `tmux` with a wrapper that returns EMPTY for the
+# `#{session_group}` query (and passes everything else through), deterministically
+# reproducing that race. Patch 2c's suffix-strip fallback must still canonicalize
+# to `main:`; without 2c the saved json keeps `main-N:` and the assertion fails.
+if [[ "${FORCE_EMPTY_SESSION_GROUP:-0}" == "1" ]]; then
+  WRAP_DIR="$HOME/.ar-tmux-wrap"
+  mkdir -p "$WRAP_DIR"
+  REAL_TMUX="$(command -v tmux)"
+  cat >"$WRAP_DIR/tmux" <<WRAP
+#!/usr/bin/env bash
+# Test shim: emulate a transient empty #{session_group} during save.
+# Only the exact session-group probe is forced empty; all else passes through.
+for a in "\$@"; do
+  case "\$a" in
+    '#{session_group}') exit 0 ;;
+  esac
+done
+exec "$REAL_TMUX" "\$@"
+WRAP
+  chmod +x "$WRAP_DIR/tmux"
+  export PATH="$WRAP_DIR:$PATH"
+  echo "[populate:$SCENARIO] FORCE_EMPTY_SESSION_GROUP: tmux wrapper active ($WRAP_DIR/tmux)"
+fi
+
 run_saves "$SAVES_BEFORE"
 echo "[populate:$SCENARIO] phase A: ran $SAVES_BEFORE saves with $WINDOW_COUNT windows"
+
+# Remove the shim immediately after the pre-crash saves so it can't perturb the
+# crash simulation or the post-reboot restore (which must use real tmux).
+if [[ "${FORCE_EMPTY_SESSION_GROUP:-0}" == "1" ]]; then
+  rm -rf "$HOME/.ar-tmux-wrap"
+  export PATH="${PATH#"$HOME/.ar-tmux-wrap":}"
+  echo "[populate:$SCENARIO] FORCE_EMPTY_SESSION_GROUP: tmux wrapper removed"
+fi
 
 # --- Optional: capture-skip test (Patch 3) ---
 # Echo a marker into every pane so each has scrollback, then run ONE save with
