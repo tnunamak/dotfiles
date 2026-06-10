@@ -5,7 +5,7 @@ description: Generate hand-drawn, whimsical body illustrations for articles. Use
 
 # Little Black — Whimsical Article Illustrations
 
-> Translated and adapted from the original Chinese skill `ian-xiaohei-illustrations` by helloianneo.
+> Adapted from the `ian-xiaohei-illustrations` skill by helloianneo.
 
 ## Core positioning
 
@@ -14,10 +14,10 @@ commercial illustration, PPT infographics, or cute cartoons — it is to turn an
 article's key judgments, processes, structures, states, or metaphors into a clean,
 quirky, creative, readable-but-not-manual-like hand-drawn explanatory sketch.
 
-The default visual IP is "Little Black" (小黑): a solid-black creature with white dot
-eyes, thin legs, and a blank expression, earnestly doing one absurd-but-coherent
-thing. Little Black must take part in the core action of the scene — never just stand
-beside it as decoration.
+The default visual IP is "Little Black": a small slender solid-black cartoon octopus
+with big white dot eyes, eight thin tentacles, and a blank expression, earnestly doing
+one absurd-but-coherent thing. Little Black must take part in the core action of the
+scene — never just stand beside it as decoration.
 
 ## Read these references first
 
@@ -58,7 +58,7 @@ are needed", give a shot list first. For each image write out:
 - The structure type
 - What Little Black is doing in it
 - Suggested elements
-- Suggested Chinese annotation words
+- Suggested English annotation words
 
 Default to 4–8 images. For very short articles, 1–3; even for long pieces don't lightly
 exceed 9. Enough is enough — don't turn the article into a picture book.
@@ -71,10 +71,11 @@ separately. Don't stitch multiple images into one.
 
 Each image conveys only one core structure. The prompt must include:
 
-- 16:9 landscape Chinese article illustration
+- 16:9 landscape article illustration
 - Pure white background
 - Black hand-drawn line art
-- Sparse red/orange/blue handwritten Chinese annotations
+- Sparse red/orange/blue handwritten English annotations (English only — never any
+  non-English text; the model will inject non-English glyphs unless told otherwise)
 - Lots of white space
 - Little Black as the core action subject
 - No PPT, no commercial illustration, no childish cuteness, no complex architecture,
@@ -95,7 +96,7 @@ regenerating or doing a local edit:
 - Little Black is mere decoration
 - The frame is too full
 - It looks too much like a flowchart / PPT
-- Too much Chinese text, or serious typos
+- Any non-English text, too much text, or serious typos
 - A top-left title like "common pitfalls / flowchart / system architecture" appears
 - The style is too cute, childish, or rigid
 - The background is not clean white

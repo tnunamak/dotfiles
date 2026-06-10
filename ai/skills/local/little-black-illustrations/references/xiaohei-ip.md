@@ -1,8 +1,8 @@
-# Little Black (小黑) IP
+# Little Black IP
 
 ## Character definition
 
-Little Black (小黑) is the fixed visual IP for these Chinese article body illustrations.
+Little Black is the fixed visual IP for these article body illustrations.
 
 By default Little Black appears in every image. Little Black is not a mascot, not a
 sticker, not cute decoration — it is an absurd worker earnestly taking part in running
@@ -10,24 +10,28 @@ the system.
 
 ## Appearance
 
-- A small solid-black **octopus**, drawn in a cute cartoon style. Slender and meek,
-  small relative to the canvas — it does not loom or dominate the frame.
-- **Head**: petite narrow oval head, taller than wide. Smooth, clean outline with a
-  slightly hand-drawn wobble. NOT a big chunky dome — the head is modest and small.
-- **Eyes**: two large white circles (prominent and wide-set relative to the small head),
-  each with a small solid black pupil. The big eyes on the small head are the main
-  source of cuteness. NOT tiny pinpoint dots.
-- **Tentacles**: eight thin, fine tentacles — slender little threads, never
-  stubby/chubby and never wild or spiky. The *thinness* is the constant; the *pose*
-  is not. At rest they hang softly straight down and close together (a meek, dainty
-  default). In action they freely reach, grip, pull, plug, haul, and operate things —
-  whatever the scene's core idea needs. A working Little Black is the goal, not a
-  decorative one; let the tentacles do the job even though they're delicate.
-- **Silhouette**: smooth, slim, solid black fill. No spiky textures, no rough scratchy
-  lines, no flame-like or rootlike tendrils.
-- Expression: blank, dazed, calm, earnest. No mouth needed.
-- The octopus form is an advantage: multiple tentacles = naturally doing several things
-  at once, or spread across a system — use this when it fits the concept.
+Little Black is a small **slender solid-black cartoon octopus** (the chosen design;
+see `assets/examples/lock/` for the locked reference). Render it with the *line quality
+and composition vibe of the original examples* in `assets/examples/` — clean, confident,
+medium-thin black ink, slight hand wobble, never sketchy/scratchy/wispy — but the body
+shape is the slender octopus, NOT the original's round blob.
+
+- **Head/body**: a small, slim, solid-black octopus body — petite, slightly tall, smooth
+  clean outline. Slender and meek, small relative to the canvas; it does not loom. NOT a
+  round plump blob, NOT chunky.
+- **Eyes**: two large white circles with small black pupils, prominent on the small body.
+  The big eyes on the slim body are the cuteness. No other facial features, no mouth.
+- **Tentacles**: eight thin, fine tentacles — slender little threads, clean confident
+  ink, never stubby/chubby, never wild, spiky, flame-like, or rootlike. The *slender
+  clean cuteness* is the constant; the *pose* is free. At rest they hang softly below.
+  In action they reach, grip, pull, plug, haul, and operate things as the scene needs.
+  A working Little Black is the goal, not a decorative one.
+- **Line quality**: match the examples — clean, confident, medium-thin black ink with a
+  gentle hand-drawn wobble. Simple crosshatch shading only where an object needs it.
+  Never messy, scribbly, or wispy.
+- Expression: blank, calm, earnest. No mouth needed.
+- The octopus tentacles are an advantage: naturally doing several things at once, or
+  spread across a system — use when it fits, but keep the body slim and clean.
 
 ## Personality
 

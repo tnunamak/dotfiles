@@ -3,7 +3,7 @@
 ## In one line
 
 Pure white, minimal, hand-drawn, lots of white space, restrained, quirky, with a
-product-sketch feel and a handwritten-Chinese feel — structurally clear but not like a
+product-sketch feel and a loose handwritten feel — structurally clear but not like a
 manual.
 
 Like an explanatory sketch casually drawn on white paper by someone who has long worked
@@ -18,7 +18,8 @@ on AI, product, design, and dev tools.
   vector, not heavy outlines.
 - Lots of white space: the subject occupies about 40%–60% of the frame, at least 35%
   blank, ideally one whole quiet region.
-- A few handwritten Chinese annotations: at most 5–8, each ideally 2–8 characters.
+- A few handwritten English annotations: at most 5–8, each ideally 1–3 short words.
+  English only — never any non-English characters.
 - One image conveys only one core action, structure, state, or metaphor.
 - Express structure naturally — do not write the structure-type name on the image.
 

@@ -11,7 +11,7 @@
 - The image is quirky, creative, interesting.
 - Clean and uncluttered; the subject is no more than ~60% of the frame.
 - One image conveys only one core structure.
-- Chinese annotations are few, short, readable.
+- English annotations are few, short, readable (no non-English text).
 - Orange is used only for the main path or arrows.
 - Red is used only for key points, problems, reminders, or results.
 - Blue is used only for supplementary notes, feedback, or system state.
@@ -28,7 +28,7 @@ If any of these appear, regenerate or do a local edit:
 - Text becomes a long paragraph of explanation.
 - The background has paper grain, shadows, gradients, beige, or noise.
 - A realistic UI screenshot or techy interface.
-- Serious Chinese typos, or unreadable annotations.
+- Any non-English characters, serious typos, or unreadable annotations.
 - The image is too rigid, with no absurd metaphor.
 - Too similar to an old case composition in `assets/examples/`.
 

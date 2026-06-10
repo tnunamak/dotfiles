@@ -1,0 +1,57 @@
+# Generation recipe (validated 2026-06-10)
+
+The settings that actually produce clean, on-style Little Black illustrations on
+the local Vivid Fish gateway + ComfyUI (RTX 3090). Hard-won; don't drift from these
+without re-testing.
+
+## Model + workflow
+
+- **Model/quant: Ideogram 4, GGUF Q8_0** (`ideogram4-Q8_0.gguf` +
+  `ideogram4_unconditional-Q8_0.gguf`). GGUF Q8 is r/SD's #1-ranked quant for
+  quality. nvfp4 (no FP4 accel on a 3090) and fp8 (no fp8 tensor cores on Ampere)
+  both render *worse* text; INT8 is fast but crashes intermittently on our stack.
+- **Workflow: `ideogram4-gguf-kijai`** (gateway model name). Mirrors the
+  community-validated Kijai config:
+  - `DualModelGuider` **cfg = 7** (NOT 1.0 — 1.0 is "too soft" and garbles text)
+  - `CFGOverride` **cfg = 3, start_percent = 0.9, end_percent = 1.0** (override only the last 10%)
+  - `ConditioningZeroOut` feeding the guider's negative
+  - `ModelSamplingAuraFlow` **shift = 5**
+  - `BasicScheduler` **simple, 28 steps**, euler sampler
+  - **No split-sigmas, no ExtendIntermediateSigmas** (our earlier hacks hurt text)
+- Requires city96 ComfyUI-GGUF + **PR #459** (adds ideogram arch detection + BF16
+  dequant; not yet merged upstream as of 2026-06-10) and **torch >= 2.7+cu128**.
+- Cost: ~195s cold / faster warm at 1536x1024. Heavy but correct. Quality over speed.
+
+## Why this matters (the dead ends, so nobody repeats them)
+
+The garbled-small-text problem was a **config** problem, not an Ideogram limit.
+Independent r/SD users render 4+ clean labels with this config; our earlier
+cfg=1.0 + split-sigmas + nvfp4 setup was the cause. Ideogram 4 IS the best local
+text model (beats Flux per r/SD) — it just needs the right guidance settings.
+
+## Prompt: JSON with strong style steer
+
+Send Ideogram-4 JSON (the gateway's Qwen3.6 converter builds it from plain text,
+or hand-write it). Two things are essential:
+
+1. **Loose-hand-drawn style steer** (otherwise the config renders clean but
+   digital/vector-looking). Put in `style_description.aesthetics`:
+   > "loose hand-drawn marker and ballpoint-pen doodle on white paper, organic
+   > wobbly imperfect lines, sketchy whiteboard-explainer feel, NOT digital, NOT
+   > vector, NOT geometric, NOT flat-color-fill, casual rough linework, lots of
+   > white space"
+2. **English-only** — the gateway template now enforces this, but reinforce in the
+   brief; Ideogram injects non-English glyphs unprompted otherwise.
+
+## Known limits / open issues
+
+- **bbox collisions (SOLVED — apply this)**: if the octopus bbox overlaps a text
+  bbox, the character breaks the word (e.g. "new task" -> "now|task"). Fix: place
+  the octopus in a clear region (a corner / empty side) whose bbox does NOT overlap
+  any text bbox, and have it point/reach toward the action rather than sit on it.
+  Verified to eliminate the word-breaking.
+- **Label density**: 4-6 large, well-spaced labels render cleanly. Many small
+  crowded labels still degrade — keep labels few and large (matches the skill's
+  existing 5-8-label guideline).
+- Safety filter is stochastic: an occasional grey "blocked" frame = bad seed;
+  retry, don't change the prompt.
