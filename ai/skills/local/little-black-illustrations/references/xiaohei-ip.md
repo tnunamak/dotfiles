@@ -10,13 +10,24 @@ the system.
 
 ## Appearance
 
-- A small solid-black creature.
-- White round dot eyes.
-- Thin legs, occasionally thin arms.
-- Body can be a cylinder, a black bean, a black box, a funnel, a shadow, a hole mouth,
-  or a black block inside a machine.
-- Slightly irregular outline, with a hand-drawn feel.
-- Expression: blank, dazed, calm, earnest.
+- A small solid-black **octopus**, drawn in a cute cartoon style. Slender and meek,
+  small relative to the canvas — it does not loom or dominate the frame.
+- **Head**: petite narrow oval head, taller than wide. Smooth, clean outline with a
+  slightly hand-drawn wobble. NOT a big chunky dome — the head is modest and small.
+- **Eyes**: two large white circles (prominent and wide-set relative to the small head),
+  each with a small solid black pupil. The big eyes on the small head are the main
+  source of cuteness. NOT tiny pinpoint dots.
+- **Tentacles**: eight thin, fine tentacles — slender little threads, never
+  stubby/chubby and never wild or spiky. The *thinness* is the constant; the *pose*
+  is not. At rest they hang softly straight down and close together (a meek, dainty
+  default). In action they freely reach, grip, pull, plug, haul, and operate things —
+  whatever the scene's core idea needs. A working Little Black is the goal, not a
+  decorative one; let the tentacles do the job even though they're delicate.
+- **Silhouette**: smooth, slim, solid black fill. No spiky textures, no rough scratchy
+  lines, no flame-like or rootlike tendrils.
+- Expression: blank, dazed, calm, earnest. No mouth needed.
+- The octopus form is an advantage: multiple tentacles = naturally doing several things
+  at once, or spread across a system — use this when it fits the concept.
 
 ## Personality
 

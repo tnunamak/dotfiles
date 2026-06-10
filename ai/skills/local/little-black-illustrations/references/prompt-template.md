@@ -10,7 +10,7 @@ Visual DNA:
 Pure white background. Minimalist black hand-drawn line art. Slightly wobbly pen lines. Lots of empty white space. Sparse red/orange/blue handwritten English annotations. Clean absurd product-sketch feeling. No gradients, no shadows, no paper texture, no complex background, no commercial vector style, no PPT infographic look, no cute mascot poster, no children's illustration, no realistic UI. All text and labels in English only — no Chinese characters anywhere.
 
 Recurring IP character required:
-"Little Black", a small solid-black absurd creature with white dot eyes, tiny thin legs, blank serious expression, slightly uneven hand-drawn body shape. Little Black must perform the core conceptual action, not decorate the scene. Make Little Black serious, deadpan, and slightly bizarre, not cute.
+"Little Black", a small solid-black cartoon octopus — slender and meek, small relative to the canvas. Petite narrow oval head (taller than wide, NOT a big chunky dome). Two large white circle eyes with small black pupils — prominent and wide-set on the small head, NOT tiny dots. Eight thin fine tentacles like slender little threads — never stubby/chubby, never spiky. At rest the tentacles hang softly straight down; when interacting they reach, grip, pull, plug, or haul as the scene needs. Smooth slim solid-black silhouette, slightly wobbly hand-drawn outline. Blank earnest expression. Little Black must perform the core conceptual action using its tentacles — not decorate the scene. Deadpan, slightly bizarre.
 
 Theme:
 {the article-illustration theme}
