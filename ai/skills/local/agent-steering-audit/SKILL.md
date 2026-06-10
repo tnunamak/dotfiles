@@ -1,6 +1,6 @@
 ---
 name: agent-steering-audit
-description: Audit long-running AI-agent sessions to understand how human steering effort converts into outcomes. Use this skill whenever the user asks about steering drift, forgotten instructions, compaction loss, delegation/ABD failures, agent "flying" windows, maximizing steering value, reducing steering delta, or packaging lessons from a Codex/Claude/Gemini session. This skill is intentionally judgment-oriented: it uses scripts only to locate candidate windows and evidence, then requires contrastive audit cards, counterexamples, and outcome checks before turning observations into advice.
+description: "Audit long-running AI-agent sessions to understand how human steering effort converts into outcomes. Use this skill whenever the user asks about steering drift, forgotten instructions, compaction loss, delegation/ABD failures, agent 'flying' windows, maximizing steering value, reducing steering delta, or packaging lessons from a Codex/Claude/Gemini session. This skill is intentionally judgment-oriented: it uses scripts only to locate candidate windows and evidence, then requires contrastive audit cards, counterexamples, and outcome checks before turning observations into advice."
 ---
 
 # Agent Steering Audit
