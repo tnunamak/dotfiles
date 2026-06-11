@@ -50,8 +50,15 @@ or hand-write it). Two things are essential:
   the octopus in a clear region (a corner / empty side) whose bbox does NOT overlap
   any text bbox, and have it point/reach toward the action rather than sit on it.
   Verified to eliminate the word-breaking.
-- **Label density**: 4-6 large, well-spaced labels render cleanly. Many small
-  crowded labels still degrade — keep labels few and large (matches the skill's
-  existing 5-8-label guideline).
+- **Label density + SPACING (validated boundary)**: ~3-4 large, well-SEPARATED
+  labels render cleanly. Text degrades to gibberish when labels are crowded or
+  lined up close together in a row (e.g. 4 ladder rungs, tight grids, captions
+  packed near each other). Keep labels few, large, and spread far apart across the
+  canvas. Also: an object's `desc` text can leak as a rendered word (e.g. "GROUND"
+  meant as a description appeared as a label) — keep descriptions free of words you
+  don't want drawn, or they may show up.
+- **Sparse scenes also fail**: a lone tiny character in mostly-empty space gives the
+  model too little to anchor on and text degrades. Add light framing content
+  (floor line, curtains, a prop) so the scene isn't near-empty.
 - Safety filter is stochastic: an occasional grey "blocked" frame = bad seed;
   retry, don't change the prompt.
