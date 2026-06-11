@@ -23,6 +23,11 @@ scene — never just stand beside it as decoration.
 
 Load as the task needs; don't stuff them all into context at once:
 
+- `references/generation-recipe.md`: **READ FIRST when actually generating** — the
+  validated model/workflow/settings + style steer + bbox rules that make output
+  clean and on-style. On the Vivid Fish gateway, request model
+  **`ideogram4-gguf-kijai`** (not the gateway's default Klein). Don't drift from
+  these settings without re-testing.
 - `references/style-dna.md`: style DNA, color, text, taboos.
 - `references/xiaohei-ip.md`: Little Black's appearance, personality, action library, taboos.
 - `references/composition-patterns.md`: structure types, original-metaphor method, anti-repetition rules.
