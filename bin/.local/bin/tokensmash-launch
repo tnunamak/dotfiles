@@ -1,0 +1,22 @@
+#!/bin/sh
+# Thin shim: all actuation logic lives in the tokensmash package
+# (`tokensmash launch`, src/tokensmash/study/launchctl.py), which is
+# registry-driven and fail-open. This script only resolves the fastest
+# available tokensmash binary and provides a last-resort plain exec so a
+# broken tokensmash install can never block launching the agent.
+tool="$1"
+
+TSBIN="$HOME/code/tokensmash/.venv/bin/tokensmash"
+if [ -x "$TSBIN" ]; then
+  exec "$TSBIN" launch "$@"
+fi
+if command -v tokensmash >/dev/null 2>&1; then
+  exec tokensmash launch "$@"
+fi
+
+# Last resort: plain agent, no actuation.
+shift 2>/dev/null || true
+real=$(command -v "$tool" 2>/dev/null)
+[ -n "$real" ] && exec "$real" "$@"
+echo "tokensmash-launch: $tool not found" >&2
+exit 127

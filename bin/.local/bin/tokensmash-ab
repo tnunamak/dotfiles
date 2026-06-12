@@ -1,0 +1,3 @@
+#!/bin/sh
+# Thin wrapper: exec the tokensmash repo CLI (single source of truth).
+exec uv run --quiet --project "$HOME/code/tokensmash" tokensmash-ab "$@"

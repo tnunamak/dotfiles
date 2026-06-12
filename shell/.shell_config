@@ -122,3 +122,8 @@ if [[ $- == *i* ]] && [[ -z "$_SHELL_STATUS_RAN" ]]; then
   ( shell-status-refresh &>/dev/null & )
   ( cleanup --refresh &>/dev/null & )
 fi
+
+# Tokensmash crossover study launchers (fail-open; ~/code/tokensmash/PROTOCOL.md).
+# Remove these two functions to fully disable actuation.
+claude() { tokensmash-launch claude "$@"; }
+codex() { tokensmash-launch codex "$@"; }

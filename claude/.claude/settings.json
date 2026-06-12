@@ -11,6 +11,7 @@
     "pr": ""
   },
   "includeCoAuthoredBy": false,
+  "model": "fable",
   "enableAllProjectMcpServers": false,
   "hooks": {
     "PreToolUse": [
@@ -39,6 +40,14 @@
           {
             "type": "command",
             "command": "\"/home/tnunamak/.nvm/versions/node/v25.8.2/bin/node\" \"/home/tnunamak/.claude/hooks/context-mode-cache-heal.mjs\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tokensmash study link --agent claude-code 2>/dev/null"
           }
         ]
       }
@@ -90,5 +99,7 @@
   "alwaysThinkingEnabled": false,
   "effortLevel": "xhigh",
   "tui": "fullscreen",
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "auto",
+  "skipWorkflowUsageWarning": true
 }

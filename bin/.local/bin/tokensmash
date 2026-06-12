@@ -1,0 +1,4 @@
+#!/bin/sh
+# Thin wrapper: exec the tokensmash repo CLI (single source of truth).
+# Legacy byte-payload script preserved as tokensmash-legacy (and ~/.tmp/tokensmash-legacy-20260612/).
+exec uv run --quiet --project "$HOME/code/tokensmash" tokensmash "$@"

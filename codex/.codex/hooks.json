@@ -10,7 +10,8 @@
       { "hooks": [{ "type": "command", "command": "context-mode hook codex posttooluse" }] }
     ],
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex sessionstart" }] }
+      { "hooks": [{ "type": "command", "command": "context-mode hook codex sessionstart" }] },
+      { "hooks": [{ "type": "command", "command": "tokensmash study link --agent codex 2>/dev/null" }] }
     ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "context-mode hook codex userpromptsubmit" }] }

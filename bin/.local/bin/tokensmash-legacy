@@ -1,0 +1,1310 @@
+#!/usr/bin/env python3
+"""
+Measure token/context reducers by observed payload, not by tool self-reporting.
+
+The core metric is bytes emitted into the agent transcript after a transformation.
+Approximate token counts are shown only as a convenience; byte deltas are the
+auditable result.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import statistics
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+
+STATE_DIR = Path.home() / ".local" / "state" / "tokensmash"
+RUNS_DIR = STATE_DIR / "runs"
+HEADROOM_PY = Path.home() / ".local" / "share" / "uv" / "tools" / "headroom-ai" / "bin" / "python"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Empirically compare context reducers by actual emitted payload."
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    compare = sub.add_parser("compare", help="Compare raw, rtk, and optional Headroom output.")
+    compare.add_argument("--timeout", type=float, default=30.0, help="Per-command timeout seconds.")
+    compare.add_argument(
+        "--headroom",
+        action="store_true",
+        help="Also compress raw output through Headroom's local library.",
+    )
+    compare.add_argument(
+        "--no-store",
+        action="store_true",
+        help="Do not write the measurement JSON to ~/.local/state/tokensmash/runs.",
+    )
+    compare.add_argument("command", nargs=argparse.REMAINDER, help="Command after --")
+
+    suite = sub.add_parser("suite", help="Run a small safe benchmark suite in the current repo.")
+    suite.add_argument("--timeout", type=float, default=30.0)
+    suite.add_argument("--headroom", action="store_true")
+    suite.add_argument("--no-store", action="store_true")
+
+    history = sub.add_parser("history", help="Summarize prior tokensmash runs.")
+    history.add_argument("--limit", type=int, default=20)
+
+    sessions = sub.add_parser("sessions", help="Sample recent Claude/Codex session outputs.")
+    sessions.add_argument("--agent", choices=["all", "claude", "codex"], default="all")
+    sessions.add_argument("--days", type=float, default=7.0, help="Look at files modified in the last N days.")
+    sessions.add_argument("--limit-files", type=int, default=200)
+    sessions.add_argument("--limit-samples", type=int, default=40)
+    sessions.add_argument("--min-bytes", type=int, default=200)
+    sessions.add_argument("--timeout", type=float, default=60.0, help="Per-sample Headroom timeout seconds.")
+    sessions.add_argument("--headroom", action="store_true")
+    sessions.add_argument("--no-store", action="store_true")
+
+    audit_sessions = sub.add_parser("audit-sessions", help="Audit total token/tool-output usage for recent local sessions.")
+    audit_sessions.add_argument("--agent", choices=["all", "claude", "codex"], default="all")
+    audit_sessions.add_argument("--days", type=float, default=7.0, help="Look at session files modified in the last N days.")
+    audit_sessions.add_argument("--started-days", type=float, help="Only include sessions whose first timestamp is within N days.")
+    audit_sessions.add_argument("--limit-files", type=int, default=300)
+    audit_sessions.add_argument("--top", type=int, default=12, help="Number of heaviest sessions to print.")
+    audit_sessions.add_argument("--no-store", action="store_true")
+
+    taskbench = sub.add_parser("taskbench", help="Benchmark navigation tools against historical commit ground truth.")
+    taskbench.add_argument("--repo", default=os.getcwd(), help="Git repo to sample tasks from.")
+    taskbench.add_argument("--limit", type=int, default=8, help="Number of historical tasks to benchmark.")
+    taskbench.add_argument("--max-files", type=int, default=8, help="Skip commits touching more than N files.")
+    taskbench.add_argument("--timeout", type=float, default=30.0)
+    taskbench.add_argument("--no-grep", action="store_true", help="Skip git-grep baseline.")
+    taskbench.add_argument("--semmap-bin", help="Optional semmap binary path for SEMMAP context benchmark.")
+    taskbench.add_argument("--scratch-dir", default=str(STATE_DIR / "scratch"), help="Scratch directory for optional tools.")
+    taskbench.add_argument("--no-store", action="store_true")
+
+    doctor = sub.add_parser("doctor", help="Check local reducer availability.")
+
+    args = parser.parse_args()
+    if args.cmd == "compare":
+        command = command_from_remainder(args.command)
+        run = compare_command(command, args.timeout, args.headroom)
+        if not args.no_store:
+            store_run(run)
+        print_run(run)
+        return 0 if run["raw"]["status"] == "ok" else 1
+    if args.cmd == "suite":
+        return run_suite(args.timeout, args.headroom, args.no_store)
+    if args.cmd == "history":
+        print_history(args.limit)
+        return 0
+    if args.cmd == "sessions":
+        run = sample_sessions(args)
+        if not args.no_store:
+            store_session_run(run)
+        print_session_run(run)
+        return 0
+    if args.cmd == "audit-sessions":
+        run = audit_sessions_run(args)
+        if not args.no_store:
+            store_audit_run(run)
+        print_audit_run(run)
+        return 0
+    if args.cmd == "taskbench":
+        run = run_taskbench(args)
+        if not args.no_store:
+            store_taskbench_run(run)
+        print_taskbench_run(run)
+        return 0
+    if args.cmd == "doctor":
+        print_doctor()
+        return 0
+    return 2
+
+
+def command_from_remainder(parts: list[str]) -> str:
+    if parts and parts[0] == "--":
+        parts = parts[1:]
+    if not parts:
+        raise SystemExit("tokensmash compare requires a command after --")
+    if len(parts) == 1:
+        return parts[0]
+    return " ".join(shlex.quote(p) for p in parts)
+
+
+def run_suite(timeout: float, include_headroom: bool, no_store: bool) -> int:
+    commands = [
+        "git status --short",
+        "git diff --stat",
+        "find . -maxdepth 3 -type f",
+        "rg -n \"TODO|FIXME|panic|throw\" . --glob '!**/.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/target/**' --glob '!**/dist/**' --glob '!**/build/**'",
+    ]
+    runs = [compare_command(cmd, timeout, include_headroom) for cmd in commands]
+    if not no_store:
+        for run in runs:
+            store_run(run)
+    for run in runs:
+        print_run(run)
+        print()
+    raw = sum(r["raw"]["bytes"] for r in runs)
+    rtk = sum((r.get("rtk") or {}).get("bytes", r["raw"]["bytes"]) for r in runs)
+    print("suite")
+    print(f"  raw bytes: {raw}")
+    print(f"  rtk bytes: {rtk} ({pct_delta(raw, rtk)})")
+    if include_headroom:
+        headroom = sum((r.get("headroom") or {}).get("bytes", r["raw"]["bytes"]) for r in runs)
+        print(f"  headroom bytes: {headroom} ({pct_delta(raw, headroom)})")
+    return 0
+
+
+def compare_command(command: str, timeout: float, include_headroom: bool) -> dict[str, Any]:
+    raw = run_shell(command, timeout)
+    rewritten = rtk_rewrite(command)
+    rtk = None
+    if rewritten:
+        rtk = run_shell(rewritten, timeout)
+        rtk["command"] = rewritten
+        rtk["exit_matches_raw"] = rtk["exit_code"] == raw["exit_code"]
+
+    headroom = None
+    if include_headroom:
+        headroom = run_headroom_compress(raw["payload_text"], timeout)
+
+    run = {
+        "schema": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "cwd": os.getcwd(),
+        "command": command,
+        "raw": raw,
+        "rtk_rewrite": rewritten,
+        "rtk": rtk,
+        "headroom": headroom,
+        "notes": [
+            "bytes are actual captured stdout+stderr payload bytes",
+            "token estimates are local estimates, not provider billing",
+            "stored run files contain hashes/metrics, not full command output",
+        ],
+    }
+    strip_payload_text(run)
+    return run
+
+
+def run_shell(command: str, timeout: float) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            executable=os.environ.get("SHELL", "/bin/sh"),
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        elapsed = time.monotonic() - started
+        payload = proc.stdout + proc.stderr
+        text = payload.decode("utf-8", "replace")
+        return payload_metrics(
+            status="ok",
+            payload=payload,
+            payload_text=text,
+            exit_code=proc.returncode,
+            duration_ms=round(elapsed * 1000),
+        )
+    except subprocess.TimeoutExpired as exc:
+        payload = (exc.stdout or b"") + (exc.stderr or b"")
+        text = payload.decode("utf-8", "replace")
+        return payload_metrics(
+            status="timeout",
+            payload=payload,
+            payload_text=text,
+            exit_code=None,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+
+
+def payload_metrics(
+    *,
+    status: str,
+    payload: bytes,
+    payload_text: str,
+    exit_code: int | None,
+    duration_ms: int,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "bytes": len(payload),
+        "lines": payload_text.count("\n") + (1 if payload_text and not payload_text.endswith("\n") else 0),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "estimated_tokens": estimate_tokens(payload_text),
+        "payload_text": payload_text,
+    }
+
+
+def estimate_tokens(text: str) -> dict[str, Any]:
+    try:
+        import tiktoken  # type: ignore
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return {"count": len(enc.encode(text)), "method": "tiktoken:cl100k_base"}
+    except Exception:
+        return {"count": (len(text.encode("utf-8")) + 3) // 4, "method": "bytes/4"}
+
+
+def rtk_rewrite(command: str) -> str | None:
+    if not have("rtk"):
+        return None
+    proc = subprocess.run(["rtk", "rewrite", command], text=True, capture_output=True, check=False)
+    rewritten = proc.stdout.strip()
+    return rewritten or None
+
+
+def run_headroom_compress(content: str, timeout: float) -> dict[str, Any]:
+    if not HEADROOM_PY.exists():
+        return {"status": "missing", "error": f"{HEADROOM_PY} not found"}
+
+    code = r"""
+import json
+import sys
+from headroom.compress import compress
+
+content = sys.stdin.read()
+result = compress([{"role": "tool", "content": content}], model="claude-sonnet-4-5-20250929")
+compressed = result.messages[0].get("content", content)
+if not isinstance(compressed, str):
+    compressed = json.dumps(compressed, separators=(",", ":"))
+print(json.dumps({
+    "compressed": compressed,
+    "headroom_tokens_before": result.tokens_before,
+    "headroom_tokens_after": result.tokens_after,
+    "headroom_transforms": result.transforms_applied,
+}))
+"""
+    started = time.monotonic()
+    proc = subprocess.run(
+        [str(HEADROOM_PY), "-c", code],
+        text=True,
+        input=content,
+        capture_output=True,
+        timeout=max(timeout, 60.0),
+        check=False,
+        env={**os.environ, "HEADROOM_TELEMETRY": "off", "HEADROOM_TELEMETRY_WARN": "off"},
+    )
+    elapsed = time.monotonic() - started
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "exit_code": proc.returncode,
+            "duration_ms": round(elapsed * 1000),
+            "stderr_sha256": hashlib.sha256(proc.stderr.encode()).hexdigest(),
+            "stderr_preview": proc.stderr[-500:],
+        }
+    parsed = json.loads(proc.stdout)
+    compressed = parsed["compressed"].encode("utf-8", "replace")
+    metrics = payload_metrics(
+        status="ok",
+        payload=compressed,
+        payload_text=parsed["compressed"],
+        exit_code=0,
+        duration_ms=round(elapsed * 1000),
+    )
+    metrics["headroom_tokens_before"] = parsed.get("headroom_tokens_before")
+    metrics["headroom_tokens_after"] = parsed.get("headroom_tokens_after")
+    metrics["headroom_transforms"] = parsed.get("headroom_transforms")
+    return metrics
+
+
+def strip_payload_text(value: Any) -> None:
+    if isinstance(value, dict):
+        value.pop("payload_text", None)
+        for child in value.values():
+            strip_payload_text(child)
+    elif isinstance(value, list):
+        for child in value:
+            strip_payload_text(child)
+
+
+def store_run(run: dict[str, Any]) -> Path:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    digest = hashlib.sha256((run["cwd"] + "\0" + run["command"] + "\0" + run["created_at"]).encode()).hexdigest()[:10]
+    path = RUNS_DIR / f"{ts}-{digest}.json"
+    path.write_text(json.dumps(run, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def print_run(run: dict[str, Any]) -> None:
+    print(run["command"])
+    print_metric("raw", run["raw"], None)
+    if run.get("rtk"):
+        print_metric("rtk", run["rtk"], run["raw"])
+        if run["rtk"].get("exit_matches_raw") is False:
+            print("  rtk warning: exit code changed")
+    else:
+        print("rtk: no rewrite")
+    if run.get("headroom"):
+        print_metric("headroom", run["headroom"], run["raw"])
+
+
+def print_metric(name: str, metric: dict[str, Any], base: dict[str, Any] | None) -> None:
+    if metric.get("status") != "ok":
+        print(f"{name}: {metric.get('status')} {metric.get('error', '')}".rstrip())
+        return
+    token = metric.get("estimated_tokens", {})
+    suffix = ""
+    if base:
+        suffix = f" ({pct_delta(base['bytes'], metric['bytes'])})"
+    print(
+        f"{name}: {metric['bytes']} bytes, {metric['lines']} lines, "
+        f"~{token.get('count')} tokens [{token.get('method')}], "
+        f"exit={metric.get('exit_code')}, {metric['duration_ms']}ms{suffix}"
+    )
+
+
+def pct_delta(before: int, after: int) -> str:
+    if before <= 0:
+        return "n/a"
+    delta = (before - after) / before * 100
+    return f"{delta:+.1f}%"
+
+
+def print_history(limit: int) -> None:
+    paths = sorted(RUNS_DIR.glob("*.json"), reverse=True)[:limit]
+    if not paths:
+        print(f"No runs in {RUNS_DIR}")
+        return
+    for path in paths:
+        run = json.loads(path.read_text())
+        if run.get("kind") == "session-samples":
+            samples = run.get("samples") or []
+            raw = sum((s.get("raw") or {}).get("bytes", 0) for s in samples)
+            headroom = sum((s.get("headroom") or {}).get("bytes", 0) for s in samples if s.get("headroom"))
+            parts = [
+                path.name,
+                f"sessions agent={run.get('agent')}",
+                f"samples={run.get('sample_count', len(samples))}",
+                f"raw={raw}",
+            ]
+            if headroom:
+                parts.append(f"headroom={headroom} {pct_delta(raw, headroom)}")
+            print(" | ".join(parts))
+            continue
+        if run.get("kind") == "taskbench":
+            totals: dict[str, int] = {}
+            for task in run.get("tasks") or []:
+                for name, result in (task.get("results") or {}).items():
+                    totals[name] = totals.get(name, 0) + int(result.get("bytes", 0))
+            parts = [
+                path.name,
+                f"taskbench repo={run.get('repo')}",
+                f"tasks={run.get('task_count')}",
+            ]
+            parts.extend(f"{name}={value}" for name, value in sorted(totals.items()))
+            print(" | ".join(parts))
+            continue
+        if run.get("kind") == "session-audit":
+            summary = run.get("summary") or {}
+            parts = [
+                path.name,
+                f"audit agent={run.get('agent')}",
+                f"sessions={summary.get('session_count', 0)}",
+                f"tokens={summary.get('total_tokens_estimate', 0)}",
+                f"tool_bytes={summary.get('tool_output_bytes', 0)}",
+            ]
+            print(" | ".join(parts))
+            continue
+        raw = run["raw"]["bytes"]
+        rtk = (run.get("rtk") or {}).get("bytes")
+        headroom = (run.get("headroom") or {}).get("bytes")
+        parts = [path.name, run["command"], f"raw={raw}"]
+        if rtk is not None:
+            parts.append(f"rtk={rtk} {pct_delta(raw, rtk)}")
+        if headroom is not None:
+            parts.append(f"headroom={headroom} {pct_delta(raw, headroom)}")
+        print(" | ".join(parts))
+
+
+def sample_sessions(args: argparse.Namespace) -> dict[str, Any]:
+    cutoff = time.time() - args.days * 86400
+    samples: list[dict[str, Any]] = []
+    if args.agent in {"all", "claude"}:
+        samples.extend(sample_claude_sessions(cutoff, args.limit_files, args.min_bytes))
+    if args.agent in {"all", "codex"}:
+        samples.extend(sample_codex_sessions(cutoff, args.limit_files, args.min_bytes))
+
+    samples.sort(key=lambda s: s["raw"]["bytes"], reverse=True)
+    samples = samples[: args.limit_samples]
+    if args.headroom:
+        for sample in samples:
+            sample["headroom"] = run_headroom_compress(sample.pop("payload_text"), args.timeout)
+    else:
+        for sample in samples:
+            sample.pop("payload_text", None)
+
+    run = {
+        "schema": 1,
+        "kind": "session-samples",
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "agent": args.agent,
+        "days": args.days,
+        "limit_files": args.limit_files,
+        "min_bytes": args.min_bytes,
+        "sample_count": len(samples),
+        "samples": samples,
+        "notes": [
+            "samples are recent local Claude/Codex session tool-output payloads",
+            "stored run files contain hashes/metrics, not full output text",
+        ],
+    }
+    strip_payload_text(run)
+    return run
+
+
+def sample_claude_sessions(cutoff: float, limit_files: int, min_bytes: int) -> list[dict[str, Any]]:
+    root = Path.home() / ".claude" / "projects"
+    files = recent_jsonl_files(root, cutoff, limit_files)
+    samples: list[dict[str, Any]] = []
+    for path in files:
+        for obj in iter_jsonl(path):
+            if "toolUseResult" not in obj:
+                continue
+            text = claude_tool_result_text(obj.get("toolUseResult"))
+            if not text:
+                continue
+            payload = text.encode("utf-8", "replace")
+            if len(payload) < min_bytes:
+                continue
+            metric = payload_metrics(
+                status="ok",
+                payload=payload,
+                payload_text=text,
+                exit_code=None,
+                duration_ms=0,
+            )
+            samples.append(
+                {
+                    "agent": "claude",
+                    "source_file_sha256": sha_path(path),
+                    "timestamp": obj.get("timestamp"),
+                    "kind": claude_tool_result_kind(obj.get("toolUseResult")),
+                    "cwd_hash": sha_text(str(obj.get("cwd") or "")),
+                    "raw": metric,
+                    "payload_text": text,
+                }
+            )
+    return samples
+
+
+def sample_codex_sessions(cutoff: float, limit_files: int, min_bytes: int) -> list[dict[str, Any]]:
+    root = Path.home() / ".codex" / "sessions"
+    files = recent_jsonl_files(root, cutoff, limit_files)
+    samples: list[dict[str, Any]] = []
+    for path in files:
+        for obj in iter_jsonl(path):
+            payload = obj.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            text = codex_payload_text(payload)
+            if not text:
+                continue
+            data = text.encode("utf-8", "replace")
+            if len(data) < min_bytes:
+                continue
+            metric = payload_metrics(
+                status="ok",
+                payload=data,
+                payload_text=text,
+                exit_code=None,
+                duration_ms=0,
+            )
+            samples.append(
+                {
+                    "agent": "codex",
+                    "source_file_sha256": sha_path(path),
+                    "timestamp": obj.get("timestamp"),
+                    "kind": str(payload.get("type") or obj.get("type") or "unknown"),
+                    "raw": metric,
+                    "payload_text": text,
+                }
+            )
+    return samples
+
+
+def recent_jsonl_files(root: Path, cutoff: float, limit: int) -> list[Path]:
+    if not root.exists():
+        return []
+    files = [p for p in root.rglob("*.jsonl") if p.is_file() and p.stat().st_mtime >= cutoff]
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+
+
+def iter_jsonl(path: Path):
+    try:
+        with path.open(errors="ignore") as f:
+            for line in f:
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return
+
+
+def claude_tool_result_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if not isinstance(value, dict):
+        return ""
+    parts = []
+    for key in ("stdout", "stderr", "content"):
+        val = value.get(key)
+        if isinstance(val, str) and val:
+            parts.append(val)
+        elif val not in (None, "", [], {}):
+            parts.append(json.dumps(val, ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(parts)
+
+
+def claude_tool_result_kind(value: Any) -> str:
+    if isinstance(value, dict):
+        if value.get("stdout") is not None or value.get("stderr") is not None:
+            return "shell-output"
+        if value.get("filePath"):
+            return "file-edit"
+        if value.get("content") is not None:
+            return "tool-content"
+        if value.get("type"):
+            return str(value.get("type"))
+    return type(value).__name__
+
+
+def codex_payload_text(payload: dict[str, Any]) -> str:
+    typ = payload.get("type")
+    if typ in {"function_call_output", "custom_tool_call_output"}:
+        output = payload.get("output")
+        if isinstance(output, str):
+            return output
+        if output is not None:
+            return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+    if typ == "mcp_tool_call_end":
+        result = payload.get("result")
+        if isinstance(result, str):
+            return result
+        if result is not None:
+            return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    if typ == "patch_apply_end":
+        parts = [str(payload.get(k) or "") for k in ("stdout", "stderr")]
+        changes = payload.get("changes")
+        if changes:
+            parts.append(json.dumps(changes, ensure_ascii=False, separators=(",", ":")))
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def store_session_run(run: dict[str, Any]) -> Path:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    digest = hashlib.sha256((run["kind"] + "\0" + run["created_at"]).encode()).hexdigest()[:10]
+    path = RUNS_DIR / f"{ts}-{digest}-sessions.json"
+    path.write_text(json.dumps(run, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def print_session_run(run: dict[str, Any]) -> None:
+    samples = run["samples"]
+    print(f"session samples: {run['sample_count']} agent={run['agent']} days={run['days']}")
+    if not samples:
+        return
+    raw_bytes = [s["raw"]["bytes"] for s in samples]
+    print(
+        f"raw bytes: total={sum(raw_bytes)} median={int(statistics.median(raw_bytes))} "
+        f"p90={percentile(raw_bytes, 90)} max={max(raw_bytes)}"
+    )
+    by_agent: dict[str, int] = {}
+    by_kind: dict[str, int] = {}
+    for sample in samples:
+        by_agent[sample["agent"]] = by_agent.get(sample["agent"], 0) + sample["raw"]["bytes"]
+        by_kind[sample["kind"]] = by_kind.get(sample["kind"], 0) + sample["raw"]["bytes"]
+    print("by agent:", ", ".join(f"{k}={v}" for k, v in sorted(by_agent.items())))
+    print("top kinds:", ", ".join(f"{k}={v}" for k, v in sorted(by_kind.items(), key=lambda kv: kv[1], reverse=True)[:8]))
+    if samples and "headroom" in samples[0]:
+        raw = sum(s["raw"]["bytes"] for s in samples)
+        headroom = sum((s.get("headroom") or {}).get("bytes", s["raw"]["bytes"]) for s in samples)
+        print(f"headroom bytes: {headroom} ({pct_delta(raw, headroom)})")
+    for sample in samples[:10]:
+        line = f"{sample['agent']} {sample['kind']}: raw={sample['raw']['bytes']}"
+        if sample.get("headroom"):
+            line += f" headroom={sample['headroom'].get('bytes')} {pct_delta(sample['raw']['bytes'], sample['headroom'].get('bytes', sample['raw']['bytes']))}"
+        print("  " + line)
+
+
+def audit_sessions_run(args: argparse.Namespace) -> dict[str, Any]:
+    cutoff = time.time() - args.days * 86400
+    started_cutoff = time.time() - args.started_days * 86400 if args.started_days is not None else None
+    sessions: list[dict[str, Any]] = []
+    if args.agent in {"all", "codex"}:
+        sessions.extend(audit_codex_sessions(cutoff, args.limit_files))
+    if args.agent in {"all", "claude"}:
+        sessions.extend(audit_claude_sessions(cutoff, args.limit_files))
+    if started_cutoff is not None:
+        sessions = [s for s in sessions if (s.get("first_timestamp_epoch") or 0) >= started_cutoff]
+    sessions.sort(key=lambda s: (s.get("total_tokens_estimate") or 0, s.get("tool_output_bytes") or 0), reverse=True)
+
+    summary = summarize_session_audit(sessions)
+    return {
+        "schema": 1,
+        "kind": "session-audit",
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "agent": args.agent,
+        "days": args.days,
+        "started_days": args.started_days,
+        "limit_files": args.limit_files,
+        "top": args.top,
+        "session_count": len(sessions),
+        "summary": summary,
+        "sessions": sessions,
+        "notes": [
+            "audits local session JSONL files without storing raw transcript text",
+            "Codex token totals use final token_count total_token_usage per session file",
+            "Claude token totals sum message usage fields because no final session total is logged",
+            "token totals are provider-log estimates, not billing statements",
+        ],
+    }
+
+
+def audit_codex_sessions(cutoff: float, limit_files: int) -> list[dict[str, Any]]:
+    root = Path.home() / ".codex" / "sessions"
+    out = []
+    for path in recent_jsonl_files(root, cutoff, limit_files):
+        stats = new_session_stats("codex", path)
+        last_total: dict[str, Any] = {}
+        call_sources: dict[str, str] = {}
+        for obj in iter_jsonl(path):
+            note_timestamp(stats, obj.get("timestamp"))
+            payload = obj.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            typ = str(payload.get("type") or obj.get("type") or "unknown")
+            stats["event_count"] += 1
+            stats["event_kinds"][typ] = stats["event_kinds"].get(typ, 0) + 1
+            if typ == "user_message":
+                stats["user_turns"] += 1
+            elif typ in {"agent_message", "message"}:
+                stats["assistant_messages"] += 1
+            elif typ in {"function_call", "custom_tool_call", "mcp_tool_call_begin", "web_search_call"}:
+                stats["tool_calls"] += 1
+                call_id = payload.get("call_id")
+                if isinstance(call_id, str):
+                    name = str(payload.get("name") or typ)
+                    call_sources[call_id] = f"{typ}:{name}"
+            text = codex_payload_text(payload)
+            if text:
+                data = text.encode("utf-8", "replace")
+                stats["tool_output_bytes"] += len(data)
+                stats["tool_output_kinds"][typ] = stats["tool_output_kinds"].get(typ, 0) + len(data)
+                source = codex_tool_output_source(payload, typ, call_sources)
+                stats["tool_output_sources"][source] = stats["tool_output_sources"].get(source, 0) + len(data)
+            if typ == "token_count":
+                usage = ((payload.get("info") or {}).get("total_token_usage") or {})
+                if isinstance(usage, dict):
+                    last_total = usage
+        apply_codex_usage(stats, last_total)
+        out.append(finalize_session_stats(stats))
+    return out
+
+
+def audit_claude_sessions(cutoff: float, limit_files: int) -> list[dict[str, Any]]:
+    root = Path.home() / ".claude" / "projects"
+    out = []
+    for path in recent_jsonl_files(root, cutoff, limit_files):
+        stats = new_session_stats("claude", path)
+        tool_use_names: dict[str, str] = {}
+        for obj in iter_jsonl(path):
+            note_timestamp(stats, obj.get("timestamp"))
+            stats["event_count"] += 1
+            typ = str(obj.get("type") or "unknown")
+            stats["event_kinds"][typ] = stats["event_kinds"].get(typ, 0) + 1
+            msg = obj.get("message")
+            if isinstance(msg, dict):
+                role = msg.get("role")
+                if role == "user":
+                    stats["user_turns"] += 1
+                elif role == "assistant":
+                    stats["assistant_messages"] += 1
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    add_claude_usage(stats, usage)
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "tool_use":
+                            stats["tool_calls"] += 1
+                            tool_id = item.get("id")
+                            if isinstance(tool_id, str):
+                                tool_use_names[tool_id] = str(item.get("name") or "tool_use")
+            if "toolUseResult" in obj:
+                text = claude_tool_result_text(obj.get("toolUseResult"))
+                if text:
+                    data = text.encode("utf-8", "replace")
+                    kind = claude_tool_result_kind(obj.get("toolUseResult"))
+                    stats["tool_output_bytes"] += len(data)
+                    stats["tool_output_kinds"][kind] = stats["tool_output_kinds"].get(kind, 0) + len(data)
+                    source = claude_tool_output_source(obj, kind, tool_use_names)
+                    stats["tool_output_sources"][source] = stats["tool_output_sources"].get(source, 0) + len(data)
+        out.append(finalize_session_stats(stats))
+    return out
+
+
+def new_session_stats(agent: str, path: Path) -> dict[str, Any]:
+    return {
+        "agent": agent,
+        "source_file_sha256": sha_path(path),
+        "source_file_mtime": dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat(),
+        "first_timestamp": None,
+        "last_timestamp": None,
+        "first_timestamp_epoch": None,
+        "last_timestamp_epoch": None,
+        "event_count": 0,
+        "event_kinds": {},
+        "user_turns": 0,
+        "assistant_messages": 0,
+        "tool_calls": 0,
+        "tool_output_bytes": 0,
+        "tool_output_kinds": {},
+        "tool_output_sources": {},
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens_estimate": 0,
+    }
+
+
+def note_timestamp(stats: dict[str, Any], value: Any) -> None:
+    if not isinstance(value, str):
+        return
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    epoch = parsed.timestamp()
+    if stats.get("first_timestamp_epoch") is None or epoch < stats["first_timestamp_epoch"]:
+        stats["first_timestamp_epoch"] = epoch
+        stats["first_timestamp"] = parsed.astimezone(dt.timezone.utc).isoformat()
+    if stats.get("last_timestamp_epoch") is None or epoch > stats["last_timestamp_epoch"]:
+        stats["last_timestamp_epoch"] = epoch
+        stats["last_timestamp"] = parsed.astimezone(dt.timezone.utc).isoformat()
+
+
+def codex_tool_output_source(payload: dict[str, Any], typ: str, call_sources: dict[str, str]) -> str:
+    if typ in {"function_call_output", "custom_tool_call_output"}:
+        call_id = payload.get("call_id")
+        if isinstance(call_id, str) and call_id in call_sources:
+            return call_sources[call_id]
+    if typ == "mcp_tool_call_end":
+        invocation = payload.get("invocation")
+        if isinstance(invocation, dict):
+            server = invocation.get("server") or "unknown"
+            tool = invocation.get("tool") or "unknown"
+            return f"mcp:{server}/{tool}"
+    if typ == "patch_apply_end":
+        return "custom_tool_call:apply_patch"
+    return typ
+
+
+def claude_tool_output_source(obj: dict[str, Any], kind: str, tool_use_names: dict[str, str]) -> str:
+    result = obj.get("toolUseResult")
+    if isinstance(result, dict):
+        for key in ("toolUseID", "toolUseId", "tool_use_id", "id"):
+            tool_id = result.get(key)
+            if isinstance(tool_id, str) and tool_id in tool_use_names:
+                return f"tool:{tool_use_names[tool_id]}"
+    return f"tool-result:{kind}"
+
+
+def apply_codex_usage(stats: dict[str, Any], usage: dict[str, Any]) -> None:
+    stats["token_source"] = "codex:final_token_count" if usage else "missing"
+    stats["token_confidence"] = "high" if usage else "none"
+    stats["input_tokens"] = int(usage.get("input_tokens") or 0)
+    stats["cached_input_tokens"] = int(usage.get("cached_input_tokens") or 0)
+    stats["output_tokens"] = int(usage.get("output_tokens") or 0)
+    stats["reasoning_output_tokens"] = int(usage.get("reasoning_output_tokens") or 0)
+    stats["total_tokens_estimate"] = int(
+        usage.get("total_tokens")
+        or (stats["input_tokens"] + stats["output_tokens"] + stats["reasoning_output_tokens"])
+    )
+
+
+def add_claude_usage(stats: dict[str, Any], usage: dict[str, Any]) -> None:
+    stats["usage_message_count"] = int(stats.get("usage_message_count") or 0) + 1
+    stats["token_source"] = "claude:sum_message_usage"
+    stats["token_confidence"] = "medium-high"
+    input_tokens = int(usage.get("input_tokens") or 0)
+    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    output = int(usage.get("output_tokens") or 0)
+    cache_creation_obj = usage.get("cache_creation")
+    if isinstance(cache_creation_obj, dict):
+        cache_creation = max(
+            cache_creation,
+            int(cache_creation_obj.get("ephemeral_5m_input_tokens") or 0)
+            + int(cache_creation_obj.get("ephemeral_1h_input_tokens") or 0),
+        )
+    stats["input_tokens"] += input_tokens
+    stats["cache_creation_input_tokens"] += cache_creation
+    stats["cache_read_input_tokens"] += cache_read
+    stats["output_tokens"] += output
+    stats["total_tokens_estimate"] += input_tokens + cache_creation + cache_read + output
+
+
+def finalize_session_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    if not stats.get("token_source"):
+        stats["token_source"] = "missing"
+        stats["token_confidence"] = "none"
+    stats["event_kinds"] = dict(sorted(stats["event_kinds"].items(), key=lambda kv: kv[1], reverse=True)[:12])
+    stats["tool_output_kinds"] = dict(sorted(stats["tool_output_kinds"].items(), key=lambda kv: kv[1], reverse=True)[:12])
+    stats["tool_output_sources"] = dict(sorted(stats["tool_output_sources"].items(), key=lambda kv: kv[1], reverse=True)[:16])
+    return stats
+
+
+def summarize_session_audit(sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = {
+        "session_count": len(sessions),
+        "total_tokens_estimate": sum(int(s.get("total_tokens_estimate") or 0) for s in sessions),
+        "tool_output_bytes": sum(int(s.get("tool_output_bytes") or 0) for s in sessions),
+        "tool_calls": sum(int(s.get("tool_calls") or 0) for s in sessions),
+        "user_turns": sum(int(s.get("user_turns") or 0) for s in sessions),
+        "assistant_messages": sum(int(s.get("assistant_messages") or 0) for s in sessions),
+        "by_agent": {},
+        "tool_output_kinds": {},
+        "tool_output_sources": {},
+        "token_confidence": {},
+    }
+    for session in sessions:
+        agent = session["agent"]
+        bucket = summary["by_agent"].setdefault(agent, {"sessions": 0, "tokens": 0, "tool_output_bytes": 0})
+        bucket["sessions"] += 1
+        bucket["tokens"] += int(session.get("total_tokens_estimate") or 0)
+        bucket["tool_output_bytes"] += int(session.get("tool_output_bytes") or 0)
+        for kind, bytes_ in (session.get("tool_output_kinds") or {}).items():
+            summary["tool_output_kinds"][kind] = summary["tool_output_kinds"].get(kind, 0) + int(bytes_)
+        for source, bytes_ in (session.get("tool_output_sources") or {}).items():
+            summary["tool_output_sources"][source] = summary["tool_output_sources"].get(source, 0) + int(bytes_)
+        confidence = str(session.get("token_confidence") or "unknown")
+        summary["token_confidence"][confidence] = summary["token_confidence"].get(confidence, 0) + 1
+    summary["tool_output_kinds"] = dict(sorted(summary["tool_output_kinds"].items(), key=lambda kv: kv[1], reverse=True)[:12])
+    summary["tool_output_sources"] = dict(sorted(summary["tool_output_sources"].items(), key=lambda kv: kv[1], reverse=True)[:16])
+    return summary
+
+
+def store_audit_run(run: dict[str, Any]) -> Path:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    digest = hashlib.sha256((run["kind"] + "\0" + run["agent"] + "\0" + run["created_at"]).encode()).hexdigest()[:10]
+    path = RUNS_DIR / f"{ts}-{digest}-audit.json"
+    path.write_text(json.dumps(run, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def print_audit_run(run: dict[str, Any]) -> None:
+    summary = run["summary"]
+    print(
+        f"session audit: sessions={summary['session_count']} agent={run['agent']} days={run['days']} "
+        f"started_days={run.get('started_days')} tokens={summary['total_tokens_estimate']} "
+        f"tool_bytes={summary['tool_output_bytes']}"
+    )
+    print(
+        f"turns: user={summary['user_turns']} assistant={summary['assistant_messages']} "
+        f"tool_calls={summary['tool_calls']}"
+    )
+    for agent, bucket in sorted(summary["by_agent"].items()):
+        print(
+            f"by_agent {agent}: sessions={bucket['sessions']} tokens={bucket['tokens']} "
+            f"tool_bytes={bucket['tool_output_bytes']}"
+        )
+    if summary.get("tool_output_kinds"):
+        print("top_tool_output_kinds:", ", ".join(f"{k}={v}" for k, v in summary["tool_output_kinds"].items()))
+    if summary.get("tool_output_sources"):
+        print("top_tool_output_sources:", ", ".join(f"{k}={v}" for k, v in summary["tool_output_sources"].items()))
+    if summary.get("token_confidence"):
+        print("token_confidence:", ", ".join(f"{k}={v}" for k, v in sorted(summary["token_confidence"].items())))
+    for session in run["sessions"][: run.get("top", 12)]:
+        print(
+            f"  {session['agent']} {session['source_file_sha256'][:10]} tokens={session['total_tokens_estimate']} "
+            f"tool_bytes={session['tool_output_bytes']} user={session['user_turns']} "
+            f"assistant={session['assistant_messages']} tool_calls={session['tool_calls']} "
+            f"confidence={session.get('token_confidence')} "
+            f"start={short_ts(session.get('first_timestamp'))} end={short_ts(session.get('last_timestamp'))}"
+        )
+
+
+def short_ts(value: Any) -> str:
+    if not isinstance(value, str):
+        return "?"
+    return value[:16].replace("T", " ")
+
+
+def percentile(values: list[int], pct: int) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    idx = round((len(ordered) - 1) * pct / 100)
+    return int(ordered[idx])
+
+
+def run_taskbench(args: argparse.Namespace) -> dict[str, Any]:
+    repo = Path(args.repo).expanduser().resolve()
+    if not (repo / ".git").exists() and not git_ok(repo, ["rev-parse", "--git-dir"]):
+        raise SystemExit(f"not a git repo: {repo}")
+
+    tasks = historical_git_tasks(repo, args.limit, args.max_files)
+    tools = ["file-list"]
+    if not args.no_grep:
+        tools.append("git-grep")
+    semmap_bin = Path(args.semmap_bin).expanduser().resolve() if args.semmap_bin else None
+    if semmap_bin:
+        if not semmap_bin.exists():
+            raise SystemExit(f"semmap binary not found: {semmap_bin}")
+        tools.append("semmap")
+
+    for task in tasks:
+        task["results"] = {}
+        task["results"]["file-list"] = eval_file_list(repo, task)
+        if "git-grep" in tools:
+            task["results"]["git-grep"] = eval_git_grep(repo, task, args.timeout)
+        if semmap_bin:
+            task["results"]["semmap"] = eval_semmap(repo, task, semmap_bin, Path(args.scratch_dir).expanduser(), args.timeout)
+
+    return {
+        "schema": 1,
+        "kind": "taskbench",
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "repo": str(repo),
+        "limit": args.limit,
+        "max_files": args.max_files,
+        "tools": tools,
+        "task_count": len(tasks),
+        "tasks": tasks,
+        "notes": [
+            "historical commits provide task prompt and touched-file ground truth",
+            "this is a deterministic screening benchmark, not a full agent A/B",
+            "stored JSON contains metrics, commit ids, subjects, and file paths from git history",
+        ],
+    }
+
+
+def historical_git_tasks(repo: Path, limit: int, max_files: int) -> list[dict[str, Any]]:
+    lines = git_lines(repo, ["log", "--no-merges", "--format=%H%x00%P%x00%s", "-n", str(max(limit * 8, limit))])
+    tasks = []
+    for line in lines:
+        parts = line.split("\0", 2)
+        if len(parts) != 3:
+            continue
+        commit, parents, subject = parts
+        parent = parents.split()[0] if parents.split() else ""
+        if not parent:
+            continue
+        changed = [
+            p
+            for p in git_lines(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+            if eligible_task_file(p) and git_path_exists(repo, parent, p)
+        ]
+        if not changed or len(changed) > max_files:
+            continue
+        tasks.append(
+            {
+                "commit": commit,
+                "parent": parent,
+                "subject": subject,
+                "changed_files": sorted(changed),
+                "changed_count": len(changed),
+                "keywords": task_keywords(subject),
+            }
+        )
+        if len(tasks) >= limit:
+            break
+    return tasks
+
+
+def eligible_task_file(path: str) -> bool:
+    lowered = path.lower()
+    noisy_suffixes = (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".ico",
+        ".icns",
+        ".lock",
+        ".sum",
+        ".mod",
+        ".svg",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".mp4",
+        ".mov",
+        ".pdf",
+    )
+    noisy_parts = {".git/", "dist/", "build/", "target/", "node_modules/", "vendor/"}
+    return not lowered.endswith(noisy_suffixes) and not any(part in lowered for part in noisy_parts)
+
+
+STOP_WORDS = {
+    "add",
+    "and",
+    "code",
+    "fix",
+    "from",
+    "into",
+    "make",
+    "show",
+    "the",
+    "this",
+    "with",
+    "when",
+    "while",
+    "refactor",
+    "update",
+    "improve",
+    "cleanup",
+}
+
+
+def task_keywords(subject: str) -> list[str]:
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", subject.lower())
+    out = []
+    for word in words:
+        word = word.strip("-_")
+        if len(word) < 4 or word in STOP_WORDS or word in out:
+            continue
+        out.append(word)
+    return out[:8]
+
+
+def eval_file_list(repo: Path, task: dict[str, Any]) -> dict[str, Any]:
+    proc = run_git_capture(repo, ["ls-tree", "-r", "--name-only", task["parent"]], timeout=30)
+    files = set(proc["text"].splitlines())
+    return nav_metric(
+        "ok" if proc["exit_code"] == 0 else "error",
+        proc["payload"],
+        files,
+        task["changed_files"],
+        proc["duration_ms"],
+        proc["exit_code"],
+        error=proc.get("error"),
+    )
+
+
+def eval_git_grep(repo: Path, task: dict[str, Any], timeout: float) -> dict[str, Any]:
+    keywords = task.get("keywords") or []
+    if not keywords:
+        return nav_metric("skipped", b"", set(), task["changed_files"], 0, None, error="no keywords")
+    pattern = "|".join(re.escape(word) for word in keywords)
+    proc = run_git_capture(repo, ["grep", "-n", "-I", "-i", "-E", pattern, task["parent"], "--"], timeout=timeout)
+    if proc["exit_code"] not in {0, 1}:
+        status = "error"
+    else:
+        status = "ok"
+    files = files_from_git_grep(proc["text"], task["parent"])
+    return nav_metric(status, proc["payload"], files, task["changed_files"], proc["duration_ms"], proc["exit_code"], error=proc.get("error"))
+
+
+def files_from_git_grep(text: str, ref: str) -> set[str]:
+    files = set()
+    prefix = ref + ":"
+    for line in text.splitlines():
+        if not line.startswith(prefix):
+            continue
+        rest = line[len(prefix) :]
+        path = rest.split(":", 1)[0]
+        if path:
+            files.add(path)
+    return files
+
+
+def eval_semmap(repo: Path, task: dict[str, Any], semmap_bin: Path, scratch_dir: Path, timeout: float) -> dict[str, Any]:
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="semmap-taskbench-", dir=str(scratch_dir)) as tmp:
+        worktree = Path(tmp) / "repo"
+        clone = subprocess.run(["git", "clone", "--shared", "--quiet", str(repo), str(worktree)], capture_output=True, check=False)
+        if clone.returncode != 0:
+            return nav_metric("error", clone.stdout + clone.stderr, set(), task["changed_files"], 0, clone.returncode, error="git clone failed")
+        checkout = subprocess.run(["git", "-C", str(worktree), "checkout", "--quiet", task["parent"]], capture_output=True, check=False)
+        if checkout.returncode != 0:
+            return nav_metric("error", checkout.stdout + checkout.stderr, set(), task["changed_files"], 0, checkout.returncode, error="git checkout failed")
+
+        started = time.monotonic()
+        out_path = Path(tmp) / "SEMMAP.md"
+        gen = subprocess.run(
+            [str(semmap_bin), "generate", "--root", str(worktree), "--output", str(out_path)],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        ctx = subprocess.run(
+            [str(semmap_bin), "context", "--root", str(worktree), task["subject"]],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        payload = ctx.stdout + ctx.stderr
+        text = payload.decode("utf-8", "replace")
+        mentioned = {p for p in task["changed_files"] if p in text}
+        metric = nav_metric(
+            "ok" if gen.returncode == 0 and ctx.returncode == 0 else "error",
+            payload,
+            mentioned,
+            task["changed_files"],
+            elapsed_ms,
+            ctx.returncode,
+        )
+        metric["map_bytes"] = out_path.stat().st_size if out_path.exists() else 0
+        metric["generate_exit_code"] = gen.returncode
+        return metric
+
+
+def nav_metric(
+    status: str,
+    payload: bytes,
+    candidate_files: set[str],
+    changed_files: list[str],
+    duration_ms: int,
+    exit_code: int | None,
+    *,
+    error: str | None = None,
+) -> dict[str, Any]:
+    changed = set(changed_files)
+    hits = sorted(changed & candidate_files)
+    candidate_count = len(candidate_files)
+    recall = len(hits) / len(changed) if changed else 0.0
+    precision = len(hits) / candidate_count if candidate_count else 0.0
+    result = {
+        "status": status,
+        "bytes": len(payload),
+        "lines": payload.decode("utf-8", "replace").count("\n"),
+        "duration_ms": duration_ms,
+        "exit_code": exit_code,
+        "candidate_count": candidate_count,
+        "hit_count": len(hits),
+        "changed_count": len(changed),
+        "recall": round(recall, 4),
+        "precision": round(precision, 4),
+        "hits": hits,
+    }
+    if error:
+        result["error"] = error
+    return result
+
+
+def run_git_capture(repo: Path, args: list[str], timeout: float) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=timeout, check=False)
+        payload = proc.stdout + proc.stderr
+        return {
+            "exit_code": proc.returncode,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "payload": payload,
+            "text": payload.decode("utf-8", "replace"),
+        }
+    except subprocess.TimeoutExpired as exc:
+        payload = (exc.stdout or b"") + (exc.stderr or b"")
+        return {
+            "exit_code": None,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "payload": payload,
+            "text": payload.decode("utf-8", "replace"),
+            "error": "timeout",
+        }
+
+
+def git_lines(repo: Path, args: list[str]) -> list[str]:
+    proc = subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True, check=False)
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def git_ok(repo: Path, args: list[str]) -> bool:
+    return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+
+
+def git_path_exists(repo: Path, ref: str, path: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{ref}:{path}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+
+
+def store_taskbench_run(run: dict[str, Any]) -> Path:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    digest = hashlib.sha256((run["kind"] + "\0" + run["repo"] + "\0" + run["created_at"]).encode()).hexdigest()[:10]
+    path = RUNS_DIR / f"{ts}-{digest}-taskbench.json"
+    path.write_text(json.dumps(run, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def print_taskbench_run(run: dict[str, Any]) -> None:
+    print(f"taskbench repo={run['repo']} tasks={run['task_count']} tools={','.join(run['tools'])}")
+    totals: dict[str, dict[str, float]] = {}
+    for task in run["tasks"]:
+        print(f"{task['commit'][:10]} {task['subject']} changed={task['changed_count']}")
+        for name, result in task["results"].items():
+            bucket = totals.setdefault(name, {"bytes": 0, "tasks": 0, "recall": 0, "precision": 0, "duration_ms": 0})
+            bucket["bytes"] += result.get("bytes", 0)
+            bucket["tasks"] += 1
+            bucket["recall"] += result.get("recall", 0)
+            bucket["precision"] += result.get("precision", 0)
+            bucket["duration_ms"] += result.get("duration_ms", 0)
+            extra = f" recall={result.get('recall'):.2f} precision={result.get('precision'):.2f}"
+            if result.get("map_bytes") is not None:
+                extra += f" map={result.get('map_bytes')}"
+            print(f"  {name}: {result.get('status')} bytes={result.get('bytes')} candidates={result.get('candidate_count')}{extra}")
+    if totals:
+        print("totals")
+        for name, total in sorted(totals.items()):
+            tasks = max(total["tasks"], 1)
+            print(
+                f"  {name}: bytes={int(total['bytes'])} avg_recall={total['recall']/tasks:.2f} "
+                f"avg_precision={total['precision']/tasks:.2f} duration_ms={int(total['duration_ms'])}"
+            )
+
+
+def sha_path(path: Path) -> str:
+    return sha_text(str(path))
+
+
+def sha_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def print_doctor() -> None:
+    checks = {
+        "rtk": have("rtk"),
+        "headroom": have("headroom"),
+        "headroom_python": HEADROOM_PY.exists(),
+        "context-mode": have("context-mode"),
+        "runs_dir": RUNS_DIR.exists(),
+    }
+    for name, ok in checks.items():
+        print(f"{name}: {'ok' if ok else 'missing'}")
+
+
+def have(command: str) -> bool:
+    return subprocess.run(
+        ["bash", "-lc", f"command -v {shlex.quote(command)} >/dev/null"],
+        check=False,
+    ).returncode == 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
