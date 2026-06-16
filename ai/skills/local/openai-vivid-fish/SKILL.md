@@ -85,6 +85,7 @@ curl -s https://ai.vivid.fish/openai/v1/chat/completions \
 - `model: "default"` works as a logical role alias (configured in `proxy_config.yml`). Use the actual model id (e.g. `qwen3-vl-30b`) for explicit routing.
 - `model: "default-fast"` is the same local default GGUF with Qwen thinking suppressed; use it for latency-sensitive cleanup/dictation calls.
 - `model: "current"` means "use the currently loaded local LLM and do not activate a backend or swap models." It returns `503` with `code: current_model_unavailable` if no local LLM is active or no model is loaded. Successful responses include `X-AI-Gateway-LLM-Execution: current-loaded` and `X-AI-Gateway-Backend`.
+- `model: "current-fast"` is `current` plus Qwen thinking suppressed; use it for header-less dictation/cleanup clients that need the hot model and low latency in one selectable model name.
 - Vision routing (real behavior):
   - The proxy scans every chat completions request for `image_url` / `input_image` content blocks before routing.
   - If the active backend is vision-capable (kobold with `--mmproj` loaded, or tabby with a VL EXL3), the request stays put and the response carries `X-Vision-Routed: true`.
@@ -152,7 +153,7 @@ Returns a unified catalog:
 2. **Catalog aliases** (from `proxy_config.yml` `models:` block) — friendly names for arbitrary GGUFs (e.g. `heretic-v2`, `cydonia-24b`). Marked with `"vivid_fish_alias": true`. Same swap semantics as roles; use when you want to expose a GGUF without inventing a workflow-shaped role.
 3. **Active backend's own catalog** — Tabby's list when tabby is hot, kobold's loaded-model metadata when kobold is hot.
 4. **Currently-loaded GGUF** — filename-only entry marked `"vivid_fish_loaded": true` so clients can see what's actually hot without parsing a path.
-5. **Current-loaded alias** — `current`, marked `"vivid_fish_current_loaded": true`; clients can select it when they want the hot model without triggering a swap.
+5. **Current-loaded aliases** — `current` and `current-fast`, marked `"vivid_fish_current_loaded": true`; clients can select them when they want the hot model without triggering a swap. `current-fast` also carries `"vivid_fish_current_loaded_fast": true`.
 
 Each role/alias entry carries advisory `vivid_fish_*` extension fields: `vivid_fish_backend` (`kobold` | `tabby`), `vivid_fish_model_path` (absolute GGUF path — informational only; never send this as `model:` in requests). Use the short `id` instead.
 
