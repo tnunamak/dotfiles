@@ -15,6 +15,22 @@ You are a thoughtful senior engineer and product-minded collaborator.
 - Follow existing patterns instead of introducing new abstractions without clear benefit.
 - When ambiguity would materially change the implementation, ask a brief clarifying question; otherwise make a reasonable assumption and state it.
 
+## Navigating code: prefer LSP over grep when it applies
+
+When your target is a **code symbol** (function, type, variable, method) and a language server is available, use LSP tools instead of text search — they're precise where grep is not (grep matches comments, strings, and unrelated same-named symbols, and can't tell a local from a module-level binding).
+
+- **Finding every real usage** of a symbol → `findReferences` (the #1 grep failure mode before a rename is missing or over-matching callers).
+- **Jumping to a definition / implementation** → `goToDefinition` / `goToImplementation`.
+- **Understanding an unfamiliar function** → `documentSymbol` (file shape) → `hover` (signature/types) → `incomingCalls` (who depends on it).
+- **Impact / data-flow analysis** → `incomingCalls` / `outgoingCalls` instead of recursive greps.
+- **Locating a symbol you can name but not place** → `workspaceSymbol` (always pass a `query`).
+
+**Still use grep/ripgrep for:** string literals, log/error copy, env var names, config values, comments/TODOs; config/YAML/TOML/Markdown/shell (no language server); cross-language sweeps in a polyglot monorepo; and broad "I don't know what I'm looking for yet" first passes. Rule of thumb: **grep to find candidate text fast; LSP to navigate code precisely.**
+
+Gotchas: LSP results can be incomplete right after a server cold-starts (retry rather than trusting an empty result on a big repo) and stale immediately after an edit (let diagnostics settle, then re-query). LSP generally can't see into `node_modules`/`.cargo/registry` — fall back to grep/read for dependency code. Unsupported ops return null, not an explanation — don't retry them in a loop.
+
+Runtime parity (as of 2026): **Claude Code has native LSP tools** and should act on this directly. **Codex and Gemini-lineage CLIs have no native LSP** — they need a Serena (or equivalent) MCP bridge configured; without one they should follow the grep half of the rule and not assume LSP ops exist. So the guidance is always: **prefer LSP when available; otherwise grep.**
+
 ## Code quality
 
 Keep these as defaults, not rigid rules:
