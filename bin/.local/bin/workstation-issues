@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Workstation issue tracker - displays active issues and checks upstream status
+# Usage: workstation-issues [--check-upstream] [--quiet] [--verbose]
+#
+# Tracks local workarounds applied on top of OOTB (things that need watching),
+# and polls their upstream GitHub issues so the shell prompts you to remove a
+# workaround once it's fixed upstream. Data lives in ~/.workstation-issues.json
+# (machine-local, untracked); this script self-seeds an empty ledger on first run
+# so a freshly-stowed machine has a working (empty) tracker.
+
+ISSUES_FILE="$HOME/.workstation-issues.json"
+CACHE_FILE="$HOME/.cache/workstation-issues-status.json"
+CACHE_MAX_AGE=86400  # 24 hours
+
+check_upstream=false
+quiet=false
+verbose=false
+
+for arg in "$@"; do
+  case $arg in
+    --check-upstream) check_upstream=true ;;
+    --quiet) quiet=true ;;
+    --verbose|-v) verbose=true ;;
+  esac
+done
+
+# Self-seed an empty ledger on a fresh machine so the tracker is wired up and
+# ready to receive entries (data file is intentionally machine-local/untracked).
+if [ ! -f "$ISSUES_FILE" ]; then
+  echo '{"issues": []}' > "$ISSUES_FILE"
+  exit 0
+fi
+
+if ! command -v jq &> /dev/null; then
+  exit 1
+fi
+
+issue_count=$(jq '.issues | length' "$ISSUES_FILE")
+if [ "$issue_count" -eq 0 ]; then
+  exit 0
+fi
+
+check_github_status() {
+  local url="$1"
+  if [[ "$url" =~ github\.com/([^/]+)/([^/]+)/issues/([0-9]+) ]]; then
+    local owner="${BASH_REMATCH[1]}"
+    local repo="${BASH_REMATCH[2]}"
+    local issue_num="${BASH_REMATCH[3]}"
+    local response
+    response=$(curl -s --max-time 5 \
+      -H "Accept: application/vnd.github.v3+json" \
+      "https://api.github.com/repos/$owner/$repo/issues/$issue_num" 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$response" ]; then
+      echo "$response" | jq -r '.state // empty'
+    fi
+  fi
+}
+
+mkdir -p "$(dirname "$CACHE_FILE")"
+if [ ! -f "$CACHE_FILE" ]; then
+  echo '{"checked": 0, "statuses": {}}' > "$CACHE_FILE"
+fi
+
+cache_age=$(($(date +%s) - $(jq -r '.checked // 0' "$CACHE_FILE")))
+
+if $check_upstream || [ $cache_age -gt $CACHE_MAX_AGE ]; then
+  new_statuses="{}"
+  while IFS= read -r url; do
+    if [[ "$url" == *"github.com"* ]]; then
+      status=$(check_github_status "$url")
+      if [ -n "$status" ]; then
+        new_statuses=$(echo "$new_statuses" | jq --arg url "$url" --arg status "$status" '. + {($url): $status}')
+      fi
+    fi
+  done < <(jq -r '.issues[].upstream[]? | select(.type == "github") | .url' "$ISSUES_FILE")
+  jq -n --argjson checked "$(date +%s)" --argjson statuses "$new_statuses" \
+    '{checked: $checked, statuses: $statuses}' > "$CACHE_FILE"
+fi
+
+active_count=0
+fixed_upstream=0
+fixed_items=()
+active_items=()
+
+while IFS= read -r issue; do
+  id=$(echo "$issue" | jq -r '.id')
+  title=$(echo "$issue" | jq -r '.title')
+  status=$(echo "$issue" | jq -r '.status')
+  workaround=$(echo "$issue" | jq -r '.workaround // empty')
+
+  upstream_closed=false
+  closed_url=""
+  while IFS= read -r url; do
+    cached_status=$(jq -r --arg url "$url" '.statuses[$url] // empty' "$CACHE_FILE")
+    if [ "$cached_status" = "closed" ]; then
+      upstream_closed=true
+      closed_url="$url"
+      break
+    fi
+  done < <(echo "$issue" | jq -r '.upstream[]? | select(.type == "github") | .url')
+
+  if $upstream_closed; then
+    ((fixed_upstream++))
+    fixed_items+=("$title|$closed_url|$workaround")
+  else
+    ((active_count++))
+    active_items+=("$title|$status")
+  fi
+done < <(jq -c '.issues[]' "$ISSUES_FILE")
+
+if $quiet; then
+  if [ $fixed_upstream -gt 0 ]; then
+    exit 2
+  elif [ $active_count -gt 0 ]; then
+    exit 1
+  fi
+  exit 0
+fi
+
+# Compact output for shell startup - only notify on actionable changes
+if [ $fixed_upstream -gt 0 ]; then
+  echo "Upstream fix available for $fixed_upstream issue(s). Run: workstation-issues -v"
+elif $verbose && [ $active_count -gt 0 ]; then
+  echo "Workstation issues ($active_count):"
+  for item in "${active_items[@]}"; do
+    IFS='|' read -r title status <<< "$item"
+    case $status in
+      workaround-applied) echo "  - $title (workaround applied)" ;;
+      investigating)      echo "  - $title (investigating)" ;;
+      waiting-upstream)   echo "  - $title (waiting on fix)" ;;
+      *)                  echo "  - $title" ;;
+    esac
+  done
+fi
+
+if $verbose && [ $fixed_upstream -gt 0 ]; then
+  echo ""
+  echo "Fixed upstream - review and remove workarounds:"
+  for item in "${fixed_items[@]}"; do
+    IFS='|' read -r title url workaround <<< "$item"
+    echo "  $title"
+    echo "    URL: $url"
+    echo "    Workaround to remove: $workaround"
+  done
+fi
+
+if [ $fixed_upstream -gt 0 ]; then
+  exit 2
+elif [ $active_count -gt 0 ]; then
+  exit 1
+fi
+exit 0
