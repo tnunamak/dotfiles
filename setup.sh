@@ -443,5 +443,19 @@ GITEOF
 fi
 
 
+# Per-host tier: machine-specific config that isn't universal (hardware-tuned
+# sysctls, host-only services/packages, KDE-only bits). Keyed by hostname so a
+# fresh machine reproduces ITS environment, not a one-size-fits-all blob.
+#   hosts/<hostname>/host.sh  — idempotent installer/configurer for that box
+# Universal config stays in the stow packages above; this is the disaster-
+# recovery path for the per-machine extras. See hosts/README.md.
+HOST_DIR="$DOTFILES_DIR/hosts/$(hostname -s)"
+if [[ -x "$HOST_DIR/host.sh" ]]; then
+  echo ""
+  echo "Running per-host setup for $(hostname -s)..."
+  "$HOST_DIR/host.sh" || echo "  (host.sh exited non-zero — review output above)"
+fi
+
+
 echo ""
 echo "Done. Restart your shell or run: exec zsh"
