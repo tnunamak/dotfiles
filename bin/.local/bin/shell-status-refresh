@@ -137,6 +137,18 @@ if [[ -x "$wi_script" ]]; then
   fi
 fi
 
+# --- kernel OOM-killer fired this boot = earlyoom was outrun (or absent) ---
+# If the *kernel* had to kill something for memory, our early-OOM safety net
+# (earlyoom, tuned in hosts/<host>/host.sh) didn't catch it in time. That's the
+# one concrete signal to raise the SIGKILL floor. Surface it instead of letting
+# it stay buried in the journal. Linux + journalctl only.
+if command -v journalctl &>/dev/null; then
+  oom_kills=$(journalctl -k -b --no-pager 2>/dev/null | grep -c -iE "Out of memory: Killed process|invoked oom-killer" || true)
+  if [[ "$oom_kills" =~ ^[0-9]+$ ]] && (( oom_kills > 0 )); then
+    lines+=("Kernel OOM-killer fired ${oom_kills}x this boot — earlyoom was outrun; consider raising the SIGKILL floor (see hosts/$(hostname -s)/RECOVERY.md)|")
+  fi
+fi
+
 # ============================================================================
 # Level 2: Updates — data collection
 # ============================================================================
