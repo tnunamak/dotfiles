@@ -1,0 +1,48 @@
+{
+  "issues": [
+    {
+      "id": "brave-webcam-effects",
+      "title": "Brave webcam white screen with background effects on Wayland",
+      "status": "workaround-applied",
+      "severity": "medium",
+      "created": "2026-02-24",
+      "updated": "2026-02-24",
+      "description": "Google Meet background blur/effects cause solid white webcam output in Brave on KDE Plasma Wayland. Root cause: eglCreateImage failures in Chromium's Ozone/Wayland GPU compositing path.",
+      "workaround": "--disable-gpu-compositing flag in ~/.config/brave-flags.conf",
+      "upstream": [
+        {
+          "url": "https://github.com/brave/brave-browser/issues/47596",
+          "type": "github"
+        },
+        {
+          "url": "https://issues.chromium.org/issues/447709687",
+          "type": "chromium"
+        }
+      ],
+      "tags": [
+        "brave",
+        "wayland",
+        "webcam",
+        "google-meet"
+      ]
+    },
+    {
+      "id": "oom-earlyoom-swappiness",
+      "title": "OOM safety net (earlyoom) + vm.swappiness=80 — local tuning on top of OOTB",
+      "status": "workaround-applied",
+      "severity": "low",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "description": "Kubuntu ships no OOM daemon (kubuntu-desktop seed omits systemd-oomd; oomd is unworkable on KDE user cgroups anyway). Installed earlyoom -M 2097152,1048576 -s 100 (2GiB/1GiB floors sized vs 100ms poll x 6GiB/s fill, covers LLM mmap bursts). Bumped vm.swappiness 60->80 from this host refault data.",
+      "workaround": "earlyoom + /etc/default/earlyoom + /etc/sysctl.d/99-vm-swappiness.conf, reproduced by dotfiles hosts/peregrine/host.sh. REVISIT swappiness ~2026-07-13 vs ~/.cache/swap-tuning-baseline/.",
+      "upstream": [],
+      "tags": [
+        "oom",
+        "earlyoom",
+        "swappiness",
+        "kde",
+        "performance"
+      ]
+    }
+  ]
+}
