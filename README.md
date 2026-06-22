@@ -73,6 +73,10 @@ To apply the dotfiles-managed MCP definitions to Codex, Claude, and Gemini:
 
 The shared MCP definitions live in `ai/mcp-servers.json` as one canonical server list with per-agent availability. `sync-mcps.sh` renders that list for Codex, Claude, and Gemini. It keeps the repo free of secrets: Codex reads token env vars at runtime, while Claude/Gemini write current bearer headers into local config, so rerun the sync after rotating those keys.
 
+Headroom is registered MCP-only. Its compression/retrieval tools are available to all agents, but `headroom wrap` is not the default until it is benchmarked against rtk/context-mode.
+
+Tokensmashing methodology lives in `ai/tokensmash.md`; use `tokensmash compare` / `tokensmash suite` to measure actual emitted payloads instead of trusting reducer dashboards.
+
 ## tmux (session persistence)
 
 Every kitty window auto-attaches to tmux via grouped sessions. Each window gets an independent view of the same set of tmux windows. Sessions survive crashes, reboots, and are accessible from SSH (e.g., Termius on phone).

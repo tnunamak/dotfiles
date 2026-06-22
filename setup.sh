@@ -151,6 +151,14 @@ if ! command -v rtk &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 fi
 
+# Headroom MCP tools. Keep this MCP-only by default until `headroom wrap` is
+# benchmarked against rtk/context-mode; wrapping would add another
+# agent/provider traffic-interception layer. The proxy extra is still needed
+# because Headroom 0.24.0 eagerly imports proxy modules even for `headroom mcp`.
+if ! command -v headroom &>/dev/null || ! env HEADROOM_TELEMETRY=off HEADROOM_TELEMETRY_WARN=off headroom mcp serve --help &>/dev/null; then
+  uv tool install --upgrade "headroom-ai[mcp,proxy]"
+fi
+
 # Foundry (Ethereum toolkit: cast, forge, anvil, chisel)
 # Keep ~/.foundry/bin in PATH before running the installer so its profile-file
 # patcher sees the path already present; stowed shell config owns PATH setup.
