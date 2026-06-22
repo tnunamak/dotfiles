@@ -98,5 +98,95 @@ Two mechanisms, managed by `setup.sh`:
 - **Upstream suites** (`pbakaus/impeccable`, `forrestchang/andrej-karpathy-skills`, etc.) are installed via `npx skills add -g` and pinned in `~/.agents/.skill-lock.json`. Update with `npx skills update -g`. When vercel-labs/skills#729 ships, the list in `setup.sh` migrates to a committed Skillfile.
 - **Locally-authored skills** live under `ai/skills/local/*/` and are directly symlinked into `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills` so edits in dotfiles propagate live. Don't route these through `npx skills` — it copies instead of symlinks and doesn't track local paths in the lockfile.
 
+# Trialing devspecs (`ds`)
+
+Tim is trialing the `devspecs` CLI (`ds`) for ~1–2 weeks (started 2026-06-13) and wants
+his agents to do the trialing for him — try it on suitable tasks and occasionally log
+honest feedback to a central ledger so he can later share a digest with the maintainer
+(Brennan). **Do this on Tim's own initiative; don't ask permission each time.**
+
+**What `ds` is:** a local-first CLI that turns repo intent into agent-usable context,
+bounded task slices, and checkpoint/decision receipts. Core moves:
+- `ds map` / `ds find "<topic>"` / `ds context <id>` — orient in an unfamiliar repo (packed,
+  agent-ready context instead of pasting whole folders).
+- `ds task quick "fix <bug>"` — small/hotfix work bounded to one target.
+- `ds task "build <feature>" --slice "..." --slice "..."` then `ds task next <id>` — multi-step
+  work, one slice at a time.
+- `ds task checkpoint <id> --target <t> --stage validated --decision promote --file-edited <p> --test-run <cmd>`
+  and `ds task finish <t> --decision promote` — record evidence/decisions (promote/rework/
+  rollback/block) in the repo instead of chat memory.
+- `ds task status|show|prompt <t>` — resume after compaction or hand off to another agent.
+- Run `ds tldr` for the full situational workflow guidance.
+
+**When to reach for it (opportunistic, not forced):**
+- A genuinely multi-step change on a real project → open with `ds task ... --slice` and
+  checkpoint after each slice.
+- Orienting in an unfamiliar codebase → `ds map` + `ds find`.
+- Resuming a long/compacted session → `ds task status` / `next` / `prompt`.
+- **Don't** force it onto trivial one-liners, onto this dotfiles repo (Tim knows it cold),
+  or when it would interrupt flow. No filler usage just to generate a log entry.
+
+**Logging:** when you actually used `ds` on a real task, append a short, honest entry to
+`inbox/devspecs-feedback.md` (template is in that file). Failures, errors, and rough edges
+are the most valuable signal — log them verbatim. If `ds` errors with a schema/migration
+message (`no such column ...`), the fix is `rm -rf ~/.devspecs && ds init --yes` (stale DB
+from an older version); note it in the ledger if it happens.
+
+**Gotcha:** `ds init` drops a `.devspecs/` dir in the repo root. It's gitignored globally
+(via `git/.config/git/ignore` → `~/.config/git/ignore`, the `.devspecs/` entry), so it's
+ignored in every repo; don't commit it.
+
+**Updates:** a `SessionStart` hook (`bin/.local/bin/ds-update-check`, wired into Claude and
+Gemini settings) checks GitHub ~once/day and, if a newer `ds` release exists, injects a note
+at session start. When you see it, offer to upgrade via
+`curl -fsSL https://raw.githubusercontent.com/devspecs-com/devspecs-cli/main/install.sh | sh`
+— it writes to `/usr/local/bin` (needs sudo), so confirm with Tim first; don't nag if he
+declines. Codex has no hook system, so if you're Codex and `ds version` looks behind, just
+mention it.
+
 # Resources
 2026-Vana-Corporate-Strategy.md is a two page doc in which Vana execs have written up this year's company strategy.
+
+
+<!-- headroom:rtk-instructions -->
+# RTK (Rust Token Killer) - Token-Optimized Commands
+
+When running shell commands, **always prefix with `rtk`**. This reduces context
+usage by 60-90% with zero behavior change. If rtk has no filter for a command,
+it passes through unchanged — so it is always safe to use.
+
+## Key Commands
+```bash
+# Git (59-80% savings)
+rtk git status          rtk git diff            rtk git log
+
+# Files & Search (60-75% savings)
+rtk ls <path>           rtk read <file>         rtk grep <pattern>
+rtk find <pattern>      rtk diff <file>
+
+# Test (90-99% savings) — shows failures only
+rtk pytest tests/       rtk cargo test          rtk test <cmd>
+
+# Build & Lint (80-90% savings) — shows errors only
+rtk tsc                 rtk lint                rtk cargo build
+rtk prettier --check    rtk mypy                rtk ruff check
+
+# Analysis (70-90% savings)
+rtk err <cmd>           rtk log <file>          rtk json <file>
+rtk summary <cmd>       rtk deps                rtk env
+
+# GitHub (26-87% savings)
+rtk gh pr view <n>      rtk gh run list         rtk gh issue list
+
+# Infrastructure (85% savings)
+rtk docker ps           rtk kubectl get         rtk docker logs <c>
+
+# Package managers (70-90% savings)
+rtk pip list            rtk pnpm install        rtk npm run <script>
+```
+
+## Rules
+- In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
+- For debugging, use raw command without rtk prefix
+- `rtk proxy <cmd>` runs command without filtering but tracks usage
+<!-- /headroom:rtk-instructions -->

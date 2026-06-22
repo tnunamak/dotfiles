@@ -11,7 +11,6 @@
     "pr": ""
   },
   "includeCoAuthoredBy": false,
-  "model": "fable",
   "enableAllProjectMcpServers": false,
   "hooks": {
     "PreToolUse": [
@@ -48,6 +47,14 @@
           {
             "type": "command",
             "command": "tokensmash study link --agent claude-code 2>/dev/null"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/ds-update-check' 2>/dev/null"
           }
         ]
       }
@@ -100,6 +107,6 @@
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
-  "theme": "auto",
-  "skipWorkflowUsageWarning": true
+  "skipWorkflowUsageWarning": true,
+  "theme": "auto"
 }

@@ -31,8 +31,12 @@
       "url": "https://mcp.linear.app/mcp",
       "type": "http",
       "headers": {
-        "Authorization": "Bearer LINEAR_API_KEY_REDACTED"
+        "Authorization": "Bearer ${LINEAR_API_KEY}"
       }
+    },
+    "pdpp": {
+      "url": "https://pdpp.vivid.fish/mcp",
+      "type": "http"
     },
     "playwright": {
       "url": "http://127.0.0.1:3100",
@@ -52,7 +56,19 @@
       "url": "https://vana-knowledge-mcp.vana.workers.dev/mcp",
       "type": "http",
       "headers": {
-        "Authorization": "Bearer VANA_KB_TOKEN_REDACTED"
+        "Authorization": "Bearer ${VANA_KB_TOKEN}"
+      }
+    },
+    "headroom": {
+      "command": "headroom",
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "env": {
+        "HEADROOM_TELEMETRY": "off",
+        "HEADROOM_TELEMETRY_WARN": "off",
+        "HEADROOM_MCP_READ": "off"
       }
     }
   },
@@ -97,6 +113,15 @@
           {
             "type": "command",
             "command": "context-mode hook gemini-cli sessionstart"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/ds-update-check' 2>/dev/null"
           }
         ]
       }
