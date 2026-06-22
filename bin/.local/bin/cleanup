@@ -53,6 +53,7 @@ THRESH_NODE_GYP=209715200   # 200M (native-addon build headers)
 THRESH_TORCH_EXT=209715200  # 200M (compiled PyTorch CUDA extensions)
 THRESH_TSC_CACHE=104857600  # 100M (TypeScript compiler cache)
 THRESH_BUN_CACHE=536870912  # 512M (bun install cache)
+THRESH_SNAP_REVS=1073741824 # 1G (tier-2 — disabled snap revisions; needs sudo)
 
 # Code roots to scan for build artifacts (.next, target, venv). Kept narrow to
 # avoid trawling unrelated mounts. CODE_ROOT can be overridden via env for tests.
@@ -91,6 +92,7 @@ CATEGORIES=(
     torch_ext
     tsc_cache
     bun_cache
+    snap_revs
 )
 
 human_size() {
@@ -354,6 +356,27 @@ probe_node_modules_total() {
         | awk '{s+=$1} END {print s+0}')
     : "${total:=0}"
     echo "${#paths[@]}|${total}"
+}
+
+# Probe disabled (superseded) snap revisions and emit "count|bytes".
+# snapd keeps a configurable number of old revisions per snap (refresh.retain,
+# min 2) for one-step `snap revert`. The ones flagged "disabled" are the prior
+# revisions; each maps to a squashfs blob under /var/lib/snapd/snaps/. Removing
+# them is tier-2 (not a regenerable cache: it drops rollback capability, and
+# removal needs sudo). No-op on machines without snapd.
+probe_snap_revs() {
+    command -v snap >/dev/null 2>&1 || { echo "0|0"; return; }
+    local count=0 total=0 name rev blob sz
+    while read -r name rev; do
+        [[ -z "$name" ]] && continue
+        blob="/var/lib/snapd/snaps/${name}_${rev}.snap"
+        if [[ -f "$blob" ]]; then
+            sz=$(stat -c %s "$blob" 2>/dev/null || echo 0)
+            total=$((total + sz))
+            count=$((count + 1))
+        fi
+    done < <(snap list --all 2>/dev/null | awk '$NF ~ /disabled/ {print $1, $3}')
+    echo "${count}|${total}"
 }
 
 # Sum sizes of dirs matching a name under CODE_ROOT. Args: <name> [<name>...].
@@ -638,6 +661,10 @@ check_cleanup() {
     ( probe_pnpm_store > "$TMPDIR_PARALLEL/pnpm_store" 2>/dev/null ) &
     pids+=($!)
 
+    # --- disabled snap revisions (tier-2) ---
+    ( probe_snap_revs > "$TMPDIR_PARALLEL/snap_revs" 2>/dev/null ) &
+    pids+=($!)
+
     # --- Docker probes ---
     ( docker_tier_sizes > "$TMPDIR_PARALLEL/docker" 2>/dev/null ) &
     pids+=($!)
@@ -705,6 +732,16 @@ check_cleanup() {
     : "${pv_count:=0}" "${pv_size:=0}"
     if (( pv_size > THRESH_VENV )); then
         items+=("python_venvs:$pv_count:$pv_size")
+    fi
+
+    # snap_revs — tier-2: disabled revisions (drops rollback; sudo); don't add to tier-1
+    local sr_raw sr_count sr_size
+    sr_raw=$(cat "$TMPDIR_PARALLEL/snap_revs" 2>/dev/null || echo "0|0")
+    sr_count="${sr_raw%%|*}"
+    sr_size="${sr_raw#*|}"
+    : "${sr_count:=0}" "${sr_size:=0}"
+    if (( sr_size > THRESH_SNAP_REVS )); then
+        items+=("snap_revs:$sr_count:$sr_size")
     fi
 
     # pnpm_store — tier-1: `pnpm store prune` is a safe, store-aware operation.
@@ -1021,6 +1058,9 @@ show_suggestions() {
                 ;;
             python_venvs)
                 other_lines+=("  ${YELLOW}tier 2${NC} rm $count stale .venv/venv dirs:       $(human_size "$size")  ${DIM}(parent inactive >90d)${NC}")
+                ;;
+            snap_revs)
+                other_lines+=("  ${YELLOW}tier 2${NC} snap remove $count disabled revisions:   $(human_size "$size")  ${DIM}(drops rollback; needs sudo)${NC}")
                 ;;
             pip_cache)
                 other_lines+=("    pip cache purge: $(human_size "$size")")
@@ -1701,6 +1741,44 @@ do_cleanup() {
                     done
                     echo -e "  ${GREEN}done${NC}"
                     freed=$((freed + pv_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- Disabled snap revisions (tier-2) -----
+    # Removal needs root; `snap remove` re-derives the list live so it stays
+    # correct even if revisions changed since the cache was built.
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled snap_revs; then
+        local sr_size
+        sr_size=$(cache_size_for snap_revs)
+        if (( sr_size > 0 )); then
+            local sr_list
+            sr_list=$(snap list --all 2>/dev/null | awk '$NF ~ /disabled/ {print $1, $3}')
+            if [[ -n "$sr_list" ]]; then
+                local sr_n; sr_n=$(printf '%s\n' "$sr_list" | grep -c .)
+                echo ""
+                echo -e "${BOLD}Disabled snap revisions${NC}  (${YELLOW}$(human_size "$sr_size")${NC}, ${sr_n} revisions)"
+                printf '%s\n' "$sr_list" | head -5 | while read -r n r; do echo -e "  ${DIM}${n} (r${r})${NC}"; done
+                (( sr_n > 5 )) && echo -e "  ${DIM}... and $((sr_n - 5)) more${NC}"
+                local snap_sudo=""
+                sudo -n true 2>/dev/null || snap_sudo="needpw"
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would: sudo snap remove <name> --revision=<rev> for each${NC}"
+                    freed=$((freed + sr_size))
+                elif confirm "  Remove all disabled snap revisions (sudo)?"; then
+                    [[ "$snap_sudo" == "needpw" ]] && echo -e "  ${DIM}(sudo will prompt)${NC}"
+                    local sr_ok=0
+                    while read -r n r; do
+                        [[ -z "$n" ]] && continue
+                        if sudo snap remove "$n" --revision="$r" >/dev/null 2>&1; then
+                            echo -e "  ${GREEN}removed${NC} ${n} r${r}"; sr_ok=$((sr_ok+1))
+                        else
+                            echo -e "  ${RED}failed${NC} ${n} r${r}"
+                        fi
+                    done <<< "$sr_list"
+                    echo -e "  ${GREEN}done${NC} (${sr_ok} removed)"
+                    (( sr_ok > 0 )) && freed=$((freed + sr_size))
                 fi
             fi
         fi
