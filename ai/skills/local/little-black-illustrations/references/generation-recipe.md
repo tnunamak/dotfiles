@@ -29,19 +29,32 @@ Independent r/SD users render 4+ clean labels with this config; our earlier
 cfg=1.0 + split-sigmas + nvfp4 setup was the cause. Ideogram 4 IS the best local
 text model (beats Flux per r/SD) — it just needs the right guidance settings.
 
-## Prompt: JSON with strong style steer
+## Prompt: send PLAIN ENGLISH — let the gateway build the JSON
 
-Send Ideogram-4 JSON (the gateway's Qwen3.6 converter builds it from plain text,
-or hand-write it). Two things are essential:
+**Send a plain-text description. Do NOT hand-author Ideogram-4 JSON.** The gateway's
+Qwen3.6 converter turns your plain English into a properly *grounded* Ideogram-4 caption
+(typed obj/text elements + bboxes following the depth-band rules below) automatically.
+Hand-writing the JSON yourself is the #1 way to get worse results: it's easy to omit
+`elements`/bboxes and hand the model an ungrounded caption, which renders garbled text and
+trips the safety filter more. The gateway also auto-grounds JSON that lacks real `elements`,
+but the simplest correct path is just: **describe the scene in a sentence or two.**
+
+Two things to put in your plain-text brief:
 
 1. **Loose-hand-drawn style steer** (otherwise the config renders clean but
-   digital/vector-looking). Put in `style_description.aesthetics`:
+   digital/vector-looking). Say, in words:
    > "loose hand-drawn marker and ballpoint-pen doodle on white paper, organic
    > wobbly imperfect lines, sketchy whiteboard-explainer feel, NOT digital, NOT
    > vector, NOT geometric, NOT flat-color-fill, casual rough linework, lots of
    > white space"
-2. **English-only** — the gateway template now enforces this, but reinforce in the
-   brief; Ideogram injects non-English glyphs unprompted otherwise.
+2. **English-only** — the gateway enforces this, but reinforce in the brief; Ideogram
+   injects non-English glyphs unprompted otherwise.
+
+The rules below describe what the gateway's grounding does and what to keep in mind when
+WORDING your brief (e.g. ask for "3-4 large, well-separated labels", not a crowded grid).
+Only hand-author JSON as a last resort, and if you do, it MUST include a non-empty
+`elements` array with typed `obj`/`text` entries and bboxes — otherwise the gateway will
+re-ground it anyway.
 
 ## Known limits / open issues
 
