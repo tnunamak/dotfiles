@@ -74,6 +74,29 @@ shell startup status surfaces them and flags when their upstream bug is fixed.
 Current: OOM safety net (earlyoom) + `vm.swappiness=80` (revisit ~2026-07-13
 against `~/.cache/swap-tuning-baseline/`); Brave webcam/Wayland white-screen.
 
+## Tuning the OOM floor when your workload changes
+
+The earlyoom SIGKILL floor (`-M 2097152,1048576` = 2GiB SIGTERM / 1GiB SIGKILL
+in `host.sh`) is the one value tied to a *workload assumption*, not a fixed fact.
+It must exceed how much memory a burst can allocate in one earlyoom poll
+(100 ms): `floor_MiB / 0.1s` must beat your fastest sustained allocation rate.
+1GiB covers ~10 GiB/s — above earlyoom's own 6 GiB/s benchmark and typical
+LLM-weight `mmap(MAP_POPULATE)` bursts.
+
+**Raise the floor** (e.g. `-M 3145728,2097152` = 3GiB/2GiB → covers ~20 GiB/s) if:
+- you load much larger / multiple-simultaneous models, or a newer inference
+  engine commits weights faster,
+- you add RAM / faster RAM / more memory channels,
+- you add a new fast-allocating workload (big in-memory DB, large tensor/video
+  buffers, ballooning VMs).
+
+**The concrete trigger to act:** a memory freeze *and* a kernel OOM-killer entry
+(`journalctl -k -b | grep -i "Out of memory"`). That means earlyoom was outrun.
+The shell startup status surfaces this automatically ("Kernel OOM-killer fired …").
+When you see it: bump the two numbers in `host.sh`, re-run
+`sudo bash hosts/peregrine/host.sh --sudo-steps`. You do NOT pre-tune; you react
+to that one signal.
+
 ## Drift detection
 
 Per-host state drifts as you `apt install` things ad-hoc or hand-edit `/etc`.
