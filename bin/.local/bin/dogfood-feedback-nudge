@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# dogfood-feedback-nudge — v1 dogfooding nudge, sibling of the detector.
+# See ai/research/feedback-systems/dogfooding-feedback-build-simpler-v1-not-generalized-system.md
+#
+# SessionStart hook: surfaces a single pending friction candidate from
+# ~/.local/state/agent-dogfood-feedback/events.jsonl and nudges the agent
+# to log an honest entry. At most one nudge per day (capped by .last-nudge mtime).
+#
+# Env overrides (same convention as the detector):
+#   DOGFOOD_STATE_DIR  (default: ~/.local/state/agent-dogfood-feedback)
+#   DOGFOOD_ROSTER     (default: ~/code/dotfiles/ai/dogfooding/roster.yaml)
+#
+# Fails completely silently on any error — a session start must never be
+# broken by this. Reads stdin (SessionStart wire JSON) but ignores it.
+
+set -euo pipefail
+
+STATE_DIR="${DOGFOOD_STATE_DIR:-$HOME/.local/state/agent-dogfood-feedback}"
+ROSTER="${DOGFOOD_ROSTER:-$HOME/code/dotfiles/ai/dogfooding/roster.yaml}"
+EVENTS="$STATE_DIR/events.jsonl"
+LAST_NUDGE="$STATE_DIR/.last-nudge"
+LOCK="$STATE_DIR/events.jsonl.lock"
+TTL=86400   # 24 h
+
+# Drain stdin (SessionStart sends wire JSON; we don't need it).
+cat >/dev/null
+
+# Wrap everything in a subshell so any error exits that subshell with 0.
+(
+  set -euo pipefail
+
+  # Kill switch.
+  [ -f "$STATE_DIR/OFF" ] && exit 0
+
+  # Once-per-day cap: if .last-nudge was touched < 24 h ago, skip.
+  if [ -f "$LAST_NUDGE" ]; then
+    mtime="$(stat -c %Y "$LAST_NUDGE" 2>/dev/null || echo 0)"
+    now="$(date +%s)"
+    (( now - mtime < TTL )) && exit 0
+  fi
+
+  # events.jsonl must exist and be non-empty.
+  [ -f "$EVENTS" ] || exit 0
+
+  # jq must be available.
+  command -v jq >/dev/null 2>&1 || exit 0
+
+  # Find the most recent event with nudged == false.
+  # Use -c (compact) so each result is a single line; tail -1 picks the most recent.
+  candidate="$(jq -c 'select(.nudged == false)' "$EVENTS" 2>/dev/null | tail -1)"
+  [ -n "$candidate" ] || exit 0
+
+  tool="$(printf '%s' "$candidate" | jq -r '.tool // empty')"
+  reason="$(printf '%s' "$candidate" | jq -r '.reason // empty')"
+  repo="$(printf '%s' "$candidate" | jq -r '.repo // empty')"
+  ts="$(printf '%s' "$candidate" | jq -r '.ts // empty')"
+
+  [ -n "$tool" ] || exit 0
+
+  # Look up the ledger path for this tool from the roster.
+  # The roster is YAML; parse it with grep/sed (no yq required).
+  ledger=""
+  if [ -f "$ROSTER" ] && command -v grep >/dev/null 2>&1; then
+    # Extract ledger for the matching tool id. The YAML block looks like:
+    #   - id: devspecs
+    #     ...
+    #     ledger: inbox/devspecs-feedback.md
+    # Strategy: find the line number of "id: <tool>", then scan forward for "ledger:".
+    id_line="$(grep -n "id: ${tool}$" "$ROSTER" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+    if [ -n "$id_line" ]; then
+      ledger="$(tail -n +"$id_line" "$ROSTER" 2>/dev/null \
+        | grep -m1 'ledger:' \
+        | sed -E 's/.*ledger:[[:space:]]*//' \
+        | tr -d '[:space:]' || true)"
+    fi
+  fi
+  # Fallback if roster lookup failed.
+  [ -n "$ledger" ] || ledger="inbox/${tool}-feedback.md"
+
+  # Build the additionalContext message (factual, not imperative — per hook best practice).
+  ctx="Dogfooding note: the \`${tool}\` tool hit friction recently (reason: ${reason}) in repo ${repo}. If you have enough context to write an honest entry, consider logging it to ${ledger}. Only log if you genuinely recall what happened; otherwise ignore. (One such nudge per day.)"
+
+  # Mark the candidate nudged:true in events.jsonl under a flock.
+  (
+    flock -x 200
+    tmp="$(mktemp "$STATE_DIR/events.jsonl.XXXXXX")"
+    marked=false
+    while IFS= read -r line || [ -n "$line" ]; do
+      line_ts="$(printf '%s' "$line" | jq -r '.ts // empty' 2>/dev/null || true)"
+      line_tool="$(printf '%s' "$line" | jq -r '.tool // empty' 2>/dev/null || true)"
+      line_nudged="$(printf '%s' "$line" | jq -r '.nudged' 2>/dev/null || true)"
+      if [ "$marked" = false ] && [ "$line_ts" = "$ts" ] && [ "$line_tool" = "$tool" ] && [ "$line_nudged" = "false" ]; then
+        printf '%s' "$line" | jq -c '.nudged = true' >> "$tmp"
+        marked=true
+      else
+        printf '%s\n' "$line" >> "$tmp"
+      fi
+    done < "$EVENTS"
+    mv "$tmp" "$EVENTS"
+    chmod 600 "$EVENTS" 2>/dev/null || true
+  ) 200>"$LOCK"
+
+  # Touch the rate-limit marker.
+  touch "$LAST_NUDGE"
+
+  # Emit the SessionStart additionalContext JSON. Use python3 for safe escaping.
+  python3 - "$ctx" <<'PY' 2>/dev/null || true
+import json, sys
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": sys.argv[1],
+    }
+}))
+PY
+
+) || true
+
+exit 0

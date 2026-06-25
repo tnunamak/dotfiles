@@ -57,6 +57,25 @@
             "command": "bash '/home/tnunamak/.local/bin/ds-update-check' 2>/dev/null"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/dogfood-feedback-nudge' 2>/dev/null"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/dogfood-feedback-detect' 2>/dev/null"
+          }
+        ]
       }
     ],
     "SessionEnd": [

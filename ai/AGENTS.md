@@ -158,6 +158,16 @@ at session start. When you see it, offer to upgrade via
 declines. Codex has no hook system, so if you're Codex and `ds version` looks behind, just
 mention it.
 
+# Dogfooding feedback (auto-nudge)
+
+`ai/dogfooding/roster.yaml` lists tools (devspecs first) whose friction is auto-captured.
+On Claude, a PostToolUse hook records a candidate event when a roster tool errors, and a
+SessionStart hook may surface a one-line "the `<tool>` hit friction; log it to `<ledger>`
+if you recall what happened" note (≤1/day). **It's a nudge, not an order** — only write a
+ledger entry if you genuinely recall the details; otherwise ignore it. The hook never writes
+the ledger. Kill switch + details: `ai/dogfooding/README.md`
+(`touch ~/.local/state/agent-dogfood-feedback/OFF` disables it).
+
 # Resources
 2026-Vana-Corporate-Strategy.md is a two page doc in which Vana execs have written up this year's company strategy.
 
