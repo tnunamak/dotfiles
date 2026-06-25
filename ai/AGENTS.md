@@ -98,6 +98,20 @@ Two mechanisms, managed by `setup.sh`:
 - **Upstream suites** (`pbakaus/impeccable`, `forrestchang/andrej-karpathy-skills`, etc.) are installed via `npx skills add -g` and pinned in `~/.agents/.skill-lock.json`. Update with `npx skills update -g`. When vercel-labs/skills#729 ships, the list in `setup.sh` migrates to a committed Skillfile.
 - **Locally-authored skills** live under `ai/skills/local/*/` and are directly symlinked into `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills` so edits in dotfiles propagate live. Don't route these through `npx skills` — it copies instead of symlinks and doesn't track local paths in the lockfile.
 
+# Research corpus
+
+Expensive research (web prior-art sweeps, library evals, design investigations) is
+preserved in `ai/research/` so it survives the session and isn't redone. This is a
+**standing procedure, not a judgment call**:
+
+- **Before web-researching a technical topic, read `ai/research/INDEX.md` first.** If a
+  relevant entry exists, read it before going to the web (`grep -ri "<topic>" ai/research/`
+  or `ctx_search` to find more). Skipping this wastes the tokens the corpus exists to save.
+- **After doing real research, capture it**: add an entry and a line to `INDEX.md`. Keep
+  verifiable facts+URLs (`## CLAIMS` / `## SOURCES`) separate from your interpretation
+  (`## SYNTHESIS`) so the fact layer is independently usable. Full format + rationale:
+  `ai/research/README.md` (copy `ai/research/_template.md`).
+
 # Trialing devspecs (`ds`)
 
 Tim is trialing the `devspecs` CLI (`ds`) for ~1–2 weeks (started 2026-06-13) and wants
