@@ -1,0 +1,52 @@
+# Dogfooding feedback roster — tools whose friction we want captured.
+#
+# v1 scope (see ai/research/feedback-systems/dogfooding-feedback-build-simpler-v1-not-generalized-system.md):
+# a Claude-only Bash PostToolUse detector reads this file, watches for roster-tool
+# invocations that hit friction, and records CANDIDATE events (never writes the
+# ledger — the agent does that, nudged at SessionStart). Per-tool matchers are
+# REQUIRED because PostToolUse gives no exit code (failure is inferred from stderr
+# / interruption). Adding a tool = add an entry here.
+#
+# Global knobs the detector honors:
+#   kill switch: presence of ~/.local/state/agent-dogfood-feedback/OFF disables everything.
+#   state dir:   ~/.local/state/agent-dogfood-feedback/ (events.jsonl, 0600).
+
+version: 1
+
+# Redaction applied to ANY captured snippet before it is written to state.
+# A global Bash hook sees every command across all agents, so stderr/commands can
+# contain secrets. These run in addition to each tool's own redact_patterns.
+# (Regexes are matched case-insensitively by the detector; matched spans -> "[REDACTED]".)
+global_redact_patterns:
+  - 'Bearer\s+[A-Za-z0-9._\-]+'
+  - '[A-Za-z0-9._\-]*(?:token|secret|api[_-]?key|password|passwd|pwd)[A-Za-z0-9._\-]*\s*[=:]\s*\S+'
+  - 'https?://[^/\s]*:[^@/\s]+@\S+'        # creds embedded in URLs
+  - '\b[A-Za-z0-9]{32,}\b'                 # long opaque tokens/hashes
+  - 'sk-[A-Za-z0-9]{16,}'                  # openai-style keys
+  - 'lin_api_[A-Za-z0-9]+'                 # linear keys
+
+tools:
+  - id: devspecs
+    kind: cli
+    active: true
+    ledger: inbox/devspecs-feedback.md
+    # Match the tool's invocation in tool_input.command. Anchored on word boundaries;
+    # the detector also normalizes common wrappers (rtk, uvx, npx, absolute paths)
+    # before matching, so `rtk ds task ...` still matches `\bds\b`.
+    command_match:
+      - '\bds\b'
+      - '\bdevspecs\b'
+    # High-signal stderr patterns that indicate real friction (not benign warnings).
+    # The detector fires on these; it does NOT fire on non-empty stderr alone.
+    friction_patterns:
+      - '^Error:'                    # Cobra unknown-command / arg errors
+      - 'unknown command'
+      - 'no such column'             # the canonical stale-DB schema-migration failure
+      - 'no such table'
+      - 'migrate:'
+      - 'scan failed'
+      - 'panic:'
+    # Per-tool extra redaction (added to global_redact_patterns).
+    redact_patterns: []
+    # Don't re-log the same tool more often than this (dedup is also by signature).
+    cooldown_days: 3

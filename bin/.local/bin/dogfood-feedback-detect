@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+# dogfood-feedback-detect — PostToolUse hook: detect friction events for roster-tracked tools
+# and append candidate events to the state dir for later review by the agent.
+#
+# Wire schema reference:
+#   ai/research/agentic-context-design/claude-posttooluse-hook-wire-schema-bash.md
+#   (empirical: tool_response.{stdout,stderr,interrupted}, no exit_code/is_error)
+#
+# Build spec:
+#   ai/research/feedback-systems/dogfooding-feedback-build-simpler-v1-not-generalized-system.md
+#
+# v1 dogfooding detector — CANDIDATE events only; the agent writes the ledger.
+# NEVER writes the ledger file itself.
+#
+# Env overrides for testing (see dogfood-feedback-test):
+#   DOGFOOD_STATE_DIR  — default: ~/.local/state/agent-dogfood-feedback
+#   DOGFOOD_ROSTER     — default: ~/code/dotfiles/ai/dogfooding/roster.yaml
+
+# Fail-silent wrapper: any unhandled exit goes to 0.
+# We do NOT use set -e globally because this is a PostToolUse hook that must
+# NEVER break the user's tool call.
+trap 'exit 0' ERR
+
+STATE_DIR="${DOGFOOD_STATE_DIR:-$HOME/.local/state/agent-dogfood-feedback}"
+ROSTER="${DOGFOOD_ROSTER:-$HOME/code/dotfiles/ai/dogfooding/roster.yaml}"
+EVENTS_FILE="$STATE_DIR/events.jsonl"
+LOCK_FILE="$STATE_DIR/events.jsonl.lock"
+
+# 1. Kill switch.
+[ -f "$STATE_DIR/OFF" ] && exit 0
+
+# Require jq.
+command -v jq >/dev/null 2>&1 || exit 0
+
+# Read stdin into a variable; bail if empty.
+input="$(cat)"
+[ -n "$input" ] || exit 0
+
+# 2. Only act on Bash tool calls.
+tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)"
+[ "$tool_name" = "Bash" ] || exit 0
+
+# Extract fields from the wire JSON (fail-silent on any parse error).
+raw_command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0
+stderr_raw="$(printf '%s' "$input" | jq -r '.tool_response.stderr // ""' 2>/dev/null)" || exit 0
+interrupted="$(printf '%s' "$input" | jq -r '.tool_response.interrupted // false' 2>/dev/null)" || exit 0
+duration_ms="$(printf '%s' "$input" | jq -r '.duration_ms // 0' 2>/dev/null)" || exit 0
+session_id="$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null)" || exit 0
+cwd="$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)" || exit 0
+
+# Require python3 and roster.
+# (PostToolUse runs AFTER the tool completes, so this hook's ~70ms does not delay
+# the user's command; it only adds a little turn latency. Measured not worth a
+# pre-filter that reintroduces either hardcoded tool names or equivalent subprocess
+# cost — kept simple on purpose.)
+command -v python3 >/dev/null 2>&1 || exit 0
+[ -f "$ROSTER" ] || exit 0
+
+# 3. Parse the roster with python3 (yq not guaranteed).
+# Outputs tab-separated lines: id <TAB> active <TAB> cooldown_days <TAB> command_match_json <TAB> friction_patterns_json <TAB> redact_patterns_json
+roster_data="$(python3 - "$ROSTER" <<'PYEOF' 2>/dev/null
+import sys, json
+
+try:
+    import yaml
+    has_yaml = True
+except ImportError:
+    has_yaml = False
+
+roster_file = sys.argv[1]
+with open(roster_file) as f:
+    content = f.read()
+
+if has_yaml:
+    data = yaml.safe_load(content)
+else:
+    # Minimal YAML parser for our simple roster format.
+    # Falls back to a line-by-line approach for the known structure.
+    # This is intentionally minimal — only handles the roster.yaml format.
+    import re
+
+    data = {"tools": []}
+    current_tool = None
+    in_list_key = None
+
+    for line in content.splitlines():
+        # Skip comments and blank lines.
+        if re.match(r'^\s*#', line) or not line.strip():
+            continue
+
+        # Top-level list item (tool entry).
+        m = re.match(r'^  - id:\s*(.+)', line)
+        if m:
+            if current_tool:
+                data["tools"].append(current_tool)
+            current_tool = {"id": m.group(1).strip(), "active": False, "cooldown_days": 3,
+                            "command_match": [], "friction_patterns": [], "redact_patterns": []}
+            in_list_key = None
+            continue
+
+        if current_tool is None:
+            continue
+
+        # Scalar fields.
+        m = re.match(r'^    active:\s*(\S+)', line)
+        if m:
+            current_tool["active"] = m.group(1).lower() == "true"
+            in_list_key = None
+            continue
+
+        m = re.match(r'^    cooldown_days:\s*(\d+)', line)
+        if m:
+            current_tool["cooldown_days"] = int(m.group(1))
+            in_list_key = None
+            continue
+
+        m = re.match(r'^    kind:\s*(.+)', line)
+        if m:
+            in_list_key = None
+            continue
+
+        m = re.match(r'^    ledger:\s*(.+)', line)
+        if m:
+            in_list_key = None
+            continue
+
+        # List keys.
+        for key in ("command_match", "friction_patterns", "redact_patterns"):
+            m = re.match(r'^    ' + key + r':\s*(\[\])?', line)
+            if m:
+                in_list_key = key
+                break
+        else:
+            # List item under current list key.
+            m = re.match(r"^      - '?([^']+)'?", line)
+            if m and in_list_key:
+                current_tool[in_list_key].append(m.group(1).strip("'\""))
+                continue
+
+    if current_tool:
+        data["tools"].append(current_tool)
+
+# Also extract global_redact_patterns from top-level.
+global_redact = []
+if has_yaml:
+    global_redact = data.get("global_redact_patterns", [])
+else:
+    # Re-parse for global_redact_patterns.
+    in_global = False
+    for line in content.splitlines():
+        if re.match(r'^\s*#', line) or not line.strip():
+            continue
+        if re.match(r'^global_redact_patterns:', line):
+            in_global = True
+            continue
+        if in_global:
+            m = re.match(r"^  - '?(.+)'?\s*(?:#.*)?$", line)
+            if m:
+                val = m.group(1).strip().rstrip("'\"").strip("'\"")
+                # Strip inline comment.
+                val = re.sub(r"\s+#.*$", "", val)
+                global_redact.append(val)
+            elif re.match(r'^\S', line):
+                in_global = False
+
+for tool in data.get("tools", []):
+    if not tool.get("active"):
+        continue
+    print(json.dumps({
+        "id": tool["id"],
+        "active": tool["active"],
+        "cooldown_days": tool.get("cooldown_days", 3),
+        "command_match": tool.get("command_match", []),
+        "friction_patterns": tool.get("friction_patterns", []),
+        "redact_patterns": tool.get("redact_patterns", []),
+        "global_redact": global_redact,
+    }))
+PYEOF
+)" || exit 0
+
+[ -n "$roster_data" ] || exit 0
+
+# 4. Normalize the command: strip common leading wrappers.
+normalize_command() {
+    local cmd="$1"
+    # Strip leading whitespace.
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+    # Repeatedly strip known wrappers.
+    local prev=""
+    while [ "$cmd" != "$prev" ]; do
+        prev="$cmd"
+        # rtk, uvx, npx, command, sudo (with optional flags like sudo -E).
+        cmd="$(printf '%s' "$cmd" | sed -E \
+            -e 's/^rtk[[:space:]]+//' \
+            -e 's/^uvx[[:space:]]+//' \
+            -e 's/^npx[[:space:]]+(--yes[[:space:]]+)?//' \
+            -e 's/^command[[:space:]]+//' \
+            -e 's/^sudo([[:space:]]+-[A-Za-z][^[:space:]]*)*[[:space:]]+//')"
+        # Absolute path to binary: /usr/local/bin/ds → ds
+        if printf '%s' "$cmd" | grep -qE '^/[^ ]+'; then
+            local base
+            base="$(printf '%s' "$cmd" | sed -E 's|^(/[^/ ]+)+/([^ /]+)(.*)|\2\3|')"
+            cmd="$base"
+        fi
+    done
+    printf '%s' "$cmd"
+}
+
+normalized_cmd="$(normalize_command "$raw_command")"
+
+# 5+6. Match roster tools and check friction triggers.
+# Process each active tool entry.
+matched_tool_id=""
+matched_tool_json=""
+
+while IFS= read -r tool_json; do
+    [ -n "$tool_json" ] || continue
+
+    # Check if any command_match regex matches the normalized command.
+    match="$(python3 - "$tool_json" "$normalized_cmd" <<'PYMATCH' 2>/dev/null
+import sys, json, re
+tool = json.loads(sys.argv[1])
+cmd = sys.argv[2]
+for pattern in tool.get("command_match", []):
+    if re.search(pattern, cmd):
+        print("yes")
+        break
+PYMATCH
+    )" || continue
+
+    if [ "$match" = "yes" ]; then
+        matched_tool_id="$(printf '%s' "$tool_json" | jq -r '.id' 2>/dev/null)"
+        matched_tool_json="$tool_json"
+        break
+    fi
+done <<< "$roster_data"
+
+# No roster tool matched → nothing to do.
+[ -n "$matched_tool_id" ] || exit 0
+
+# Decide if this is a friction candidate.
+# Fire if: interrupted=true, OR (interrupted AND duration_ms > 120000), OR stderr matches a friction_pattern.
+reason=""
+
+if [ "$interrupted" = "true" ]; then
+    if [ "$duration_ms" -gt 120000 ] 2>/dev/null; then
+        reason="long-interrupted"
+    else
+        reason="interrupted"
+    fi
+fi
+
+if [ -z "$reason" ] && [ -n "$stderr_raw" ]; then
+    # Check friction_patterns against stderr (multiline match).
+    matched_pattern="$(python3 - "$matched_tool_json" "$stderr_raw" <<'PYFRICTION' 2>/dev/null
+import sys, json, re
+tool = json.loads(sys.argv[1])
+stderr = sys.argv[2]
+for pattern in tool.get("friction_patterns", []):
+    if re.search(pattern, stderr, re.MULTILINE | re.IGNORECASE):
+        # Escape special chars in pattern for the reason field.
+        safe = pattern.replace("\\b", "").replace("^", "").replace("$", "")
+        print("stderr:" + safe.strip())
+        break
+PYFRICTION
+    )" || true
+
+    if [ -n "$matched_pattern" ]; then
+        reason="$matched_pattern"
+    fi
+fi
+
+# If no friction trigger fired, exit quietly (success or benign warning).
+[ -n "$reason" ] || exit 0
+
+# 8. Redaction helper: apply global + per-tool redact patterns.
+redact_string() {
+    local text="$1"
+    local tool_json="$2"
+    python3 - "$text" "$tool_json" <<'PYREDACT' 2>/dev/null
+import sys, json, re
+text = sys.argv[1]
+tool = json.loads(sys.argv[2])
+patterns = tool.get("global_redact", []) + tool.get("redact_patterns", [])
+for p in patterns:
+    if not p:
+        continue
+    try:
+        text = re.sub(p, "[REDACTED]", text, flags=re.IGNORECASE)
+    except re.error:
+        pass
+print(text, end="")
+PYREDACT
+}
+
+# Redact command (first line only, truncated).
+cmd_first_line="$(printf '%s' "$normalized_cmd" | head -1)"
+redacted_cmd="$(redact_string "$cmd_first_line" "$matched_tool_json")"
+
+# Redact stderr (first ~400 chars).
+stderr_snippet="$(printf '%s' "$stderr_raw" | head -c 400)"
+redacted_stderr="$(redact_string "$stderr_snippet" "$matched_tool_json")"
+
+# Derive repo from cwd basename.
+repo="$(basename "$cwd")"
+ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+
+# Build the candidate event JSON.
+event_json="$(python3 - \
+    "$ts" "$matched_tool_id" "$reason" "$repo" "$cwd" \
+    "$redacted_cmd" "$redacted_stderr" "$session_id" <<'PYBUILD' 2>/dev/null
+import sys, json
+ts, tool_id, reason, repo, cwd, command, stderr_snippet, session_id = sys.argv[1:]
+print(json.dumps({
+    "ts": ts,
+    "tool": tool_id,
+    "reason": reason,
+    "repo": repo,
+    "cwd": cwd,
+    "command": command,
+    "stderr_snippet": stderr_snippet,
+    "session_id": session_id,
+    "nudged": False,
+}, separators=(',', ':')))
+PYBUILD
+)" || exit 0
+
+[ -n "$event_json" ] || exit 0
+
+# 9+10. Dedup + cooldown, then append atomically with flock.
+
+# Ensure state dir exists with restrictive permissions.
+mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+chmod 0700 "$STATE_DIR" 2>/dev/null || true
+
+(
+    # Acquire lock (timeout 5s so we can't hang).
+    flock -w 5 200 2>/dev/null || exit 0
+
+    # Dedup check: same tool + reason_prefix + repo within cooldown_days.
+    # reason_prefix = everything before the first ':' (stderr:pattern → stderr; interrupted).
+    reason_prefix="$(printf '%s' "$reason" | cut -d: -f1)"
+    sig_tool="$matched_tool_id"
+    sig_repo="$repo"
+
+    cooldown_days="$(printf '%s' "$matched_tool_json" | jq -r '.cooldown_days // 3' 2>/dev/null)"
+    cooldown_days="${cooldown_days:-3}"
+
+    now_epoch="$(date +%s)"
+    cutoff_epoch=$(( now_epoch - cooldown_days * 86400 ))
+
+    duplicate=0
+    if [ -f "$EVENTS_FILE" ]; then
+        # Check for a recent event with matching signature.
+        dup_check="$(python3 - "$EVENTS_FILE" "$sig_tool" "$reason_prefix" "$sig_repo" "$cutoff_epoch" <<'PYDEDUP' 2>/dev/null
+import sys, json
+events_file, sig_tool, reason_prefix, sig_repo, cutoff_str = sys.argv[1:]
+cutoff = int(cutoff_str)
+try:
+    import datetime
+    with open(events_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("tool") != sig_tool:
+                continue
+            if ev.get("repo") != sig_repo:
+                continue
+            ev_reason = ev.get("reason", "")
+            ev_reason_prefix = ev_reason.split(":")[0]
+            if ev_reason_prefix != reason_prefix:
+                continue
+            # Parse ts.
+            ts_str = ev.get("ts", "")
+            try:
+                # Handle both +HH:MM and Z suffixes.
+                ts_str2 = ts_str.replace("Z", "+00:00")
+                dt = datetime.datetime.fromisoformat(ts_str2)
+                epoch = int(dt.timestamp())
+            except Exception:
+                continue
+            if epoch >= cutoff:
+                print("duplicate")
+                break
+except Exception:
+    pass
+PYDEDUP
+        )" || true
+        if [ "$dup_check" = "duplicate" ]; then
+            duplicate=1
+        fi
+    fi
+
+    if [ "$duplicate" -eq 0 ]; then
+        # Append the event.
+        touch "$EVENTS_FILE" 2>/dev/null || true
+        chmod 0600 "$EVENTS_FILE" 2>/dev/null || true
+        printf '%s\n' "$event_json" >> "$EVENTS_FILE"
+    fi
+
+) 200>"$LOCK_FILE" 2>/dev/null || true
+
+exit 0

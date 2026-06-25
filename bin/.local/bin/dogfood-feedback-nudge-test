@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# dogfood-feedback-nudge-test — test suite for dogfood-feedback-nudge.
+# Uses a temp DOGFOOD_STATE_DIR so the real state is never touched.
+# Exits nonzero if any case fails.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NUDGE="$SCRIPT_DIR/dogfood-feedback-nudge"
+
+# Use the real roster so ledger lookup works.
+REAL_ROSTER="${DOGFOOD_ROSTER:-$HOME/code/dotfiles/ai/dogfooding/roster.yaml}"
+
+pass=0
+fail=0
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+make_state_dir() {
+  mktemp -d
+}
+
+cleanup() {
+  local dir="$1"
+  rm -rf "$dir"
+}
+
+run_nudge() {
+  local state_dir="$1"
+  # Feed empty stdin (SessionStart sends wire JSON; nudge drains it).
+  DOGFOOD_STATE_DIR="$state_dir" DOGFOOD_ROSTER="$REAL_ROSTER" \
+    "$NUDGE" </dev/null 2>/dev/null
+}
+
+assert_pass() {
+  local name="$1"; shift
+  if "$@" 2>/dev/null; then
+    echo "  PASS: $name"
+    (( pass++ )) || true
+  else
+    echo "  FAIL: $name"
+    (( fail++ )) || true
+  fi
+}
+
+assert_fail() {
+  local name="$1"; shift
+  if ! "$@" 2>/dev/null; then
+    echo "  PASS: $name"
+    (( pass++ )) || true
+  else
+    echo "  FAIL: $name"
+    (( fail++ )) || true
+  fi
+}
+
+devspecs_event() {
+  local nudged="$1"
+  printf '{"ts":"2026-06-25T10:00:00-05:00","tool":"devspecs","reason":"stderr:Error:","repo":"pdpp","cwd":"/home/tnunamak/code/pdpp","command":"ds task quick [REDACTED]","stderr_snippet":"Error: no such column","session_id":"abc123","nudged":%s}\n' "$nudged"
+}
+
+# ── Case 1: No events.jsonl → no output, exit 0 ────────────────────────────────
+echo "Case 1: no events.jsonl → no output, exit 0"
+d="$(make_state_dir)"
+output="$(run_nudge "$d")"
+assert_pass "exit 0"           true   # run_nudge already returned 0 (set -e would catch it)
+assert_pass "no output"        [ -z "$output" ]
+cleanup "$d"
+
+# ── Case 2: One nudged:false event, no recent .last-nudge → emits JSON ─────────
+echo "Case 2: nudged:false event, no .last-nudge → emits JSON, marks nudged:true, creates .last-nudge"
+d="$(make_state_dir)"
+devspecs_event false > "$d/events.jsonl"
+chmod 600 "$d/events.jsonl"
+output="$(run_nudge "$d")"
+
+# Valid JSON?
+assert_pass "output is valid JSON" \
+  bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' -- "$output"
+
+# Contains hookSpecificOutput?
+assert_pass "has hookSpecificOutput key" \
+  bash -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput" >/dev/null' -- "$output"
+
+# Contains additionalContext?
+assert_pass "has additionalContext key" \
+  bash -c 'printf "%s" "$1" | jq -e ".hookSpecificOutput.additionalContext" >/dev/null' -- "$output"
+
+# Mentions devspecs?
+assert_pass "mentions devspecs in additionalContext" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *devspecs* ]]' -- "$output"
+
+# Mentions the ledger path inbox/devspecs-feedback.md?
+assert_pass "mentions devspecs ledger path" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *"inbox/devspecs-feedback.md"* ]]' -- "$output"
+
+# hookEventName == SessionStart?
+assert_pass "hookEventName is SessionStart" \
+  bash -c 'val=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.hookEventName"); [ "$val" = "SessionStart" ]' -- "$output"
+
+# The event is now nudged:true?
+assert_pass "event marked nudged:true" \
+  bash -c 'nudged=$(jq -r ".nudged" "$1/events.jsonl"); [ "$nudged" = "true" ]' -- "$d"
+
+# .last-nudge was created?
+assert_pass ".last-nudge created" \
+  [ -f "$d/.last-nudge" ]
+
+cleanup "$d"
+
+# ── Case 3: .last-nudge fresh → no output (daily cap) ─────────────────────────
+echo "Case 3: .last-nudge fresh → no output (daily cap)"
+d="$(make_state_dir)"
+devspecs_event false > "$d/events.jsonl"
+chmod 600 "$d/events.jsonl"
+touch "$d/.last-nudge"   # fresh right now
+output="$(run_nudge "$d")"
+assert_pass "no output when .last-nudge is fresh" [ -z "$output" ]
+cleanup "$d"
+
+# ── Case 4: All events nudged:true → no output ────────────────────────────────
+echo "Case 4: all events nudged:true → no output"
+d="$(make_state_dir)"
+devspecs_event true > "$d/events.jsonl"
+chmod 600 "$d/events.jsonl"
+output="$(run_nudge "$d")"
+assert_pass "no output when all events nudged" [ -z "$output" ]
+cleanup "$d"
+
+# ── Case 5: Kill switch OFF file present → no output ──────────────────────────
+echo "Case 5: OFF kill switch → no output"
+d="$(make_state_dir)"
+devspecs_event false > "$d/events.jsonl"
+chmod 600 "$d/events.jsonl"
+touch "$d/OFF"
+output="$(run_nudge "$d")"
+assert_pass "no output with kill switch" [ -z "$output" ]
+cleanup "$d"
+
+# ── Summary ────────────────────────────────────────────────────────────────────
+echo ""
+echo "Results: $pass passed, $fail failed."
+[ "$fail" -eq 0 ]

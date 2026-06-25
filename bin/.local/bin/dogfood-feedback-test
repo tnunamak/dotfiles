@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# dogfood-feedback-test — fixture tests for dogfood-feedback-detect.
+#
+# Uses a temp state dir and the real roster so the real ~/.local/state dir
+# and any real events.jsonl are never touched.
+#
+# Env overrides honored (passed through to the detector):
+#   DOGFOOD_STATE_DIR — temp dir created here; injected into each test run.
+#   DOGFOOD_ROSTER    — defaults to ~/code/dotfiles/ai/dogfooding/roster.yaml.
+#
+# Usage: dogfood-feedback-test
+#   Prints PASS/FAIL per case, exits nonzero if any case failed.
+
+set -euo pipefail
+
+DETECTOR="$(dirname "$0")/dogfood-feedback-detect"
+ROSTER="${DOGFOOD_ROSTER:-$HOME/code/dotfiles/ai/dogfooding/roster.yaml}"
+
+if [ ! -x "$DETECTOR" ]; then
+    echo "FATAL: detector not found or not executable: $DETECTOR" >&2
+    exit 1
+fi
+if [ ! -f "$ROSTER" ]; then
+    echo "FATAL: roster not found: $ROSTER" >&2
+    exit 1
+fi
+
+# Create a temp state dir for each test run.
+TMPSTATE="$(mktemp -d)"
+trap 'rm -rf "$TMPSTATE"' EXIT
+
+EVENTS_FILE="$TMPSTATE/events.jsonl"
+
+pass=0
+fail=0
+
+# --- helpers ---
+
+reset_state() {
+    rm -f "$EVENTS_FILE" "$TMPSTATE/events.jsonl.lock" "$TMPSTATE/OFF"
+}
+
+event_count() {
+    if [ ! -f "$EVENTS_FILE" ]; then echo 0; return; fi
+    grep -c . "$EVENTS_FILE" 2>/dev/null || echo 0
+}
+
+last_event_field() {
+    local field="$1"
+    if [ ! -f "$EVENTS_FILE" ]; then echo ""; return; fi
+    tail -1 "$EVENTS_FILE" | jq -r ".$field // empty" 2>/dev/null || echo ""
+}
+
+last_event_raw() {
+    if [ ! -f "$EVENTS_FILE" ]; then echo ""; return; fi
+    tail -1 "$EVENTS_FILE"
+}
+
+run_detector() {
+    local json="$1"
+    export DOGFOOD_STATE_DIR="$TMPSTATE"
+    export DOGFOOD_ROSTER="$ROSTER"
+    printf '%s' "$json" | "$DETECTOR"
+}
+
+assert_no_event() {
+    local case_name="$1"
+    local before="$2"
+    local after
+    after="$(event_count)"
+    if [ "$after" -gt "$before" ]; then
+        echo "FAIL [$case_name]: expected NO event, but got $((after - before)) new event(s)"
+        fail=$(( fail + 1 ))
+    else
+        echo "PASS [$case_name]: no event (correct)"
+        pass=$(( pass + 1 ))
+    fi
+}
+
+assert_event() {
+    local case_name="$1"
+    local before="$2"
+    local after
+    after="$(event_count)"
+    if [ "$after" -le "$before" ]; then
+        echo "FAIL [$case_name]: expected an event, but none was written"
+        fail=$(( fail + 1 ))
+        return 1
+    else
+        echo "PASS [$case_name]: event written (correct)"
+        pass=$(( pass + 1 ))
+        return 0
+    fi
+}
+
+# Build a minimal PostToolUse wire JSON.
+make_json() {
+    local command="${1}"
+    local stderr="${2:-}"
+    local interrupted="${3:-false}"
+    local duration_ms="${4:-74}"
+    python3 - "$command" "$stderr" "$interrupted" "$duration_ms" <<'PY'
+import sys, json
+command, stderr, interrupted_str, duration_str = sys.argv[1:]
+interrupted = interrupted_str.lower() == "true"
+duration = int(duration_str)
+print(json.dumps({
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": {"command": command, "description": ""},
+    "tool_response": {
+        "stdout": "",
+        "stderr": stderr,
+        "interrupted": interrupted,
+        "isImage": False,
+        "noOutputExpected": False,
+    },
+    "tool_use_id": "toolu_test",
+    "session_id": "sess-test-001",
+    "cwd": "/home/user/code/myproject",
+    "agent_id": "agent-test",
+    "agent_type": "claude",
+    "duration_ms": duration,
+}))
+PY
+}
+
+# --- Test cases ---
+
+echo ""
+echo "=== dogfood-feedback-detect test suite ==="
+echo ""
+
+# Case 1: ds success with benign stderr warning -> NO event.
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'ds task quick "do the thing"' 'Warning: config file not found, using defaults')"
+assert_no_event "case1: ds success benign warning" "$before"
+
+# Case 2: ds nonexistent-cmd with 'Error: unknown command ...' -> event, reason mentions stderr, tool=devspecs.
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'ds nonexistent-cmd' 'Error: unknown command "nonexistent-cmd" for "ds"')"
+if assert_event "case2: ds unknown command -> event" "$before"; then
+    tool_field="$(last_event_field tool)"
+    reason_field="$(last_event_field reason)"
+    if [ "$tool_field" = "devspecs" ]; then
+        echo "  PASS [case2 tool=devspecs]"
+    else
+        echo "  FAIL [case2 tool]: expected devspecs, got '$tool_field'"
+        fail=$(( fail + 1 ))
+    fi
+    if printf '%s' "$reason_field" | grep -q "^stderr:"; then
+        echo "  PASS [case2 reason starts with stderr:]"
+    else
+        echo "  FAIL [case2 reason]: expected reason to start with 'stderr:', got '$reason_field'"
+        fail=$(( fail + 1 ))
+    fi
+fi
+
+# Case 3: ds task ... with 'Error: migrate: ... no such column: section_id' -> event.
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'ds task next abc-123' 'Error: migrate: database is locked: no such column: section_id')"
+if assert_event "case3: ds schema migration error -> event" "$before"; then
+    reason_field="$(last_event_field reason)"
+    if printf '%s' "$reason_field" | grep -q "^stderr:"; then
+        echo "  PASS [case3 reason starts with stderr:]"
+    else
+        echo "  FAIL [case3 reason]: expected stderr:... reason, got '$reason_field'"
+        fail=$(( fail + 1 ))
+    fi
+fi
+
+# Case 4: long interrupted ds scan (interrupted=true) -> event, reason=interrupted.
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'ds scan' '' 'true' '200000')"
+if assert_event "case4: long interrupted ds scan -> event" "$before"; then
+    reason_field="$(last_event_field reason)"
+    if [ "$reason_field" = "long-interrupted" ] || [ "$reason_field" = "interrupted" ]; then
+        echo "  PASS [case4 reason=interrupted/long-interrupted]: got '$reason_field'"
+    else
+        echo "  FAIL [case4 reason]: expected interrupted or long-interrupted, got '$reason_field'"
+        fail=$(( fail + 1 ))
+    fi
+fi
+
+# Case 5: 'rtk ds task quick "x"' failing with '^Error:' -> event (wrapper normalization works).
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'rtk ds task quick "x"' 'Error: invalid flag --bad')"
+if assert_event "case5: rtk ds wrapper normalization -> event" "$before"; then
+    tool_field="$(last_event_field tool)"
+    if [ "$tool_field" = "devspecs" ]; then
+        echo "  PASS [case5 tool=devspecs after rtk normalization]"
+    else
+        echo "  FAIL [case5 tool]: expected devspecs, got '$tool_field'"
+        fail=$(( fail + 1 ))
+    fi
+fi
+
+# Case 6: non-roster command (git status failing) -> NO event.
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'git status' 'fatal: not a git repository (or any of the parent directories): .git')"
+assert_no_event "case6: non-roster command git status" "$before"
+
+# Case 7: redaction — ds command, stderr containing a Bearer token -> event written but token is [REDACTED].
+reset_state
+before="$(event_count)"
+run_detector "$(make_json 'ds task next lin-123' 'Error: HTTP 401 Unauthorized\nAuthorization: Bearer lin_api_ABCDEF1234567890XYZ\nRequest failed')"
+if assert_event "case7: ds with Bearer token -> event written" "$before"; then
+    raw_event="$(last_event_raw)"
+    if printf '%s' "$raw_event" | grep -qi "lin_api_ABCDEF"; then
+        echo "  FAIL [case7 redaction]: raw token 'lin_api_ABCDEF...' still present in event"
+        fail=$(( fail + 1 ))
+    else
+        echo "  PASS [case7 redaction]: raw token absent from event"
+        pass=$(( pass + 1 ))
+    fi
+    if printf '%s' "$raw_event" | grep -q "REDACTED"; then
+        echo "  PASS [case7 redaction]: [REDACTED] placeholder present"
+        pass=$(( pass + 1 ))
+    else
+        echo "  FAIL [case7 redaction]: [REDACTED] placeholder NOT present in event"
+        fail=$(( fail + 1 ))
+    fi
+fi
+
+# Case 8: kill switch — with OFF file present, case 2 scenario -> NO event.
+reset_state
+touch "$TMPSTATE/OFF"
+before="$(event_count)"
+run_detector "$(make_json 'ds nonexistent-cmd' 'Error: unknown command "nonexistent-cmd" for "ds"')"
+assert_no_event "case8: kill switch OFF file -> no event" "$before"
+
+# --- Summary ---
+
+echo ""
+echo "=== Results: $pass passed, $fail failed ==="
+echo ""
+
+if [ "$fail" -gt 0 ]; then
+    exit 1
+fi
+exit 0
