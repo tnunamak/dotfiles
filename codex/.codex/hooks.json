@@ -7,7 +7,11 @@
       }
     ],
     "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex posttooluse" }] }
+      { "hooks": [{ "type": "command", "command": "context-mode hook codex posttooluse" }] },
+      { "hooks": [{ "type": "command", "command": "bash '/home/tnunamak/.local/bin/research-capture-detect' 2>/dev/null" }] }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null" }] }
     ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "context-mode hook codex sessionstart" }] },
@@ -17,7 +21,8 @@
       { "hooks": [{ "type": "command", "command": "context-mode hook codex userpromptsubmit" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex stop" }] }
+      { "hooks": [{ "type": "command", "command": "context-mode hook codex stop" }] },
+      { "hooks": [{ "type": "command", "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null" }] }
     ]
   }
 }
