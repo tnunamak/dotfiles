@@ -79,17 +79,6 @@
           }
         ]
       }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash '/home/tnunamak/.local/bin/ds-update-check' 2>/dev/null"
-          }
-        ]
-      }
     ]
   }
 }
