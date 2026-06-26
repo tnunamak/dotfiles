@@ -7,7 +7,12 @@ agent-writes-prose. Design + rationale (incl. the independent review that scoped
 
 ## Pieces (all stow-managed)
 
-- `roster.yaml` — the tools to watch + per-tool matchers, friction patterns, ledger, redaction.
+- `roster.yaml` — the tools to watch + per-tool matchers, friction patterns, redaction.
+  A tool with a `feedback:` block (maintainer + ledger) reports to that maintainer (e.g.
+  devspecs → Brennan); a tool **without** one is a private keep/drop/tweak signal. That
+  presence/absence is the only provenance the system needs — no `owner`/`intent` labels
+  (they'd be the same distinction wearing extra names). Add a tool only once you've
+  observed a real command shape + friction pattern; don't pre-stub unverified tools.
 - `bin/.local/bin/dogfood-feedback-detect` — Claude **PostToolUse** hook. On a roster-tool
   Bash call that hits friction (stderr error pattern / interrupted), appends a **redacted**
   candidate event to the state dir. Never writes a ledger. Fail-silent.

@@ -32,6 +32,13 @@ run_nudge() {
     "$NUDGE" </dev/null 2>/dev/null
 }
 
+run_nudge_with_roster() {
+  local state_dir="$1"
+  local roster="$2"
+  DOGFOOD_STATE_DIR="$state_dir" DOGFOOD_ROSTER="$roster" \
+    "$NUDGE" </dev/null 2>/dev/null
+}
+
 assert_pass() {
   local name="$1"; shift
   if "$@" 2>/dev/null; then
@@ -136,6 +143,67 @@ touch "$d/OFF"
 output="$(run_nudge "$d")"
 assert_pass "no output with kill switch" [ -z "$output" ]
 cleanup "$d"
+
+# ── Case 6: Tool WITH feedback block (ledger + maintainer) ─────────────────────
+echo "Case 6: tool with feedback.ledger + feedback.maintainer → additionalContext mentions ledger and maintainer"
+d="$(make_state_dir)"
+roster6="$(mktemp)"
+cat > "$roster6" <<'YAML'
+tools:
+  - id: devspecs
+    active: true
+    command_match: ['\bds\b']
+    feedback:
+      maintainer: Brennan
+      ledger: inbox/devspecs-feedback.md
+YAML
+printf '{"ts":"2026-06-25T10:00:00-05:00","tool":"devspecs","reason":"stderr:Error:","repo":"pdpp","cwd":"/home/tnunamak/code/pdpp","command":"ds task quick [REDACTED]","stderr_snippet":"Error: no such column","session_id":"abc123","nudged":false}\n' > "$d/events.jsonl"
+chmod 600 "$d/events.jsonl"
+# Remove .last-nudge so daily cap doesn't suppress
+rm -f "$d/.last-nudge"
+output6="$(run_nudge_with_roster "$d" "$roster6")"
+
+assert_pass "case6: output is valid JSON" \
+  bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' -- "$output6"
+
+assert_pass "case6: additionalContext mentions ledger path" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *"inbox/devspecs-feedback.md"* ]]' -- "$output6"
+
+assert_pass "case6: additionalContext mentions maintainer Brennan" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *"Brennan"* ]]' -- "$output6"
+
+cleanup "$d"
+rm -f "$roster6"
+
+# ── Case 7: Tool WITHOUT feedback block (private keep/drop signal) ─────────────
+echo "Case 7: tool without feedback block → additionalContext mentions keep/drop and tool name, NOT any ledger path"
+d="$(make_state_dir)"
+roster7="$(mktemp)"
+cat > "$roster7" <<'YAML'
+tools:
+  - id: somecli
+    active: true
+    command_match: ['\bsomecli\b']
+YAML
+printf '{"ts":"2026-06-25T11:00:00-05:00","tool":"somecli","reason":"stderr:Error:","repo":"myrepo","cwd":"/home/tnunamak/code/myrepo","command":"somecli run","stderr_snippet":"some error","session_id":"def456","nudged":false}\n' > "$d/events.jsonl"
+chmod 600 "$d/events.jsonl"
+rm -f "$d/.last-nudge"
+output7="$(run_nudge_with_roster "$d" "$roster7")"
+
+assert_pass "case7: output is valid JSON" \
+  bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' -- "$output7"
+
+assert_pass "case7: additionalContext mentions keep/drop" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *"keep/drop"* ]]' -- "$output7"
+
+assert_pass "case7: additionalContext mentions tool name somecli" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *"somecli"* ]]' -- "$output7"
+
+assert_fail "case7: additionalContext does NOT mention inbox/" \
+  bash -c 'ctx=$(printf "%s" "$1" | jq -r ".hookSpecificOutput.additionalContext"); [[ "$ctx" == *"inbox/"* ]]' -- "$output7"
+
+cleanup "$d"
+rm -f "$roster7"
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""
