@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# research-capture-detect — PostToolUse hook: detect web-research tool calls and
-# write a pending-flag so the PreCompact nudge knows to remind the agent to
+# research-capture-detect — after-tool hook: detect web-research tool calls and
+# write a pending-flag so the pre-compaction nudge knows to remind the agent to
 # capture findings to ai/research/ before the context is compressed.
 #
-# Reads Claude Code PostToolUse wire JSON on stdin.
+# CROSS-AGENT: wired as Claude PostToolUse / Gemini AfterTool / Codex PostToolUse.
+# The three deliver after-tool JSON on stdin with slightly different field names,
+# so we extract tool-name + session-id DEFENSIVELY (try each agent's keys). No
+# per-agent arg or shim file needed — one script, resilient to schema drift.
+# See ai/research/agentic-context-design/cross-agent-hooks-no-standard-*.md.
+#
 # NEVER writes to the corpus or anywhere else — only touches the state dir.
 # Fail-silent: this hook must NEVER break the session.
 #
@@ -25,32 +30,33 @@ command -v jq >/dev/null 2>&1 || exit 0
 input="$(cat)"
 [ -n "$input" ] || exit 0
 
-# 2. Parse tool_name; bail if this isn't a research tool.
-tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)"
+# 2. Parse tool_name DEFENSIVELY across agents and bail if not a research tool.
+#    Claude: .tool_name | Gemini: .tool_name / .toolName / .function_name / .name |
+#    Codex:  .tool_name. Lowercased for matching so name-casing differences don't matter.
+tool_name="$(printf '%s' "$input" | jq -r '.tool_name // .toolName // .function_name // .name // .tool.name // empty' 2>/dev/null)"
 [ -n "$tool_name" ] || exit 0
+tn_lc="$(printf '%s' "$tool_name" | tr '[:upper:]' '[:lower:]')"
 
 is_research=0
 
-# Explicit tool name matches (case-sensitive, exact).
-case "$tool_name" in
-    WebFetch|WebSearch|mcp__plugin_context-mode_context-mode__ctx_fetch_and_index)
+# Web-research tool names across Claude / Gemini / Codex / context-mode / MCP search.
+# Matched case-insensitively as substrings so per-agent naming variants all hit:
+#   Claude:   WebFetch, WebSearch
+#   Gemini:   web_fetch, google_web_search
+#   Codex:    web_search / web.run-style
+#   context-mode / MCP: ctx_fetch_and_index, searxng, web_url_read
+case "$tn_lc" in
+    *webfetch*|*websearch*|*web_fetch*|*web_search*|*web-search*|\
+    *google_web_search*|*web_url_read*|*searxng*|*ctx_fetch*|*fetch_and_index*|\
+    *url_read*|*browse*)
         is_research=1
         ;;
 esac
 
-# Substring matches for ctx_fetch / fetch_and_index / searxng / web_url_read / web_search variants.
-if [ "$is_research" -eq 0 ]; then
-    case "$tool_name" in
-        *ctx_fetch*|*fetch_and_index*|*searxng*|*web_url_read*|*web_search*)
-            is_research=1
-            ;;
-    esac
-fi
-
 [ "$is_research" -eq 1 ] || exit 0
 
-# 3. Write/refresh the pending flag.
-session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+# 3. Write/refresh the pending flag. Session id extracted defensively across agents.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // .session.id // empty' 2>/dev/null)"
 if [ -n "$session_id" ]; then
     flag_file="$STATE_DIR/research-pending-${session_id}"
 else

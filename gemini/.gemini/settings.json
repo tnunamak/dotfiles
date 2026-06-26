@@ -93,6 +93,15 @@
             "command": "context-mode hook gemini-cli aftertool"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-detect' 2>/dev/null"
+          }
+        ]
       }
     ],
     "PreCompress": [
@@ -102,6 +111,15 @@
           {
             "type": "command",
             "command": "context-mode hook gemini-cli precompress"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
           }
         ]
       }
