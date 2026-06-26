@@ -54,8 +54,6 @@ precise where grep matches comments/strings/unrelated names:
   debug build tree can eat tens of GB of RAM. Use `~/.tmp` (disk-backed) for anything large.
 - **Devcontainers:** `devc ~/code/proj` (start), `devc --rebuild ~/code/proj`, or
   `link-devcontainer`/`unlink-devcontainer`.
-- **Shell commands:** prefix with `rtk` (token-optimized passthrough; safe — unfiltered
-  commands pass unchanged). Full command list: `claude/.claude/RTK.md`. Debugging: drop the prefix.
 - **Context hygiene:** respect `.gitignore`/`.aiignore`; exclude large/generated/lock files.
 
 ## Skills
