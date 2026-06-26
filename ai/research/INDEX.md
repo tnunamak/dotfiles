@@ -13,6 +13,7 @@ rule is in `ai/AGENTS.md`). Add a line here whenever you create an entry.
 ## feedback-systems
 - [Event-gated feedback beats cadence for tool dogfooding](feedback-systems/event-gated-feedback-beats-cadence-for-tool-dogfooding.md) — 2026-06-25 — ESM + telemetry + UX consensus: trigger on friction/notable-success, rate-cap, thin staleness floor; generalizes across the tool roster.
 - [Build simpler v1 feedback detector, not the generalized system](feedback-systems/dogfooding-feedback-build-simpler-v1-not-generalized-system.md) — 2026-06-25 — independent gpt-5.5 review + rebuttal: narrow the mechanism (roster.yaml, Claude-only candidate-detector, no Stop nudge, redaction/flock/kill-switch); 2-week trial decides sufficiency. The build spec.
+- [feedback-block presence > owner/intent labels](feedback-systems/feedback-block-presence-encodes-report-vs-keep-drop-no-owner-intent-labels.md) — 2026-06-25 — Hickey review: report-vs-keep/drop collapses to "is there a feedback block"; cut owner/intent/stubs; nudge is destination-aware not intent-aware; fixed block-unbounded ledger lookup.
 
 ## knowledge-management
 - [Separate facts from interpretation via sections, not files](knowledge-management/separate-facts-from-interpretation-via-sections-not-files.md) — 2026-06-25 — claim/evidence separation (Toulmin, nanopublications, zettelkasten); the design basis for this corpus's own format.

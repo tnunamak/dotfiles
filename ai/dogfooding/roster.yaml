@@ -29,7 +29,16 @@ tools:
   - id: devspecs
     kind: cli
     active: true
-    ledger: inbox/devspecs-feedback.md
+    # feedback: present only when there's a maintainer to report findings to.
+    # Its presence is the ONE fact that changes nudge behavior: with it, the nudge
+    # points at the ledger (and maintainer); without it, the nudge frames the
+    # friction as input to a private keep/drop/tweak decision. (Don't add owner/
+    # intent labels — that's the same distinction wearing extra names. See
+    # ai/research/feedback-systems/dogfooding-feedback-build-simpler-v1-not-generalized-system.md
+    # and the destination-aware-not-intent-aware review finding.)
+    feedback:
+      maintainer: Brennan
+      ledger: inbox/devspecs-feedback.md
     # Match the tool's invocation in tool_input.command. Anchored on word boundaries;
     # the detector also normalizes common wrappers (rtk, uvx, npx, absolute paths)
     # before matching, so `rtk ds task ...` still matches `\bds\b`.

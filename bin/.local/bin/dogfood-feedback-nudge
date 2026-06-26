@@ -57,28 +57,47 @@ cat >/dev/null
 
   [ -n "$tool" ] || exit 0
 
-  # Look up the ledger path for this tool from the roster.
-  # The roster is YAML; parse it with grep/sed (no yq required).
+  # Look up this tool's feedback destination from the roster. Structured YAML read
+  # (not grep/sed — a nested feedback: block and block boundaries need real parsing).
+  # Emits two tab-separated values: feedback.ledger (or legacy top-level ledger), and
+  # feedback.maintainer. Either may be empty. Empty ledger => no reporting destination.
   ledger=""
-  if [ -f "$ROSTER" ] && command -v grep >/dev/null 2>&1; then
-    # Extract ledger for the matching tool id. The YAML block looks like:
-    #   - id: devspecs
-    #     ...
-    #     ledger: inbox/devspecs-feedback.md
-    # Strategy: find the line number of "id: <tool>", then scan forward for "ledger:".
-    id_line="$(grep -n "id: ${tool}$" "$ROSTER" 2>/dev/null | head -1 | cut -d: -f1 || true)"
-    if [ -n "$id_line" ]; then
-      ledger="$(tail -n +"$id_line" "$ROSTER" 2>/dev/null \
-        | grep -m1 'ledger:' \
-        | sed -E 's/.*ledger:[[:space:]]*//' \
-        | tr -d '[:space:]' || true)"
-    fi
+  maintainer=""
+  if [ -f "$ROSTER" ] && command -v python3 >/dev/null 2>&1; then
+    roster_lookup="$(python3 - "$ROSTER" "$tool" <<'PY' 2>/dev/null || true
+import sys
+try:
+    import yaml
+    data = yaml.safe_load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+want = sys.argv[2]
+for t in (data or {}).get("tools", []):
+    if t.get("id") != want:
+        continue
+    fb = t.get("feedback") or {}
+    ledger = fb.get("ledger") or t.get("ledger") or ""   # legacy top-level fallback
+    maintainer = fb.get("maintainer") or ""
+    print(f"{ledger}\t{maintainer}")
+    break
+PY
+)"
+    ledger="$(printf '%s' "$roster_lookup" | cut -f1)"
+    maintainer="$(printf '%s' "$roster_lookup" | cut -f2)"
   fi
-  # Fallback if roster lookup failed.
-  [ -n "$ledger" ] || ledger="inbox/${tool}-feedback.md"
 
-  # Build the additionalContext message (factual, not imperative — per hook best practice).
-  ctx="Dogfooding note: the \`${tool}\` tool hit friction recently (reason: ${reason}) in repo ${repo}. If you have enough context to write an honest entry, consider logging it to ${ledger}. Only log if you genuinely recall what happened; otherwise ignore. (One such nudge per day.)"
+  # Build the additionalContext message (factual, not imperative — per hook best
+  # practice). DESTINATION-aware, not intent-aware: branch on what's actually
+  # present (ledger? maintainer?), never on a separate intent label.
+  base="Dogfooding note: the \`${tool}\` tool hit friction recently (reason: ${reason}) in repo ${repo}."
+  if [ -n "$ledger" ]; then
+    forwho=""
+    [ -n "$maintainer" ] && forwho=" for ${maintainer}"
+    ctx="${base} If you genuinely recall what happened, consider noting it in ${ledger}${forwho}. Only log if you actually have the context; otherwise ignore. (One such nudge per day.)"
+  else
+    # No reporting destination — this is a private keep/drop/tweak signal.
+    ctx="${base} Worth noting for your keep/drop/tweak call on \`${tool}\` if you recall the details; otherwise ignore. (One such nudge per day.)"
+  fi
 
   # Mark the candidate nudged:true in events.jsonl under a flock.
   (
