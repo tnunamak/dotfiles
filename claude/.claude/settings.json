@@ -57,6 +57,26 @@
             "command": "bash '/home/tnunamak/.local/bin/dogfood-feedback-detect' 2>/dev/null"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-detect' 2>/dev/null"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -66,6 +86,10 @@
           {
             "type": "command",
             "command": "bash '/home/tnunamak/.tmux/plugins/tmux-assistant-resurrect/hooks/claude-session-cleanup.sh'"
+          },
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
           }
         ]
       }

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# research-capture-nudge — PreCompact (and SessionEnd) hook: if any web-research
+# tool was called this session, remind the agent to capture findings to
+# ai/research/ before the context is compressed.
+#
+# Reads PreCompact/SessionEnd wire JSON on stdin (session_id extracted if present;
+# remaining fields ignored — this hook only needs to know whether a pending flag
+# exists for this session).
+#
+# PreCompact injects context by printing plain text to stdout on exit 0.
+# Fail-silent: this hook must NEVER break the session.
+#
+# Env override for testing:
+#   RESEARCH_CAPTURE_STATE_DIR — default: ~/.local/state/research-capture
+
+# Fail-silent wrapper: any unhandled exit goes to 0.
+trap 'exit 0' ERR
+
+STATE_DIR="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}"
+
+# 1. Kill switch.
+[ -f "$STATE_DIR/OFF" ] && exit 0
+
+# Read stdin (may be empty for some hook types — that's fine).
+input="$(cat 2>/dev/null || true)"
+
+# Extract session_id if available and jq is present.
+session_id=""
+if command -v jq >/dev/null 2>&1 && [ -n "$input" ]; then
+    session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
+fi
+
+# 2. Look for a pending flag: session-specific first, then any pending flag.
+flag_file=""
+if [ -n "$session_id" ] && [ -f "$STATE_DIR/research-pending-${session_id}" ]; then
+    flag_file="$STATE_DIR/research-pending-${session_id}"
+else
+    # Glob for any pending flag (picks the first one found).
+    for f in "$STATE_DIR"/research-pending-*; do
+        if [ -f "$f" ]; then
+            flag_file="$f"
+            break
+        fi
+    done
+fi
+
+# No pending flag → no research this session → exit silently.
+[ -n "$flag_file" ] || exit 0
+
+# 3. Build a short summary of tool kinds used (from flag content).
+tool_kinds=""
+if [ -f "$flag_file" ]; then
+    # Extract the tool_name column (second field) from each line, deduplicate.
+    tool_kinds="$(awk '{print $2}' "$flag_file" 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+fi
+[ -n "$tool_kinds" ] || tool_kinds="web-research tools"
+
+# Print the nudge to stdout (plain text — PreCompact injects via stdout on exit 0).
+printf 'Research-capture reminder: this session used web-research tools (%s) and the conversation is about to be compacted. If real prior-art, library, or design research was done and the findings are worth keeping, capture them to ai/research/ now (new entry + one line in INDEX.md, per ai/research/README.md) before they are summarized away. Skip if there are no durable findings.\n' "$tool_kinds"
+
+# 4. Delete the consumed flag file so it does not nudge again for the same research.
+rm -f "$flag_file" 2>/dev/null || true
+
+exit 0
