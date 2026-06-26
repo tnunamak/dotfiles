@@ -100,17 +100,14 @@ Two mechanisms, managed by `setup.sh`:
 
 # Research corpus
 
-Expensive research (web prior-art sweeps, library evals, design investigations) is
-preserved in `ai/research/` so it survives the session and isn't redone. This is a
-**standing procedure, not a judgment call**:
+Expensive research (web prior-art sweeps, library evals, design investigations) lives in
+`ai/research/`. This is a **standing procedure, not optional**:
 
-- **Before web-researching a technical topic, read `ai/research/INDEX.md` first.** If a
-  relevant entry exists, read it before going to the web (`grep -ri "<topic>" ai/research/`
-  or `ctx_search` to find more). Skipping this wastes the tokens the corpus exists to save.
-- **After doing real research, capture it**: add an entry and a line to `INDEX.md`. Keep
-  verifiable facts+URLs (`## CLAIMS` / `## SOURCES`) separate from your interpretation
-  (`## SYNTHESIS`) so the fact layer is independently usable. Full format + rationale:
-  `ai/research/README.md` (copy `ai/research/_template.md`).
+- **Before web-researching a topic, read `ai/research/INDEX.md` first** and any relevant
+  entry — don't redo research the corpus already holds.
+- **After doing real research, capture it** there (new entry + an `INDEX.md` line).
+
+Format and how-to: `ai/research/README.md` (copy `ai/research/_template.md`).
 
 # Trialing devspecs (`ds`)
 
