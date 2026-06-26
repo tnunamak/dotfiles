@@ -59,3 +59,70 @@ tools:
     redact_patterns: []
     # Don't re-log the same tool more often than this (dedup is also by signature).
     cooldown_days: 3
+
+  # All friction_patterns below were captured EMPIRICALLY (ran each tool with a bad
+  # subcommand/flag and read the real stderr on 2026-06-26) — not guessed.
+
+  - id: waspflow
+    kind: cli
+    active: true
+    feedback:
+      maintainer: Tim
+      ledger: inbox/waspflow-feedback.md
+    command_match:
+      - '\bwaspflow\b'
+    friction_patterns:
+      - 'unknown command'          # "waspflow: unknown command '...'"
+      - '^waspflow: '              # the tool prefixes its own errors
+      - 'panic:'
+      - 'Traceback'
+    redact_patterns: []
+    cooldown_days: 3
+
+  - id: clawmeter
+    kind: cli
+    active: true
+    feedback:
+      maintainer: Tim
+      ledger: inbox/clawmeter-feedback.md
+    command_match:
+      - '\bclawmeter\b'
+    friction_patterns:
+      - 'unknown command'          # "clawmeter: unknown command \"...\""
+      - '^clawmeter: '
+      - '^Error:'
+      - 'panic:'
+    redact_patterns: []
+    cooldown_days: 3
+
+  - id: pdpp
+    kind: cli
+    active: true
+    feedback:
+      maintainer: vana team
+      ledger: inbox/pdpp-feedback.md
+    command_match:
+      - '\bpdpp\b'                 # matches `pnpm exec pdpp ...` (pnpm/exec not stripped, but pdpp is in the string)
+    friction_patterns:
+      - 'Unknown command group:'   # the real pdpp CLI error
+      - '^Error:'
+      - 'invalid_argument'
+      - 'Traceback'
+      - 'panic:'
+    redact_patterns: []
+    cooldown_days: 3
+
+  - id: darshana
+    kind: cli
+    active: true
+    feedback:
+      maintainer: opendatalabs
+      ledger: inbox/darshana-feedback.md
+    command_match:
+      - '\bdarshana\b'             # matches `npx @opendatalabs/darshana ...` (npx stripped; package name contains darshana)
+    friction_patterns:
+      - 'Unknown argument:'        # the real darshana CLI error
+      - '^Error:'
+      - 'Traceback'
+    redact_patterns: []
+    cooldown_days: 3
