@@ -13,9 +13,6 @@
     "enableAutoUpdate": false
   },
   "mcpServers": {
-    "context-mode": {
-      "command": "context-mode"
-    },
     "codex-cli": {
       "command": "npx",
       "args": [
@@ -58,42 +55,10 @@
       "headers": {
         "Authorization": "Bearer ${VANA_KB_TOKEN}"
       }
-    },
-    "headroom": {
-      "command": "headroom",
-      "args": [
-        "mcp",
-        "serve"
-      ],
-      "env": {
-        "HEADROOM_TELEMETRY": "off",
-        "HEADROOM_TELEMETRY_WARN": "off",
-        "HEADROOM_MCP_READ": "off"
-      }
     }
   },
   "hooks": {
-    "BeforeTool": [
-      {
-        "matcher": "run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "context-mode hook gemini-cli beforetool"
-          }
-        ]
-      }
-    ],
     "AfterTool": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "context-mode hook gemini-cli aftertool"
-          }
-        ]
-      },
       {
         "matcher": "",
         "hooks": [
@@ -110,30 +75,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "context-mode hook gemini-cli precompress"
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
           }
         ]
       }
     ],
     "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "context-mode hook gemini-cli sessionstart"
-          }
-        ]
-      },
       {
         "matcher": "",
         "hooks": [

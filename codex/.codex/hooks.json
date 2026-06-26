@@ -1,28 +1,44 @@
 {
   "hooks": {
-    "PreToolUse": [
+    "PostToolUse": [
       {
-        "matcher": "local_shell|shell|shell_command|exec_command|container.exec|Bash|Shell|grep_files|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-        "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-detect' 2>/dev/null"
+          }
+        ]
       }
     ],
-    "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex posttooluse" }] },
-      { "hooks": [{ "type": "command", "command": "bash '/home/tnunamak/.local/bin/research-capture-detect' 2>/dev/null" }] }
-    ],
     "PreCompact": [
-      { "hooks": [{ "type": "command", "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null" }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
+          }
+        ]
+      }
     ],
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex sessionstart" }] },
-      { "hooks": [{ "type": "command", "command": "tokensmash study link --agent codex 2>/dev/null" }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex userpromptsubmit" }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tokensmash study link --agent codex 2>/dev/null"
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "context-mode hook codex stop" }] },
-      { "hooks": [{ "type": "command", "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null" }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
+          }
+        ]
+      }
     ]
   }
 }

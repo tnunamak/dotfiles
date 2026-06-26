@@ -35,25 +35,6 @@
         "gemini"
       ]
     },
-    "headroom": {
-      "transport": "stdio",
-      "command": "headroom",
-      "args": [
-        "mcp",
-        "serve"
-      ],
-      "env": {
-        "HEADROOM_TELEMETRY": "off",
-        "HEADROOM_TELEMETRY_WARN": "off",
-        "HEADROOM_MCP_READ": "off"
-      },
-      "agents": [
-        "codex",
-        "claude",
-        "gemini"
-      ],
-      "reason": "MCP-only compression/retrieval tools. Do not enable `headroom wrap` by default until it is benchmarked against rtk/context-mode; wrapping would add another agent/provider traffic-interception layer."
-    },
     "linear": {
       "transport": "http",
       "url": "https://mcp.linear.app/mcp",
