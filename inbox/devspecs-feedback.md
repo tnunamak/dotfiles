@@ -95,3 +95,65 @@ This is Tim reading `ds map` + `ds find` output cold, as a human. The friction i
 - **vs. doing it by hand:** No advantage here — the task was too short (one package bump + import update) and the worktree reset meant the checkpoint history was stale.
 - **Would use again here?:** No — too short, plus the worktree was reset mid-task which breaks checkpoint continuity.
 - **Maintainer-facing note:** When a branch is force-reset (git checkout -B), devspecs has no way to know and its task/checkpoint state goes stale silently. A `ds task orphan-check` or a warning when the tracked branch diverges from the checkpoint would help.
+
+2026-06-22 — Clawmeter Windows packaging end-state implementation (ds v1.1.0)
+- **Command(s):** `ds task quick "define and implement ideal Windows packaging for Clawmeter" --json`, `ds task checkpoint 20260622-233805-define-and-implement-ideal-windows-packaging-for --target A01 ...`, `ds task finish A01 --decision promote`.
+- **Worked / didn't:** Task creation worked and produced a useful durable receipt. I first tried `ds task checkpoint A01 ...` and then the full task id with a custom target; both failed. The successful shape required the full task id plus target `A01`.
+- **vs. doing it by hand:** Useful for preserving a validation receipt after a multi-file packaging change, but the id/target distinction cost a couple retries.
+- **Would use again here?:** yes, for multi-file release/packaging work where checkpoints are valuable.
+- **Maintainer-facing note:** The CLI should print the exact checkpoint command shape after `task quick`, including the full task id and valid target id; short id `A01` looks like a task handle but is only the slice target.
+2026-06-24 — PDPP record-components PR lane (ds current)
+
+- **Command(s):** `ds tldr`; `ds task "land RecordIdentity Explore cell" --slice "replay shared RecordIdentity patch onto fresh origin/main" --slice "validate THE LENS honesty invariants and gate tests" --slice "push branch and open PR"` in `/home/tnunamak/.tmp/pdpp-record-components`.
+- **Worked / didn't:** `ds tldr` was useful. `ds task ...` printed `Task auto-index progress: discovered 4770 candidate file(s); skipped 11 ignored/heavy directories...` and then produced no additional output for roughly 90 seconds. I interrupted with Ctrl-C and proceeded by hand.
+- **vs. doing it by hand:** cost effort on this lane; normal git/rg/pnpm workflow was faster once the task stalled.
+- **Would use again:** only-if, for this repo, until task creation gives regular progress output or a bounded indexing timeout.
+- **Maintainer-facing note:** task creation needs a heartbeat after the initial indexing line, or agents cannot distinguish "still indexing" from a hung command.
+
+2026-06-24 — PDPP Explore sort frontend lane (ds v1.1.0)
+
+- **Command(s):** `ds version`, mistaken `ds task status` with no task id, `ds task quick "land Explore declared-field sort frontend lane without reachability lie"`, `ds task checkpoint 20260624-150052-land-explore-declared-field-sort-frontend-lane-w --target A01 ...`.
+- **Worked / didn't:** The no-arg `ds task status` failed with clear usage. `ds task quick` completed but first printed `scan failed while walking /home/tnunamak/code/pdpp` and still created a task/checkpoint. The generated task picked a plausible source file, but the actual sequencing decision came from the human brief and THE LENS, not from ds context.
+- **vs. doing it by hand:** Mild cost; useful as a receipt after validation, not useful for deciding the foundation-PR sequencing.
+- **Would use again here?:** yes for checkpoints on multi-step lanes, but not as the primary context source for highly sequenced handoffs.
+- **Maintainer-facing note:** If scanning fails but task creation proceeds, the CLI should show the specific path/error and label the resulting context as degraded. Otherwise agents cannot tell how much to trust the packed source/risk cards.
+2026-06-24 — BUI-587 cross-repo testnet switch (ds v1.1.x)
+
+- **Command(s):** `ds task "BUI-587 testnet switch" --slice ...` in `unity-surfaces`, then `ds task checkpoint 20260624-154727-bui-587-testnet-switch --target A03 ...` after implementation landed in a separate `vana-sdk` worktree.
+- **Worked / didn't:** Task creation worked and the checkpoint receipt was useful. The initial task auto-indexed for ~35s, which was acceptable but still long enough that I had to keep working in parallel. The awkward part was cross-repo reality: the task lived under the `unity-surfaces` worktree, but discovery proved the actual patch belonged in `vana-sdk`; checkpointing absolute paths worked but felt semantically odd.
+- **vs. doing it by hand:** Useful as a durable receipt for a multi-step, cross-repo task; not useful for choosing the repo boundary, which came from source inspection and subagent scouting.
+- **Would use again here?:** yes for receipt/checkpointing, but only after the owning repo is known when possible.
+- **Maintainer-facing note:** Cross-repo tasks need a first-class way to record “implementation moved to repo/worktree X” so the task state does not imply the original repo owns the change.
+
+2026-06-24 — PDPP density toggle rebuild (ds v1.1.x)
+
+- **Command(s):** `ds task quick "rebuild S-scope density toggle on fresh origin/main"` in `/home/tnunamak/.tmp/pdpp-density-toggle-rebuild`.
+- **Worked / didn't:** Printed `Task auto-index progress: discovered 4781 candidate file(s); skipped 11 ignored/heavy directories...`, then produced no further output for about 90 seconds. I interrupted with Ctrl-C and proceeded with direct repo inspection.
+- **vs. doing it by hand:** Cost effort for this S-scope PR lane; the human brief plus targeted source reads were faster than waiting for task creation.
+- **Would use again here?:** only-if the lane is large enough to amortize indexing, or if task creation gives incremental output/checkpoint value before the first minute.
+- **Maintainer-facing note:** `ds task quick` now shows an initial indexing line, which is better than older silent waits, but it still needs periodic progress or an early usable task id so agents can checkpoint/continue instead of guessing whether to interrupt.
+2026-06-24 — data-gateway escrow finalized accounting incident (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick "fix settled escrow payments counted as authorized balance"` in `~/code/data-gateway-escrow-accounting`.
+- **Worked / didn't:** `ds task quick` completed in a few seconds after indexing and correctly pointed at `api/v1/escrow/pay.ts`, `api/v1/escrow/settle.ts`, and `tests/escrow-pay.test.ts`. It created an untracked `devspecs/` directory in the repo, even though the local guidance says devspecs state should be globally ignored.
+- **vs. doing it by hand:** Mildly useful as a context sanity check, but the actual root cause was faster to verify with source inspection because the incident already named the suspect fields.
+- **Would use again here?:** only for a longer incident where preserving a checkpoint receipt is worth the extra generated state.
+- **Maintainer-facing note:** The CLI should either keep generated task state under the documented ignored path or clearly warn when it is writing an unignored `devspecs/` directory into the worktree.
+
+2026-06-24 — BUI-587 unity-surfaces resume check (ds v1.1.x)
+
+- **Command(s):** `ds task status` in `/home/tnunamak/code/.worktrees/unity-surfaces-bui587`.
+- **Worked / didn't:** Failed with `Error: accepts 1 arg(s), received 0`. The usage is clear, but there is no obvious no-arg way for a resumed agent to discover the active/relevant task id from the current repo/worktree.
+- **vs. doing it by hand:** No advantage for this resume point; `git status`, Linear context, and targeted greps were faster.
+- **Would use again here?:** only if the task id is preserved in the handoff or a no-arg status/list command exists.
+- **Maintainer-facing note:** A no-arg `ds task status` or `ds task list --current-worktree` would help agents recover after compaction or handoff without needing task ids from chat history.
+
+2026-06-26 — retired the `ds-update-check` SessionStart hook
+
+- The auto-update-nudge hook (`bin/.local/bin/ds-update-check`, wired into Claude
+  + Gemini SessionStart) was a temporary trial scaffold; the trial is now past its
+  ~1–2 week window (started 2026-06-13). Removed the script and both hook entries.
+- Not folded into `setup.sh`: `setup.sh` doesn't install `ds` (it lives in
+  `/usr/local/bin` via devspecs' own `install.sh`), so there was no dotfiles update
+  flow to fold it into. To check for a newer `ds`, run its `install.sh` again.
+- The dogfooding feedback path (`dogfood-feedback-nudge` + this ledger) stays.
