@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# research-capture-detect — PostToolUse hook: detect web-research tool calls and
+# write a pending-flag so the PreCompact nudge knows to remind the agent to
+# capture findings to ai/research/ before the context is compressed.
+#
+# Reads Claude Code PostToolUse wire JSON on stdin.
+# NEVER writes to the corpus or anywhere else — only touches the state dir.
+# Fail-silent: this hook must NEVER break the session.
+#
+# Env override for testing:
+#   RESEARCH_CAPTURE_STATE_DIR — default: ~/.local/state/research-capture
+
+# Fail-silent wrapper: any unhandled exit goes to 0.
+trap 'exit 0' ERR
+
+STATE_DIR="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}"
+
+# 1. Kill switch.
+[ -f "$STATE_DIR/OFF" ] && exit 0
+
+# Require jq.
+command -v jq >/dev/null 2>&1 || exit 0
+
+# Read stdin; bail if empty.
+input="$(cat)"
+[ -n "$input" ] || exit 0
+
+# 2. Parse tool_name; bail if this isn't a research tool.
+tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)"
+[ -n "$tool_name" ] || exit 0
+
+is_research=0
+
+# Explicit tool name matches (case-sensitive, exact).
+case "$tool_name" in
+    WebFetch|WebSearch|mcp__plugin_context-mode_context-mode__ctx_fetch_and_index)
+        is_research=1
+        ;;
+esac
+
+# Substring matches for ctx_fetch / fetch_and_index / searxng / web_url_read / web_search variants.
+if [ "$is_research" -eq 0 ]; then
+    case "$tool_name" in
+        *ctx_fetch*|*fetch_and_index*|*searxng*|*web_url_read*|*web_search*)
+            is_research=1
+            ;;
+    esac
+fi
+
+[ "$is_research" -eq 1 ] || exit 0
+
+# 3. Write/refresh the pending flag.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+if [ -n "$session_id" ]; then
+    flag_file="$STATE_DIR/research-pending-${session_id}"
+else
+    flag_file="$STATE_DIR/research-pending-unknown"
+fi
+
+mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+chmod 0700 "$STATE_DIR" 2>/dev/null || true
+
+ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+
+# Append a line; cap at 20 lines to keep the file tiny.
+printf '%s %s\n' "$ts" "$tool_name" >> "$flag_file" 2>/dev/null || exit 0
+
+# Trim to last 20 lines in-place (portable: write to temp, move back).
+if [ -f "$flag_file" ]; then
+    line_count="$(wc -l < "$flag_file" 2>/dev/null || echo 0)"
+    if [ "$line_count" -gt 20 ]; then
+        tmp_file="${flag_file}.tmp.$$"
+        tail -20 "$flag_file" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$flag_file" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null
+    fi
+fi
+
+exit 0
