@@ -257,12 +257,13 @@ if [[ -f "$CODEX_CONFIG" ]] && ! grep -qF '[tui]' "$CODEX_CONFIG"; then
   echo "Patched Codex config: tui.alternate_screen=never"
 fi
 
+# context-mode disabled 2026-06-29 (recoverable — uncomment to re-enable).
 # Codex: register context-mode MCP server. Stow can't manage config.toml because
 # Codex mutates it (per-project trust levels), so we idempotently append.
-if [[ -f "$CODEX_CONFIG" ]] && ! grep -qF '[mcp_servers.context-mode]' "$CODEX_CONFIG"; then
-  printf '\n[mcp_servers.context-mode]\ncommand = "context-mode"\n' >> "$CODEX_CONFIG"
-  echo "Patched Codex config: registered context-mode MCP server"
-fi
+# if [[ -f "$CODEX_CONFIG" ]] && ! grep -qF '[mcp_servers.context-mode]' "$CODEX_CONFIG"; then
+#   printf '\n[mcp_servers.context-mode]\ncommand = "context-mode"\n' >> "$CODEX_CONFIG"
+#   echo "Patched Codex config: registered context-mode MCP server"
+# fi
 
 # Codex: enable hooks. The feature flag was renamed from `codex_hooks` to
 # `hooks`; migrate older configs and ensure the current flag is enabled.
@@ -291,14 +292,16 @@ fi
 if command -v claude &>/dev/null; then
   # marketplace_name:source_spec — source_spec is what `claude plugin marketplace add` accepts
   declare -A CC_MARKETPLACES=(
-    [context-mode]="mksglu/context-mode"
+    # context-mode disabled 2026-06-29 (recoverable — uncomment to re-enable):
+    # [context-mode]="mksglu/context-mode"
   )
   for mp in "${!CC_MARKETPLACES[@]}"; do
     if ! claude plugin marketplace list 2>/dev/null | grep -qF "$mp"; then
       claude plugin marketplace add "${CC_MARKETPLACES[$mp]}" || echo "WARN: failed to add marketplace $mp"
     fi
   done
-  for plugin in context-mode@context-mode; do
+  # context-mode disabled 2026-06-29 (recoverable — restore "context-mode@context-mode" to re-enable):
+  for plugin in; do
     if ! claude plugin list 2>/dev/null | grep -qF "$plugin"; then
       claude plugin install "$plugin" || echo "WARN: failed to install $plugin"
     fi
@@ -399,6 +402,21 @@ for agent_dir in ~/.claude ~/.codex ~/.gemini; do
     ln -sfn "${skill%/}" "$agent_dir/skills/$skill_name"
   done
 done
+
+# minnows — standalone repo of small authored agent tools (convo, uncompact, ...).
+# Each tool is a CLI; a skill is optional. minnows owns its own install (vendors a
+# shared lib into each shipped skill, symlinks skills into the agents + bins onto
+# PATH). We clone-or-pull then delegate. See github.com/tnunamak/minnows.
+echo ""
+echo "Setting up minnows (authored agent tools)..."
+MINNOWS_DIR="$HOME/code/minnows"
+if [[ -d "$MINNOWS_DIR/.git" ]]; then
+  git -C "$MINNOWS_DIR" pull --ff-only --quiet || echo "  (minnows pull skipped — local changes or offline)"
+elif [[ ! -d "$MINNOWS_DIR" ]]; then
+  git clone --quiet https://github.com/tnunamak/minnows.git "$MINNOWS_DIR" \
+    || echo "  (minnows clone failed — skipping; clone it manually later)"
+fi
+[[ -f "$MINNOWS_DIR/install.sh" ]] && bash "$MINNOWS_DIR/install.sh"
 
 # Git local config (only on first run)
 if [[ ! -f ~/.gitconfig.local ]]; then
