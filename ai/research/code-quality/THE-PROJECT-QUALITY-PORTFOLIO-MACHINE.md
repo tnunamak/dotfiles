@@ -46,6 +46,32 @@ functions worth ~1-2 points. So the 130M→5M codemod story used the wrong denom
 > Cheap autonomy comes from routing work to the right proof class and refusing to spend effort on low-attention
 > PROXY wins — not from proving most changes are mechanical.
 
+## 1b. THE T1b SCALING RULE (validated empirically, 2026-07-01 — the first-build learning)
+
+The first extraction lane landed 6 T1a/T1b cuts (each tsc + real-test + different-model-codex gated) and,
+critically, taught the SCALING BOTTLENECK: **the mechanical extraction is cheap; the qualifying bar is the
+scarce resource.** Yield was ~4 clean lands per ~15 candidates seriously examined. So T1b work MUST gate hard
+on BOTH:
+
+1. **A test that DIRECTLY pins the callback's output — not an integration test that merely reaches it.** A green
+   integration test that exercises the path without asserting the changed function's output IS the
+   `deriveSpineSource` skip-mask failure re-armed. If no direct test pins the output, the extraction is
+   UNPROVEN — SKIP it (or write the characterization test first), do not land on green-by-reachability.
+2. **Genuine hidden-state-made-explicit OR real enclosing-cc reduction — REJECT relocation even when tsc+tests
+   are green.** The load-bearing proof this gate works: the lane extracted `computeParticipation`, saw the
+   enclosing fn stay cc-18→18 (nested loops dominated, not the comparator) with a non-capturing comparator (no
+   hidden state to surface), recognized it as pure RELOCATION, and REVERTED it — before codex. A maker
+   optimizing for land-count keeps that cut; the doctrine's `decomplect ≠ relocate` (canon R5) demands the
+   revert. **Land-count is not the metric; genuine decomplect-or-nothing is.**
+
+The scarce, high-value T1b archetype is a **capturing closure with a single (or few) immutable capture AND an
+airtight direct unit test** (the `enrollmentShellExpired` land: one `nowMs` capture → explicit param, a unit
+test pinning every branch over a mixed fixture). Most flagged callbacks are NOT this — they are T1c
+(security/async/txn/persisted-contract seams: correctly skipped, e.g. a persisted search-plan `plan_hash` cache
+key with no test; OAuth/consent HTML-escaping; RS-envelope merges that mutate accumulators) or non-capturing
+blobs whose hoist is relocation. **Keep scaling T1b, but expect a low hit-rate and let the gate reject most
+candidates — that rejection IS the machine working, not failing.**
+
 ## 2. THE MACHINE (portfolio, not codemod)
 
 Budget direction (numbers movable, direction not): **B 40-50% · A2 judged decomplect 30-40% · T1 seam pilot
