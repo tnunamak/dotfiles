@@ -1,0 +1,6 @@
+[Unit]
+Description=Reap stale agent/worktree subdirs under ~/.tmp
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/tmp-reaper.sh

@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily reap of stale ~/.tmp subdirs
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
