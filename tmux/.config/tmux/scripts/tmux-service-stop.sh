@@ -44,10 +44,12 @@ run systemctl --user show tmux.service \
 
 section "tmux server state"
 if command tmux -N display-message -p '#{pid}' >/dev/null 2>&1; then
+  tmux_server_responsive=1
   command tmux -N display-message -p 'server_pid=#{pid} sessions=#{session_count} windows=#{window_count}'
   command tmux -N list-sessions -F 'session=#{session_name} group=#{session_group} attached=#{session_attached} windows=#{session_windows}' || true
   command tmux -N list-clients -F 'client=#{client_name} session=#{client_session} tty=#{client_tty} pid=#{client_pid}' || true
 else
+  tmux_server_responsive=0
   printf 'tmux server is not responsive before ExecStop save/kill\n'
 fi
 
@@ -61,7 +63,9 @@ if command -v ausearch >/dev/null 2>&1; then
 fi
 
 section "tmux-resurrect save"
-if [[ -x "$SAVE_SCRIPT" ]]; then
+if (( ! tmux_server_responsive )); then
+  printf 'skipping tmux-resurrect save because tmux server is not responsive; preserving previous last save\n'
+elif [[ -x "$SAVE_SCRIPT" ]]; then
   timeout 300s "$SAVE_SCRIPT"
   save_rc=$?
   printf 'save_rc=%s save_script=%s\n' "$save_rc" "$SAVE_SCRIPT"

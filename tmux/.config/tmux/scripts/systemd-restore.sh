@@ -22,6 +22,63 @@ RESTORE_SCRIPT="${HOME}/.tmux/plugins/tmux-resurrect/scripts/restore.sh"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
+count_save_panes() {
+  local save_file="$1"
+  local panes
+  panes=$(grep -c '^pane' "$save_file" 2>/dev/null || true)
+  panes="${panes%%$'\n'*}"
+  [[ "$panes" =~ ^[0-9]+$ ]] || panes=0
+  printf '%s\n' "$panes"
+}
+
+find_fallback_save() {
+  local mtime path panes
+  while IFS=$'\t' read -r mtime path; do
+    [ -z "$path" ] && continue
+    panes=$(count_save_panes "$path")
+    if (( panes >= 3 )); then
+      printf '%s\t%s\n' "$path" "$panes"
+      return 0
+    fi
+  done < <(
+    {
+      find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null
+      find "$RESURRECT_DIR/backups" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null
+    } | sort -rn 2>/dev/null
+  )
+
+  if [ -f "$RESURRECT_DIR/backups/best.txt" ]; then
+    panes=$(count_save_panes "$RESURRECT_DIR/backups/best.txt")
+    if (( panes >= 3 )); then
+      printf '%s\t%s\n' "$RESURRECT_DIR/backups/best.txt" "$panes"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+repoint_last_to_fallback() {
+  local reason="$1"
+  local fallback_save fallback_panes fallback_name
+  local fallback_info
+
+  fallback_info="$(find_fallback_save || true)"
+  if [ -z "$fallback_info" ]; then
+    log "$reason and no usable fallback save exists; nothing to do"
+    return 1
+  fi
+
+  IFS=$'\t' read -r fallback_save fallback_panes <<<"$fallback_info"
+  fallback_name="$(basename "$fallback_save")"
+  if [ "$(dirname "$fallback_save")" != "$RESURRECT_DIR" ]; then
+    cp "$fallback_save" "$RESURRECT_DIR/$fallback_name"
+  fi
+  ln -sfn "$fallback_name" "$RESURRECT_DIR/last"
+  log "$reason; repointed to fallback save $fallback_name ($fallback_panes panes)"
+  return 0
+}
+
 # Rotate log at 1 MiB
 if [[ -f "$LOG" ]] && (( $(stat -c %s "$LOG" 2>/dev/null || echo 0) > 1048576 )); then
   mv "$LOG" "${LOG}.old"
@@ -58,46 +115,9 @@ if [ -L "$RESURRECT_DIR/last" ] && [ ! -f "$RESURRECT_DIR/last" ]; then
   # Hunt for the newest non-trivial save across both the live dir and backups/.
   # An unclean shutdown can leave the most recent save unsynced to disk while
   # the post-save-backup hook's copy in backups/ survives, so backups/ must be
-  # part of the search. We pick the newest save with ≥3 panes — anything
+  # part of the search. We pick the newest save with >=3 panes; anything
   # smaller is likely the post-crash empty state we're trying to escape.
-  #
-  # Implementation note: pipefail + `awk ... exit` causes SIGPIPE on the
-  # upstream `sort` and aborts the script under set -e, so we read the find
-  # output into an array via mapfile and pick the best entry in pure bash.
-  fallback_save=""
-  fallback_panes=0
-  while IFS=$'\t' read -r mtime path; do
-    [ -z "$path" ] && continue
-    panes=$(grep -c '^pane' "$path" 2>/dev/null || echo 0)
-    if (( panes >= 3 )); then
-      fallback_save="$path"
-      fallback_panes=$panes
-      break
-    fi
-  done < <(
-    {
-      find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null
-      find "$RESURRECT_DIR/backups" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null
-    } | sort -rn 2>/dev/null
-  )
-
-  if [ -z "$fallback_save" ] && [ -f "$RESURRECT_DIR/backups/best.txt" ]; then
-    fallback_save="$RESURRECT_DIR/backups/best.txt"
-    fallback_panes=$(grep -c '^pane' "$fallback_save" 2>/dev/null || echo 0)
-  fi
-
-  if [ -n "$fallback_save" ]; then
-    # Copy into the live dir so cliff guard's `${RESURRECT_DIR}/${prev_name}`
-    # check finds the file on the next continuum save. Symlink at a path
-    # outside RESURRECT_DIR breaks that lookup.
-    fallback_name="$(basename "$fallback_save")"
-    if [ "$(dirname "$fallback_save")" != "$RESURRECT_DIR" ]; then
-      cp "$fallback_save" "$RESURRECT_DIR/$fallback_name"
-    fi
-    ln -sfn "$fallback_name" "$RESURRECT_DIR/last"
-    log "last symlink was dangling; repointed to fallback save $fallback_name ($fallback_panes panes)"
-  else
-    log "last symlink was dangling and no usable fallback save exists; nothing to do"
+  if ! repoint_last_to_fallback "last symlink was dangling"; then
     exit 0
   fi
 fi
@@ -110,15 +130,13 @@ fi
 # State-aware gate: only restore if tmux looks fresh-empty. "Fresh-empty"
 # means the total live pane count across all sessions is ≤ 2 (systemd's
 # default `new-session -d` plus at most one attached kitty session).
-# Count panes defensively: command substitution can produce "0\n0" when the
-# inner command both prints "0" AND falls through to `|| echo 0` (e.g. grep -c
-# on a dangling readlink target). Multiline values then break `(( var <= 1 ))`
-# with "syntax error in expression". Pipe through head -1 + a fallback echo.
+# Count panes defensively: pane counters must stay numeric even when grep finds
+# no pane lines or a target disappears under us.
 live_panes=$(tmux list-panes -a 2>/dev/null | wc -l 2>/dev/null | head -1)
 [[ -z "$live_panes" ]] && live_panes=0
 save_target="$(readlink -f "$RESURRECT_DIR/last" 2>/dev/null || true)"
 if [[ -n "$save_target" && -f "$save_target" ]]; then
-  save_panes=$(grep -c '^pane' "$save_target" 2>/dev/null | head -1)
+  save_panes=$(count_save_panes "$save_target")
 else
   save_panes=0
 fi
@@ -130,7 +148,19 @@ if (( live_panes > 2 )); then
   exit 0
 fi
 
-if (( save_panes <= 1 )); then
+if (( save_panes < 3 )); then
+  if repoint_last_to_fallback "last save had only $save_panes panes"; then
+    save_target="$(readlink -f "$RESURRECT_DIR/last" 2>/dev/null || true)"
+    if [[ -n "$save_target" && -f "$save_target" ]]; then
+      save_panes=$(count_save_panes "$save_target")
+    else
+      save_panes=0
+    fi
+    log "state after fallback: save_panes=$save_panes"
+  fi
+fi
+
+if (( save_panes < 3 )); then
   log "save has only $save_panes panes — nothing worth restoring"
   exit 0
 fi
