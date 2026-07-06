@@ -43,6 +43,7 @@ GROUPED_CLONES="${GROUPED_CLONES:-0}"
 # the patch between user sessions. The next boot's ExecStartPre should
 # re-apply it before any new save fires.
 UNPATCH_PLUGIN_AFTER_SAVE="${UNPATCH_PLUGIN_AFTER_SAVE:-0}"
+CONCURRENT_SAVE_TEST="${CONCURRENT_SAVE_TEST:-0}"
 PHASE="${PHASE:-first}"
 # ADD_OLD_SAVES creates N synthetic timestamped save files beyond what
 # save.sh produces, to ensure the OLD systemd-restore.sh's `find | sort | awk
@@ -98,6 +99,57 @@ run_saves() {
   sync
 }
 
+run_concurrent_save_test() {
+  local SAVE_SCRIPT="$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+  local WRAP_DIR="$HOME/.save-race-tmux-wrap"
+  local REAL_TMUX
+  REAL_TMUX="$(command -v tmux)"
+
+  rm -f "$RESURRECT_DIR"/tmux_resurrect_*.txt "$RESURRECT_DIR/last"
+  rm -rf "$RESURRECT_DIR/save" "$RESURRECT_DIR/restore"
+
+  mkdir -p "$WRAP_DIR"
+  cat >"$WRAP_DIR/tmux" <<WRAP
+#!/usr/bin/env bash
+case "\${1:-}" in
+  list-panes|list-windows|capture-pane) sleep 0.2 ;;
+esac
+exec "$REAL_TMUX" "\$@"
+WRAP
+  chmod +x "$WRAP_DIR/tmux"
+
+  echo "[populate:$SCENARIO] concurrent-save: launching two save.sh instances"
+  PATH="$WRAP_DIR:$PATH" bash "$SAVE_SCRIPT" >/tmp/save-race-1.log 2>&1 &
+  local p1=$!
+  PATH="$WRAP_DIR:$PATH" bash "$SAVE_SCRIPT" >/tmp/save-race-2.log 2>&1 &
+  local p2=$!
+  local rc1=0 rc2=0
+  wait "$p1" || rc1=$?
+  wait "$p2" || rc2=$?
+  rm -rf "$WRAP_DIR"
+
+  local save_count last_target last_valid last_panes
+  save_count=$(find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' | wc -l)
+  last_target="$(readlink "$RESURRECT_DIR/last" 2>/dev/null || echo MISSING)"
+  if [[ -L "$RESURRECT_DIR/last" && -f "$RESURRECT_DIR/last" ]]; then
+    last_valid=1
+    last_panes=$(grep -c '^pane' "$RESURRECT_DIR/last" 2>/dev/null || echo 0)
+  else
+    last_valid=0
+    last_panes=0
+  fi
+  {
+    printf 'rc1=%s\n' "$rc1"
+    printf 'rc2=%s\n' "$rc2"
+    printf 'save_count=%s\n' "$save_count"
+    printf 'last_target=%s\n' "$last_target"
+    printf 'last_valid=%s\n' "$last_valid"
+    printf 'last_panes=%s\n' "$last_panes"
+  } > "$RESURRECT_DIR/concurrent-save-summary"
+  echo "[populate:$SCENARIO] concurrent-save summary:"
+  sed 's/^/[populate:'"$SCENARIO"']   /' "$RESURRECT_DIR/concurrent-save-summary"
+}
+
 # --- Phase A: populate up to WINDOW_COUNT and save N times ---
 create_windows "$WINDOW_COUNT"
 
@@ -130,6 +182,10 @@ if (( GROUPED_CLONES > 0 )); then
   done
   echo "[populate:$SCENARIO] created $GROUPED_CLONES grouped clones"
   tmux list-sessions
+fi
+
+if (( CONCURRENT_SAVE_TEST )); then
+  run_concurrent_save_test
 fi
 
 # --- Optional: force #{session_group} to come back EMPTY during the save ---
