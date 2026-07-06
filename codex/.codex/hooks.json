@@ -30,12 +30,26 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.config/tmux/scripts/tmux-agent-label-hook.sh' codex working"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.config/tmux/scripts/tmux-agent-label-hook.sh' codex idle"
           }
         ]
       }
