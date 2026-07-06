@@ -26,12 +26,26 @@ if something looks risky, over-complex, or inconsistent with the codebase, say s
 - Break work into small, testable pieces; integrate incrementally; add tests/checks early.
 - Use existing linters/formatters and run relevant tests before stating code is ready.
 
-## Code quality (defaults, not rigid rules)
+## Code quality — the canon
 
-- Reduce duplication when it improves readability; don't over-abstract.
-- One source of truth for important data; clear separation of concerns.
-- Prefer pure functions, plain data, composition + dependency injection over deep inheritance.
-- Services: 12-factor (explicit deps, env config, stateless).
+The canonical theory is `ai/research/code-quality/CANONICAL-CODE-QUALITY-THEORY.phase1.md` (a constitutional
+spec for coding agents). **Read it for any non-trivial design/refactor decision** — it resolves the
+tensions (extraction vs locality, DRY vs decoupling, clever vs boring, elegance vs ship-and-survive) that
+the quick rules below can't. The spine is paradigm-INDEPENDENT (no, "use FP" is not the answer):
+
+> Preserve behavior unless explicitly asked to change it. Verify behavior first. Reduce incidental
+> complexity (decomplect — separate braided concerns). Make
+> state/effects explicit. Deep modules (small interface, hidden depth), local reasoning, honest names
+> (a name is a compressed invariant). Fit code to the real data, not to a pretty abstraction. Prefer
+> simple-that-ships-and-is-proven over elegant-that's-hard. Reject shallow abstraction and clean-code
+> theater (tiny-method extraction for size, not depth). **Simple (un-braided) is objective; easy
+> (familiar) is taste — optimize the former.**
+
+Agent guardrails (the constitution): verify the semantic defect BEFORE refactoring a metric (don't
+churn code to move a number); behavior-preservation is a GATE not a hope (a refactor that changes
+observable behavior is a rewrite — prove preservation against the real system, incl. the right backend);
+the maker is not the judge (deterministic oracle + a different model for judged calls); prove the diff,
+don't narrate it; decomplecting ≠ relocation (moving a blob behind a new filename is not quality).
 
 ## Navigating code: prefer LSP over grep for symbols
 
@@ -52,6 +66,9 @@ precise where grep matches comments/strings/unrelated names:
 - **Python:** use `uv` (`uv venv`/`uv pip`/`uv run`) — never raw `pip`/`venv`.
 - **`/tmp` is RAM-backed** (tmpfs, 50% of RAM). Don't clone repos or run builds there — a
   debug build tree can eat tens of GB of RAM. Use `~/.tmp` (disk-backed) for anything large.
+- **tmux tests: isolated sockets only** — `tmux -L test-$$ ...` for every invocation incl.
+  cleanup (the socket is keyed by UID, not $HOME; bare `tmux kill-server` killed the
+  production server 5×). Prefer `kill-session -t` over `kill-server`.
 - **Devcontainers:** `devc ~/code/proj` (start), `devc --rebuild ~/code/proj`, or
   `link-devcontainer`/`unlink-devcontainer`.
 - **Context hygiene:** respect `.gitignore`/`.aiignore`; exclude large/generated/lock files.
