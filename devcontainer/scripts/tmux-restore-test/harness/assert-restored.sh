@@ -22,6 +22,7 @@ CHECK_PATCH_PRESENT="${CHECK_PATCH_PRESENT:-0}"
 CHECK_CAPTURE_SKIP="${CHECK_CAPTURE_SKIP:-0}"
 CHECK_DOUBLE_SAVE="${CHECK_DOUBLE_SAVE:-0}"
 CHECK_KEEP_LAST="${CHECK_KEEP_LAST:-0}"
+CHECK_EMPTY_LAST_FALLBACK="${CHECK_EMPTY_LAST_FALLBACK:-0}"
 RESURRECT_DIR="$HOME/.tmux/resurrect"
 PASS=0
 FAIL=0
@@ -334,6 +335,48 @@ if (( CHECK_KEEP_LAST )); then
     else
       fail "queue attach result unexpected (clone=${queue_clone:-missing}, window=${queue_attach_window:-missing}, destroyed=${queue_clone_destroyed:-missing})"
     fi
+  fi
+fi
+
+# --- Check 11 (optional): empty `last` falls back and dead-stop did not save empty ---
+if (( CHECK_EMPTY_LAST_FALLBACK )); then
+  echo "--- empty-last fallback checks ---"
+  SUMMARY="$RESURRECT_DIR/empty-last-fallback-summary"
+  if [[ ! -f "$SUMMARY" ]]; then
+    fail "empty-last-fallback-summary missing"
+  else
+    cat "$SUMMARY" | sed 's/^/    /'
+    # shellcheck disable=SC1090
+    source "$SUMMARY"
+    if [[ "${dead_skip_logged:-0}" == "1" ]]; then
+      pass "dead-server ExecStop wrapper skipped tmux-resurrect save"
+    else
+      fail "dead-server ExecStop wrapper did not log save skip"
+    fi
+    if [[ "${after_target:-missing}" == "${before_target:-different}" && "${after_panes:-0}" -ge "$EXPECTED_WINDOWS" ]]; then
+      pass "dead-server stop preserved previous good last target"
+    else
+      fail "dead-server stop changed last or reduced panes (before=${before_target:-missing}/${before_panes:-missing}, after=${after_target:-missing}/${after_panes:-missing})"
+    fi
+    if [[ "${empty_saves_after_stop:-missing}" == "0" ]]; then
+      pass "dead-server stop wrote no empty resurrect save"
+    else
+      fail "dead-server stop left ${empty_saves_after_stop:-missing} empty resurrect save(s)"
+    fi
+  fi
+
+  if grep -q "last save had only 0 panes; repointed to fallback save" "$LOG"; then
+    pass "systemd-restore.log shows empty-last fallback"
+  else
+    fail "systemd-restore.log does not show empty-last fallback"
+  fi
+
+  final_last_panes="$(grep -c '^pane' "$RESURRECT_DIR/last" 2>/dev/null || true)"
+  [[ "$final_last_panes" =~ ^[0-9]+$ ]] || final_last_panes=0
+  if (( final_last_panes >= EXPECTED_WINDOWS )); then
+    pass "last points at fallback save with $final_last_panes panes"
+  else
+    fail "last points at only $final_last_panes panes after fallback"
   fi
 fi
 
