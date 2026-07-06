@@ -15,15 +15,10 @@ LOCK_FILE="${STATE_DIR}/attach-main.lock"
 RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
 RESTORE_STAMP_FILE="${STATE_DIR}/main.restore-stamp"
 RESTORE_TTL=45
-# Two-strikes orphan-clone reaper: each attach creates a `main-N` grouped clone
-# but nothing destroys it when the terminal closes (destroy-unattached is off —
-# see the post-mortem note near the attach call). Detached clones therefore leak
-# and inflate every tmux-resurrect save (hundreds of clones x N windows). We reap
-# a clone only if it has NO client now AND had none on the PREVIOUS attach. That
-# two-strikes rule is safe against SDDM/Wayland detach storms: a display-server
-# restart detaches every client at one instant, but they reattach together within
-# seconds — long before the next user-initiated launch — so a live clone is never
-# detached across two separate attach events. DETACHED_SEEN_FILE holds the set
+# Two-strikes orphan-clone reaper backstop: fresh `main-N` clones now get
+# destroy-unattached=keep-last, so normal last-client-detach should destroy them
+# immediately. Keep this for now as a candidate-for-removal fallback until the
+# native path survives a few real detach storms. DETACHED_SEEN_FILE holds the set
 # seen detached last time.
 DETACHED_SEEN_FILE="${STATE_DIR}/main.detached-seen"
 
@@ -375,10 +370,11 @@ target="$(
 )" || true
 
 if [[ -n "$target" ]]; then
-  # Do NOT set destroy-unattached: SDDM/Wayland restarts detach clients, and
-  # destroy-unattached would then kill the session. Sessions must survive
-  # display-server hiccups. See 2026-04-22 post-mortem in git log.
-  exec tmux attach-session -t "=$target"
+  # Enable tmux 3.4+ keep-last only after attach-session has attached this
+  # client. Setting it while the clone is still detached destroys the clone
+  # immediately. Set it per clone so the detached seed `main` and restore-created
+  # grouped sessions are unaffected.
+  exec tmux attach-session -t "=$target" \; set-option -q -t "$target" destroy-unattached keep-last
 fi
 
 # Last-resort fallback
