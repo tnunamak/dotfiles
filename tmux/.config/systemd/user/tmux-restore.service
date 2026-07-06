@@ -3,7 +3,7 @@ Description=tmux-resurrect restore (bypasses continuum race)
 Documentation=file:///home/tnunamak/code/dotfiles/CLAUDE.md
 After=tmux.service
 # BindsTo + PartOf so this unit is re-activated whenever tmux.service
-# (re)starts — including the Restart=on-failure cycle, so a crashed tmux
+# (re)starts — including automatic recovery cycles, so a crashed tmux
 # comes back populated instead of empty. The script itself decides whether
 # restoring is appropriate (fresh empty tmux? restore. tmux with in-flight
 # sessions? skip) — no time-based gating.
@@ -13,6 +13,7 @@ PartOf=tmux.service
 [Service]
 Type=oneshot
 RemainAfterExit=no
+TimeoutStartSec=10min
 # Re-apply patches to tmux-assistant-resurrect's save script before restore
 # runs. TPM auto-updates of the plugin can wipe these in-place sed patches,
 # and without them the next continuum save records pane addresses against

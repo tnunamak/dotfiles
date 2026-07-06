@@ -128,7 +128,7 @@ Description=tmux default session (detached)
 [Service]
 Type=forking
 ExecStart=/usr/bin/tmux new-session -d
-ExecStop=/usr/bin/tmux kill-server
+ExecStop=$HOME/.config/tmux/scripts/tmux-service-stop.sh
 KillMode=control-group
 
 [Install]
@@ -138,8 +138,9 @@ EOF
 # Drop-in: same as tmux/.config/systemd/user/tmux.service.d/restart.conf
 cat > "$HOME/.config/systemd/user/tmux.service.d/restart.conf" <<EOF
 [Service]
-Restart=on-failure
+Restart=always
 RestartSec=2
+TimeoutStopSec=10min
 EOF
 
 # tmux-restore.service: like the dotfiles version but with this user's path.
@@ -161,6 +162,7 @@ PartOf=tmux.service
 [Service]
 Type=oneshot
 RemainAfterExit=no
+TimeoutStartSec=10min
 $EXEC_START_PRE_LINE
 ExecStart=$HOME/.config/tmux/scripts/systemd-restore.sh
 
