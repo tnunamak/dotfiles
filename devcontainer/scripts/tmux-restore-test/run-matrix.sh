@@ -13,6 +13,7 @@ SCENARIOS=(
   no-backups-dir
   cliff-shrink
   empty-live-dir
+  empty-last-fallback
   many-old-saves-good-best
   prev-target-only-in-backups
   double-crash

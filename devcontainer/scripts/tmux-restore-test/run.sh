@@ -156,6 +156,7 @@ CHECK_PATCH_PRESENT=0
 CHECK_CAPTURE_SKIP=0
 CHECK_DOUBLE_SAVE=0
 CHECK_KEEP_LAST=0
+CHECK_EMPTY_LAST_FALLBACK=0
 case "$SCENARIO" in
   pane-capture-skip)
     # Validates Patch 3: assistant panes are skipped when tmux-resurrect captures
@@ -195,6 +196,14 @@ case "$SCENARIO" in
   no-crash)
     # Sanity: no crash, just reboot. Should restore cleanly.
     SCENARIO_VARS+=(-e SAVES_BEFORE=4 -e DELETE_LIVE_LAST=0) ;;
+  empty-last-fallback)
+    # Regression for the externally-killed tmux server outage:
+    # 1. Kill the server, run the ExecStop wrapper against the dead socket, and
+    #    assert it preserves the previous good `last` instead of writing empty.
+    # 2. Then synthesize a valid 0-pane `last` with only backups holding the
+    #    good save, so systemd-restore.sh must use its best-candidate fallback.
+    SCENARIO_VARS+=(-e SAVES_BEFORE=4 -e DELETE_LIVE_LAST=0)
+    CHECK_EMPTY_LAST_FALLBACK=1 ;;
   double-save-race)
     # Runs two save.sh instances concurrently. The save.sh flock patch should
     # let one writer complete and make the duplicate return 0 without touching
@@ -303,6 +312,74 @@ case "$SCENARIO" in
 esac
 user_exec "${SCENARIO_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/populate-state.sh
 
+if (( CHECK_EMPTY_LAST_FALLBACK )); then
+  echo ">>> empty-last-fallback: kill tmux, run stop wrapper, then synthesize empty last"
+  user_exec "$CONTAINER_NAME" bash -lc '
+    set -euo pipefail
+    RESURRECT_DIR="$HOME/.tmux/resurrect"
+    SUMMARY="$RESURRECT_DIR/empty-last-fallback-summary"
+    STOP_SCRIPT="$HOME/.config/tmux/scripts/tmux-service-stop.sh"
+
+    before_target="$(readlink "$RESURRECT_DIR/last" 2>/dev/null || echo MISSING)"
+    before_panes="$(grep -c "^pane" "$RESURRECT_DIR/last" 2>/dev/null || true)"
+    [[ "$before_panes" =~ ^[0-9]+$ ]] || before_panes=0
+
+    tmux kill-server 2>/dev/null || true
+    bash "$STOP_SCRIPT" >/tmp/empty-last-stop-wrapper.log 2>&1 || true
+    systemctl --user stop tmux.service 2>/dev/null || true
+    sleep 1
+
+    after_target="$(readlink "$RESURRECT_DIR/last" 2>/dev/null || echo MISSING)"
+    after_panes="$(grep -c "^pane" "$RESURRECT_DIR/last" 2>/dev/null || true)"
+    [[ "$after_panes" =~ ^[0-9]+$ ]] || after_panes=0
+    dead_skip_logged=0
+    if grep -q "skipping tmux-resurrect save because tmux server is not responsive" /tmp/empty-last-stop-wrapper.log; then
+      dead_skip_logged=1
+    fi
+    empty_saves_after_stop=0
+    while IFS= read -r -d "" save_file; do
+      panes="$(grep -c "^pane" "$save_file" 2>/dev/null || true)"
+      [[ "$panes" =~ ^[0-9]+$ ]] || panes=0
+      if (( panes == 0 )); then
+        empty_saves_after_stop=$((empty_saves_after_stop + 1))
+      fi
+    done < <(find "$RESURRECT_DIR" -maxdepth 1 -type f -name "tmux_resurrect_*.txt" -print0)
+
+    good_backup=""
+    while IFS=$'"'"'\t'"'"' read -r _ path; do
+      [[ -n "$path" ]] || continue
+      panes="$(grep -c "^pane" "$path" 2>/dev/null || true)"
+      [[ "$panes" =~ ^[0-9]+$ ]] || panes=0
+      if (( panes >= 3 )); then
+        good_backup="$path"
+        break
+      fi
+    done < <(find "$RESURRECT_DIR/backups" -maxdepth 1 -type f -name "tmux_resurrect_*.txt" -printf "%T@\t%p\n" 2>/dev/null | sort -rn)
+
+    if [[ -z "$good_backup" ]]; then
+      echo "no good backup save found" >&2
+      exit 1
+    fi
+
+    rm -f "$RESURRECT_DIR"/tmux_resurrect_*.txt
+    empty_name="tmux_resurrect_20990101T000000.txt"
+    : > "$RESURRECT_DIR/$empty_name"
+    ln -sfn "$empty_name" "$RESURRECT_DIR/last"
+
+    {
+      printf "before_target=%q\n" "$before_target"
+      printf "before_panes=%s\n" "$before_panes"
+      printf "after_target=%q\n" "$after_target"
+      printf "after_panes=%s\n" "$after_panes"
+      printf "dead_skip_logged=%s\n" "$dead_skip_logged"
+      printf "empty_saves_after_stop=%s\n" "$empty_saves_after_stop"
+      printf "good_backup=%q\n" "$good_backup"
+      printf "synthesized_empty_last=%q\n" "$empty_name"
+    } > "$SUMMARY"
+    cat "$SUMMARY" | sed "s/^/[empty-last-fallback]   /"
+  '
+fi
+
 # --- Phase 2: "reboot" by restarting the container ---
 echo ""
 echo ">>> phase 2: simulating reboot (stop + start container)"
@@ -397,6 +474,7 @@ ASSERT_VARS=(
   -e CHECK_CAPTURE_SKIP="$CHECK_CAPTURE_SKIP"
   -e CHECK_DOUBLE_SAVE="$CHECK_DOUBLE_SAVE"
   -e CHECK_KEEP_LAST="$CHECK_KEEP_LAST"
+  -e CHECK_EMPTY_LAST_FALLBACK="$CHECK_EMPTY_LAST_FALLBACK"
 )
 user_exec "${ASSERT_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
 exit_code=$?
