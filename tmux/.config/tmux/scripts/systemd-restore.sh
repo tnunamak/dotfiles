@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tmux-resurrect restore, driven by systemd (not continuum). Invoked by
 # tmux-restore.service after every tmux.service start — including
-# Restart=on-failure cycles. The script itself is state-aware: it only
+# automatic recovery cycles. The script itself is state-aware: it only
 # restores when tmux is fresh-empty, so re-invocations after a legitimate
 # resume (or during manual tmux restarts with live work) are no-ops.
 #
@@ -16,6 +16,7 @@ set -euo pipefail
 
 RESURRECT_DIR="${HOME}/.tmux/resurrect"
 SENTINEL="${RESURRECT_DIR}/.restore-complete"
+STATUS="${RESURRECT_DIR}/.restore-status"
 LOG="${RESURRECT_DIR}/systemd-restore.log"
 RESTORE_SCRIPT="${HOME}/.tmux/plugins/tmux-resurrect/scripts/restore.sh"
 
@@ -25,7 +26,7 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 if [[ -f "$LOG" ]] && (( $(stat -c %s "$LOG" 2>/dev/null || echo 0) > 1048576 )); then
   mv "$LOG" "${LOG}.old"
 fi
-rm -f "$SENTINEL"
+rm -f "$SENTINEL" "$STATUS"
 
 log "systemd-restore.sh invoked"
 log "diag: RESURRECT_DIR=$RESURRECT_DIR RESTORE_SCRIPT=$RESTORE_SCRIPT"
@@ -135,18 +136,24 @@ if (( save_panes <= 1 )); then
 fi
 
 log "running restore via tmux run-shell"
-tmux run-shell -b "bash '$RESTORE_SCRIPT' >>'$LOG' 2>&1; touch '$SENTINEL'"
+tmux run-shell -b "bash '$RESTORE_SCRIPT' >>'$LOG' 2>&1; rc=\$?; printf '%s\n' \"\$rc\" >'$STATUS'; [ \"\$rc\" -eq 0 ] && touch '$SENTINEL'"
 
 # Bounded wait for restore to finish (sentinel touched at end of run-shell).
-for _ in $(seq 1 60); do
+for _ in $(seq 1 1200); do
   [ -f "$SENTINEL" ] && break
+  [ -f "$STATUS" ] && break
   sleep 0.5
 done
 
 if [ -f "$SENTINEL" ]; then
   log "restore complete; sentinel written"
   exit 0
+elif [ -f "$STATUS" ]; then
+  restore_rc="$(tr -d '[:space:]' < "$STATUS" 2>/dev/null || echo 1)"
+  [[ "$restore_rc" =~ ^[0-9]+$ ]] || restore_rc=1
+  log "ERROR: restore exited rc=$restore_rc"
+  exit "$restore_rc"
 else
-  log "WARNING: sentinel not written after 30s"
+  log "WARNING: restore still running after 600s"
   exit 1
 fi
