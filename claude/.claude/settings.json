@@ -38,6 +38,20 @@
             "command": "bash '/home/tnunamak/.local/bin/dogfood-feedback-nudge' 2>/dev/null"
           }
         ]
+      },
+      {
+        "hooks": []
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/deny-tmux-killserver'"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -129,7 +143,8 @@
     "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "vercel@claude-plugins-official": false,
-    "codex@openai-codex": true
+    "codex@openai-codex": true,
+    "context-mode@context-mode": false
   },
   "extraKnownMarketplaces": {
     "compound-engineering-plugin": {
@@ -146,7 +161,7 @@
     }
   },
   "alwaysThinkingEnabled": false,
-  "effortLevel": "xhigh",
+  "effortLevel": "high",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,

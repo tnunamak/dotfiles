@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# PreToolUse(Bash) hook: block `tmux kill-server` against the DEFAULT socket.
+# Why: an agent's test cleanup ran bare `tmux kill-server` and destroyed the
+# production tmux server (46 agent panes) five times, 2026-07-03..06. Tests must
+# use isolated sockets (tmux -L/-S); those invocations are allowed through.
+# Exit 2 + stderr = deny with explanation (Claude Code hook contract).
+set -euo pipefail
+
+cmd="$(jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
+[[ -z "$cmd" ]] && exit 0
+
+# Match kill-server in tmux-invocation position (not in prose/commit messages)
+grep -qE 'tmux[^|&;<>]*[[:space:]]kill-server' <<<"$cmd" || exit 0
+
+# Allowed: isolated sockets, or commands running inside containers
+[[ "$cmd" == *" -L "* || "$cmd" == *" -S "* ]] && exit 0
+[[ "$cmd" == *docker* || "$cmd" == *devcontainer* ]] && exit 0
+
+echo "BLOCKED: 'tmux kill-server' on the default socket would destroy the production tmux server (~46 live agent sessions; this has happened 5 times). Use an isolated socket for tmux tests: 'tmux -L test-\$\$ ...' for EVERY invocation including cleanup, and prefer 'kill-session -t' over kill-server." >&2
+exit 2
