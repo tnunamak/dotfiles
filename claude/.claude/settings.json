@@ -40,6 +40,39 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.config/tmux/scripts/tmux-agent-label-hook.sh' claude working"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.config/tmux/scripts/tmux-agent-label-hook.sh' claude idle"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.config/tmux/scripts/tmux-agent-label-hook.sh' claude needs-input"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
