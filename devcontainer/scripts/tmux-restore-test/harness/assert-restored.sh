@@ -20,6 +20,7 @@ CHECK_PATCH_PRESENT="${CHECK_PATCH_PRESENT:-0}"
 # $RESURRECT_DIR/capture-test-archive.tar.gz (the live one is consumed by the
 # crash simulation).
 CHECK_CAPTURE_SKIP="${CHECK_CAPTURE_SKIP:-0}"
+CHECK_DOUBLE_SAVE="${CHECK_DOUBLE_SAVE:-0}"
 RESURRECT_DIR="$HOME/.tmux/resurrect"
 PASS=0
 FAIL=0
@@ -244,6 +245,46 @@ if (( CHECK_CAPTURE_SKIP )); then
     fi
   else
     fail "capture-test tmp-leak-count not recorded (populate block did not run)"
+  fi
+fi
+
+# --- Check 9 (optional): concurrent save.sh invocations are serialized ---
+if (( CHECK_DOUBLE_SAVE )); then
+  echo "--- double-save race checks ---"
+  SAVE_SH="$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+  if grep -qF 'AR-Patch6' "$SAVE_SH"; then
+    pass "Patch 6 marker present in tmux-resurrect save.sh"
+  else
+    fail "Patch 6 marker MISSING from save.sh (save lock did not apply)"
+  fi
+
+  SUMMARY="$RESURRECT_DIR/concurrent-save-summary"
+  if [[ ! -f "$SUMMARY" ]]; then
+    fail "concurrent-save-summary missing"
+  else
+    cat "$SUMMARY" | sed 's/^/    /'
+    # shellcheck disable=SC1090
+    source "$SUMMARY"
+    if [[ "${rc1:-1}" == "0" && "${rc2:-1}" == "0" ]]; then
+      pass "both concurrent save.sh callers exited 0"
+    else
+      fail "concurrent save.sh callers returned rc1=${rc1:-missing} rc2=${rc2:-missing}"
+    fi
+    if [[ "${save_count:-0}" == "1" ]]; then
+      pass "exactly one live save file was produced"
+    else
+      fail "expected exactly one live save file, got ${save_count:-missing}"
+    fi
+    if [[ "${last_valid:-0}" == "1" ]]; then
+      pass "last symlink valid after concurrent saves"
+    else
+      fail "last symlink invalid after concurrent saves (target=${last_target:-missing})"
+    fi
+    if (( ${last_panes:-0} >= EXPECTED_WINDOWS )); then
+      pass "concurrent save target has ${last_panes:-0} panes (>= $EXPECTED_WINDOWS)"
+    else
+      fail "concurrent save target has ${last_panes:-0} panes (< $EXPECTED_WINDOWS)"
+    fi
   fi
 fi
 

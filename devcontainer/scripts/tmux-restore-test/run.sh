@@ -154,6 +154,7 @@ SECOND_SERVICE_RESTART=0
 EXPECTED_ASSISTANTS=0
 CHECK_PATCH_PRESENT=0
 CHECK_CAPTURE_SKIP=0
+CHECK_DOUBLE_SAVE=0
 case "$SCENARIO" in
   pane-capture-skip)
     # Validates Patch 3: assistant panes are skipped when tmux-resurrect captures
@@ -193,6 +194,12 @@ case "$SCENARIO" in
   no-crash)
     # Sanity: no crash, just reboot. Should restore cleanly.
     SCENARIO_VARS+=(-e SAVES_BEFORE=4 -e DELETE_LIVE_LAST=0) ;;
+  double-save-race)
+    # Runs two save.sh instances concurrently. The save.sh flock patch should
+    # let one writer complete and make the duplicate return 0 without touching
+    # the same timestamped file.
+    SCENARIO_VARS+=(-e SAVES_BEFORE=0 -e DELETE_LIVE_LAST=0 -e CONCURRENT_SAVE_TEST=1)
+    CHECK_DOUBLE_SAVE=1 ;;
   empty-live-dir)
     # Live dir gets only the most recent save; we delete it. Tests fallback
     # to backups/ when live dir has nothing to find.
@@ -380,6 +387,7 @@ ASSERT_VARS=(
   -e EXPECTED_ASSISTANTS="$EXPECTED_ASSISTANTS"
   -e CHECK_PATCH_PRESENT="$CHECK_PATCH_PRESENT"
   -e CHECK_CAPTURE_SKIP="$CHECK_CAPTURE_SKIP"
+  -e CHECK_DOUBLE_SAVE="$CHECK_DOUBLE_SAVE"
 )
 user_exec "${ASSERT_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
 exit_code=$?

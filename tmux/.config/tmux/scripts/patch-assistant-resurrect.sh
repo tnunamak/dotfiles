@@ -165,6 +165,41 @@ if [[ -f "$RESURRECT_SAVE" ]] &&
   fi
 fi
 
+# Patch 6: serialize tmux-resurrect saves across all callers.
+# tmux-continuum can trigger save.sh from multiple status-line clients in the
+# same second, and systemd ExecStop also calls the same save.sh. Concurrent
+# writers share the same timestamped output path; the losing run can compare
+# the file to itself, delete it as a duplicate, and leave `last` dangling. A
+# non-blocking flock makes duplicate concurrent saves safely skippable while
+# preserving normal future saves.
+if [[ -f "$RESURRECT_SAVE" ]] &&
+   ! grep -qF 'AR-Patch6' "$RESURRECT_SAVE" &&
+   grep -qF 'source "$CURRENT_DIR/helpers.sh"' "$RESURRECT_SAVE"; then
+  awk '
+    /^source "\$CURRENT_DIR\/spinner_helpers\.sh"$/ && !done {
+      print
+      print ""
+      print "# AR-Patch6 (patch-assistant-resurrect.sh): skip concurrent duplicate saves."
+      print "# Keep fd 8 open for the process lifetime so the lock covers all writes."
+      print "_ar_resurrect_dir=\"$(resurrect_dir)\""
+      print "mkdir -p \"$_ar_resurrect_dir\""
+      print "exec 8>\"$_ar_resurrect_dir/save.lock\""
+      print "flock -n 8 || exit 0"
+      done=1; next
+    }
+    { print }
+  ' "$RESURRECT_SAVE" >"${RESURRECT_SAVE}.artmp"
+  if grep -qF 'AR-Patch6' "${RESURRECT_SAVE}.artmp" && bash -n "${RESURRECT_SAVE}.artmp" 2>/dev/null; then
+    cat "${RESURRECT_SAVE}.artmp" >"$RESURRECT_SAVE"
+    rm -f "${RESURRECT_SAVE}.artmp"
+    log "applied patch 6: non-blocking flock around tmux-resurrect save.sh"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 6 NOT applied (marker missing or bash -n failed) — save.sh left untouched"
+    rm -f "${RESURRECT_SAVE}.artmp"
+  fi
+fi
+
 # Patch 5: remove the now-vestigial, still-leaky strip_assistant_pane_contents()
 # from the fork's save-assistant-sessions.sh. With Patch 3 active, assistant panes
 # never enter pane_contents.tar.gz, so the strip finds nothing — but it still does
