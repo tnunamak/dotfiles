@@ -155,6 +155,7 @@ EXPECTED_ASSISTANTS=0
 CHECK_PATCH_PRESENT=0
 CHECK_CAPTURE_SKIP=0
 CHECK_DOUBLE_SAVE=0
+CHECK_KEEP_LAST=0
 case "$SCENARIO" in
   pane-capture-skip)
     # Validates Patch 3: assistant panes are skipped when tmux-resurrect captures
@@ -200,6 +201,13 @@ case "$SCENARIO" in
     # the same timestamped file.
     SCENARIO_VARS+=(-e SAVES_BEFORE=0 -e DELETE_LIVE_LAST=0 -e CONCURRENT_SAVE_TEST=1)
     CHECK_DOUBLE_SAVE=1 ;;
+  keep-last-clone-reaping)
+    # Validates the tmux native destroy-unattached=keep-last path for fresh
+    # grouped main-N clones: detach storms destroy only clientless clones, seed
+    # main survives, follow-up attaches still work, and restore-created grouped
+    # sessions survive until post-restore-grouped-focus.sh consumes them.
+    SCENARIO_VARS+=(-e SAVES_BEFORE=0 -e DELETE_LIVE_LAST=0 -e KEEP_LAST_TEST=1)
+    CHECK_KEEP_LAST=1 ;;
   empty-live-dir)
     # Live dir gets only the most recent save; we delete it. Tests fallback
     # to backups/ when live dir has nothing to find.
@@ -388,6 +396,7 @@ ASSERT_VARS=(
   -e CHECK_PATCH_PRESENT="$CHECK_PATCH_PRESENT"
   -e CHECK_CAPTURE_SKIP="$CHECK_CAPTURE_SKIP"
   -e CHECK_DOUBLE_SAVE="$CHECK_DOUBLE_SAVE"
+  -e CHECK_KEEP_LAST="$CHECK_KEEP_LAST"
 )
 user_exec "${ASSERT_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
 exit_code=$?

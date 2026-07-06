@@ -21,6 +21,7 @@ CHECK_PATCH_PRESENT="${CHECK_PATCH_PRESENT:-0}"
 # crash simulation).
 CHECK_CAPTURE_SKIP="${CHECK_CAPTURE_SKIP:-0}"
 CHECK_DOUBLE_SAVE="${CHECK_DOUBLE_SAVE:-0}"
+CHECK_KEEP_LAST="${CHECK_KEEP_LAST:-0}"
 RESURRECT_DIR="$HOME/.tmux/resurrect"
 PASS=0
 FAIL=0
@@ -284,6 +285,54 @@ if (( CHECK_DOUBLE_SAVE )); then
       pass "concurrent save target has ${last_panes:-0} panes (>= $EXPECTED_WINDOWS)"
     else
       fail "concurrent save target has ${last_panes:-0} panes (< $EXPECTED_WINDOWS)"
+    fi
+  fi
+fi
+
+# --- Check 10 (optional): native keep-last destroys only attached clones ---
+if (( CHECK_KEEP_LAST )); then
+  echo "--- keep-last clone checks ---"
+  SUMMARY="$RESURRECT_DIR/keep-last-summary"
+  if [[ ! -f "$SUMMARY" ]]; then
+    fail "keep-last-summary missing"
+  else
+    cat "$SUMMARY" | sed 's/^/    /'
+    # shellcheck disable=SC1090
+    source "$SUMMARY"
+    if [[ "${clone_options_before:-}" == *keep-last* ]]; then
+      pass "production attach script set destroy-unattached=keep-last on clones"
+    else
+      fail "clone destroy-unattached options did not include keep-last: ${clone_options_before:-missing}"
+    fi
+    if [[ "${storm_clones_after:-missing}" == "0" ]]; then
+      pass "detach storm destroyed all clientless clones"
+    else
+      fail "detach storm left ${storm_clones_after:-missing} main-N clone(s)"
+    fi
+    if [[ "${seed_exists_after_storm:-0}" == "1" && "${seed_windows_after_storm:-0}" -ge "$EXPECTED_WINDOWS" ]]; then
+      pass "seed main survived detach storm with ${seed_windows_after_storm:-0} windows"
+    else
+      fail "seed main did not survive intact after storm (exists=${seed_exists_after_storm:-missing}, windows=${seed_windows_after_storm:-missing})"
+    fi
+    if [[ "${fresh_clone:-}" =~ ^main-[0-9]+$ && "${fresh_clone_option:-}" == "keep-last" && "${fresh_clone_destroyed:-0}" == "1" ]]; then
+      pass "subsequent attach created a fresh keep-last clone and it was destroyed on detach"
+    else
+      fail "subsequent attach result unexpected (clone=${fresh_clone:-missing}, option=${fresh_clone_option:-missing}, destroyed=${fresh_clone_destroyed:-missing})"
+    fi
+    if [[ "${restore_sessions_pre_hook:-0}" == "2" && "${post_hook_rc:-1}" == "0" && "${restore_sessions_post_hook:-1}" == "0" ]]; then
+      pass "restore-created grouped sessions survived until post-restore hook and were killed by it"
+    else
+      fail "restore grouped-session flow unexpected (pre=${restore_sessions_pre_hook:-missing}, rc=${post_hook_rc:-missing}, post=${restore_sessions_post_hook:-missing})"
+    fi
+    if [[ "${restore_queue_lines:-0}" -ge "2" ]]; then
+      pass "post-restore hook populated restore queue"
+    else
+      fail "restore queue had ${restore_queue_lines:-missing} entries"
+    fi
+    if [[ "${queue_clone:-}" =~ ^main-[0-9]+$ && "${queue_attach_window:-missing}" == "2" && "${queue_clone_destroyed:-0}" == "1" ]]; then
+      pass "queue attach consumed restored window and clone was destroyed on detach"
+    else
+      fail "queue attach result unexpected (clone=${queue_clone:-missing}, window=${queue_attach_window:-missing}, destroyed=${queue_clone_destroyed:-missing})"
     fi
   fi
 fi

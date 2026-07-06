@@ -44,6 +44,7 @@ GROUPED_CLONES="${GROUPED_CLONES:-0}"
 # re-apply it before any new save fires.
 UNPATCH_PLUGIN_AFTER_SAVE="${UNPATCH_PLUGIN_AFTER_SAVE:-0}"
 CONCURRENT_SAVE_TEST="${CONCURRENT_SAVE_TEST:-0}"
+KEEP_LAST_TEST="${KEEP_LAST_TEST:-0}"
 PHASE="${PHASE:-first}"
 # ADD_OLD_SAVES creates N synthetic timestamped save files beyond what
 # save.sh produces, to ensure the OLD systemd-restore.sh's `find | sort | awk
@@ -150,6 +151,159 @@ WRAP
   sed 's/^/[populate:'"$SCENARIO"']   /' "$RESURRECT_DIR/concurrent-save-summary"
 }
 
+tmux_client_count() {
+  tmux list-clients 2>/dev/null | wc -l
+}
+
+main_clone_count() {
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Ec '^main-[0-9]+$' || true
+}
+
+wait_for_condition() {
+  local desc="$1" cmd="$2"
+  for _ in $(seq 1 80); do
+    if bash -c "$cmd"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "[populate:$SCENARIO] timeout waiting for: $desc"
+  return 1
+}
+
+start_attach_client() {
+  local label="$1"
+  local log_file="$RESURRECT_DIR/keep-last-client-${label}.log"
+  TERM=xterm-256color script -qfec "env TERM=xterm-256color $HOME/.local/bin/tmux-local-attach-main" "$log_file" </dev/null >/dev/null 2>&1 &
+  printf '%s\n' "$!"
+}
+
+kill_tmux_clients() {
+  local -a client_pids=()
+  mapfile -t client_pids < <(tmux list-clients -F '#{client_pid}' 2>/dev/null | sort -nu)
+  if (( ${#client_pids[@]} > 0 )); then
+    kill "${client_pids[@]}" 2>/dev/null || true
+  fi
+}
+
+run_keep_last_clone_test() {
+  local summary="$RESURRECT_DIR/keep-last-summary"
+  local restore_log="$RESURRECT_DIR/keep-last-post-restore.log"
+  local state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
+  local queue_file="$state_dir/main.restore-queue"
+  local -a wrappers=()
+
+  echo "[populate:$SCENARIO] keep-last: starting clone detach-storm test"
+  command -v script >/dev/null 2>&1 || { echo "script(1) missing"; return 1; }
+
+  # Launch three real tmux clients through the production attach script.
+  for i in 0 1 2; do
+    wrappers+=("$(start_attach_client "storm-$i")")
+    sleep 0.3
+  done
+  wait_for_condition "three attached clients" "[ \"\$(tmux list-clients 2>/dev/null | wc -l)\" -ge 3 ]"
+  wait_for_condition "three main-N clones" "[ \"\$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Ec '^main-[0-9]+$' || true)\" -ge 3 ]"
+
+  local seed_windows_before clone_options_before
+  seed_windows_before=$(tmux list-windows -t =main 2>/dev/null | wc -l)
+  clone_options_before=$(tmux list-sessions -F '#{session_name}' 2>/dev/null |
+    grep -E '^main-[0-9]+$' |
+    while IFS= read -r clone; do
+      printf '%s=%s\n' "$clone" "$(tmux show-option -t "$clone" -v destroy-unattached 2>/dev/null || echo missing)"
+    done | paste -sd ',' -)
+
+  # Detach storm: kill only tmux client processes, never the tmux server.
+  kill_tmux_clients
+  for p in "${wrappers[@]}"; do
+    wait "$p" 2>/dev/null || true
+  done
+  wait_for_condition "all clients detached" "[ \"\$(tmux list-clients 2>/dev/null | wc -l)\" -eq 0 ]"
+  wait_for_condition "clientless clones destroyed" "[ \"\$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Ec '^main-[0-9]+$' || true)\" -eq 0 ]"
+
+  local storm_clones_after seed_exists_after_storm seed_windows_after_storm
+  storm_clones_after=$(main_clone_count)
+  if tmux has-session -t =main 2>/dev/null; then
+    seed_exists_after_storm=1
+    seed_windows_after_storm=$(tmux list-windows -t =main 2>/dev/null | wc -l)
+  else
+    seed_exists_after_storm=0
+    seed_windows_after_storm=0
+  fi
+
+  # A subsequent production attach should create a fresh clone, then that clone
+  # should also disappear on last-client-detach.
+  wrappers=("$(start_attach_client fresh)")
+  wait_for_condition "fresh attached client" "[ \"\$(tmux list-clients 2>/dev/null | wc -l)\" -eq 1 ]"
+  local fresh_clone fresh_clone_option
+  fresh_clone=$(tmux list-clients -F '#{client_session}' | head -1)
+  fresh_clone_option=$(tmux show-option -t "$fresh_clone" -v destroy-unattached 2>/dev/null || echo missing)
+  kill_tmux_clients
+  wait "${wrappers[0]}" 2>/dev/null || true
+  wait_for_condition "fresh clone destroyed" "[ \"\$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Ec '^main-[0-9]+$' || true)\" -eq 0 ]"
+  local fresh_clone_destroyed=0
+  tmux has-session -t "=$fresh_clone" 2>/dev/null || fresh_clone_destroyed=1
+
+  # Restore queue flow: resurrect creates grouped sessions detached. They must
+  # survive long enough for the post-restore hook to select windows, queue them,
+  # and kill those restored clones itself.
+  local fake_restore="$RESURRECT_DIR/tmux_resurrect_keep_last_queue.txt"
+  tmux new-session -d -s main-20 -t =main
+  tmux new-session -d -s main-21 -t =main
+  sleep 1
+  local restore_sessions_pre_hook=0
+  tmux has-session -t =main-20 2>/dev/null && restore_sessions_pre_hook=$((restore_sessions_pre_hook + 1))
+  tmux has-session -t =main-21 2>/dev/null && restore_sessions_pre_hook=$((restore_sessions_pre_hook + 1))
+  {
+    printf 'grouped_session\tmain-20\tmain\t:0\t:2\n'
+    printf 'grouped_session\tmain-21\tmain\t:1\t:3\n'
+  } > "$fake_restore"
+  ln -sfn "$(basename "$fake_restore")" "$RESURRECT_DIR/last"
+  local post_hook_rc=0
+  bash "$HOME/.config/tmux/scripts/post-restore-grouped-focus.sh" >"$restore_log" 2>&1 || post_hook_rc=$?
+  local restore_sessions_post_hook=0
+  tmux has-session -t =main-20 2>/dev/null && restore_sessions_post_hook=$((restore_sessions_post_hook + 1))
+  tmux has-session -t =main-21 2>/dev/null && restore_sessions_post_hook=$((restore_sessions_post_hook + 1))
+  local restore_queue_lines=0
+  [[ -f "$queue_file" ]] && restore_queue_lines=$(wc -l < "$queue_file")
+
+  # The next attach should consume the first restore-queue window.
+  wrappers=("$(start_attach_client queue)")
+  wait_for_condition "queue attached client" "[ \"\$(tmux list-clients 2>/dev/null | wc -l)\" -eq 1 ]"
+  local queue_clone queue_attach_window queue_clone_destroyed=0
+  queue_clone=$(tmux list-clients -F '#{client_session}' | head -1)
+  queue_attach_window=$(tmux list-sessions -F '#{session_name}|#{window_index}' 2>/dev/null |
+    awk -F'|' -v s="$queue_clone" '$1 == s { print $2; exit }')
+  queue_attach_window="${queue_attach_window:-missing}"
+  kill_tmux_clients
+  wait "${wrappers[0]}" 2>/dev/null || true
+  wait_for_condition "queue clone destroyed" "[ \"\$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Ec '^main-[0-9]+$' || true)\" -eq 0 ]"
+  tmux has-session -t "=$queue_clone" 2>/dev/null || queue_clone_destroyed=1
+
+  # Leave a normal valid resurrect save for the outer reboot/assert path.
+  bash "$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh" >/dev/null 2>&1 || true
+
+  {
+    printf 'tmux_version=%q\n' "$(tmux -V)"
+    printf 'seed_windows_before=%s\n' "$seed_windows_before"
+    printf 'clone_options_before=%q\n' "$clone_options_before"
+    printf 'storm_clones_after=%s\n' "$storm_clones_after"
+    printf 'seed_exists_after_storm=%s\n' "$seed_exists_after_storm"
+    printf 'seed_windows_after_storm=%s\n' "$seed_windows_after_storm"
+    printf 'fresh_clone=%q\n' "$fresh_clone"
+    printf 'fresh_clone_option=%q\n' "$fresh_clone_option"
+    printf 'fresh_clone_destroyed=%s\n' "$fresh_clone_destroyed"
+    printf 'restore_sessions_pre_hook=%s\n' "$restore_sessions_pre_hook"
+    printf 'post_hook_rc=%s\n' "$post_hook_rc"
+    printf 'restore_sessions_post_hook=%s\n' "$restore_sessions_post_hook"
+    printf 'restore_queue_lines=%s\n' "$restore_queue_lines"
+    printf 'queue_clone=%q\n' "$queue_clone"
+    printf 'queue_attach_window=%q\n' "$queue_attach_window"
+    printf 'queue_clone_destroyed=%s\n' "$queue_clone_destroyed"
+  } > "$summary"
+  echo "[populate:$SCENARIO] keep-last summary:"
+  sed 's/^/[populate:'"$SCENARIO"']   /' "$summary"
+}
+
 # --- Phase A: populate up to WINDOW_COUNT and save N times ---
 create_windows "$WINDOW_COUNT"
 
@@ -186,6 +340,10 @@ fi
 
 if (( CONCURRENT_SAVE_TEST )); then
   run_concurrent_save_test
+fi
+
+if (( KEEP_LAST_TEST )); then
+  run_keep_last_clone_test
 fi
 
 # --- Optional: force #{session_group} to come back EMPTY during the save ---
