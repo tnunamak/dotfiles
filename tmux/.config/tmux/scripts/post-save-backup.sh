@@ -3,7 +3,9 @@
 #
 #   1. Keep a "best.txt" backup — never overwritten by a smaller save.
 #   2. Keep rotated timestamped backups in backups/.
-#   3. Cliff guard: if the JUST-WRITTEN save represents a massive session-count
+#   3. Keep the live resurrect dir bounded so old timestamped saves do not
+#      accumulate forever.
+#   4. Cliff guard: if the JUST-WRITTEN save represents a massive session-count
 #      drop from the previous `last` target, prevent it from becoming `last`
 #      (by reverting the symlink AFTER save.sh updates it). Protects against
 #      the post-crash pattern where tmux comes up empty and continuum's next
@@ -29,6 +31,7 @@ LAST_LINK="${RESURRECT_DIR}/last"
 PREV_LAST_FILE="${RESURRECT_DIR}/.prev-last-target"
 LOG="${RESURRECT_DIR}/post-save-backup.log"
 MAX_BACKUPS=10
+MAX_LIVE_SAVES=50
 CLIFF_THRESHOLD_PCT=20    # new save must be ≥20% of previous to be accepted
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
@@ -150,5 +153,27 @@ printf '%s' "$new_name" >"$PREV_LAST_FILE"
 # (oldest beyond the limit are removed; best.txt and assistant-sessions-*.json
 # are not affected since they don't match the pattern)
 ls -t "${BACKUP_DIR}"/tmux_resurrect_*.txt 2>/dev/null | tail -n +$((MAX_BACKUPS + 1)) | xargs rm -f 2>/dev/null || true
+
+# Rotate live saves too. Protect both the current `last` target (which still
+# points at the previous save while this hook runs) and $new_save (which
+# save.sh will point `last` at after this hook returns).
+last_name="$(readlink "$LAST_LINK" 2>/dev/null || true)"
+last_name="${last_name##*/}"
+kept=0
+while IFS= read -r live_save; do
+  live_name="${live_save##*/}"
+  if (( kept < MAX_LIVE_SAVES )); then
+    kept=$((kept + 1))
+    continue
+  fi
+  if [[ "$live_name" == "$new_name" || ( -n "$last_name" && "$live_name" == "$last_name" ) ]]; then
+    continue
+  fi
+  rm -f -- "$live_save"
+done < <(
+  find "$RESURRECT_DIR" -maxdepth 1 -type f -name 'tmux_resurrect_*.txt' -printf '%T@\t%p\n' 2>/dev/null |
+    sort -rn |
+    cut -f2-
+)
 
 log "post-save-backup: backed up $new_name (panes=$new_panes, prev=$prev_name with $prev_panes panes, cliff_guard=$revert)"
