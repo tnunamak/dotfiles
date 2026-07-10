@@ -106,6 +106,28 @@ if ! command -v uv &>/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
+# Infisical CLI (secrets manager — hydrates ~/.shell_secrets vars from secrets.vivid.fish;
+# see shell/.shell_config. After install, run once per machine: infisical login --domain=https://secrets.vivid.fish)
+if ! command -v infisical &>/dev/null; then
+  if [[ "$OSTYPE" == darwin* ]]; then
+    brew install infisical/get-cli/infisical 2>&1 | grep -v 'already installed' || true
+  else
+    INF_TAG=$(curl -fsSL https://api.github.com/repos/Infisical/cli/releases/latest | jq -r .tag_name)
+    INF_ARCH=$(uname -m); [[ "$INF_ARCH" == aarch64 ]] && INF_ARCH=arm64; [[ "$INF_ARCH" == x86_64 ]] && INF_ARCH=amd64
+    curl -fsSL "https://github.com/Infisical/cli/releases/download/${INF_TAG}/cli_${INF_TAG#v}_linux_${INF_ARCH}.tar.gz" \
+      | tar xz -C "$HOME/.local/bin" infisical 2>/dev/null && chmod +x "$HOME/.local/bin/infisical"
+  fi
+fi
+
+# direnv (per-project env loading — pairs with Infisical via .envrc `eval "$(infisical export ...)"`)
+if ! command -v direnv &>/dev/null; then
+  if [[ "$OSTYPE" == darwin* ]]; then
+    brew install direnv 2>&1 | grep -v 'already installed' || true
+  else
+    sudo apt-get install -y direnv
+  fi
+fi
+
 # Claude Code (native installer — no longer distributed via npm)
 # If an old npm-global copy exists in the nvm bin dir, remove it so the native
 # binary at ~/.local/bin/claude takes precedence.
@@ -417,6 +439,19 @@ elif [[ ! -d "$MINNOWS_DIR" ]]; then
     || echo "  (minnows clone failed — skipping; clone it manually later)"
 fi
 [[ -f "$MINNOWS_DIR/install.sh" ]] && bash "$MINNOWS_DIR/install.sh"
+
+# waspflow — live multi-provider agent orchestration (Claude / Codex / Grok).
+# Clone-or-pull then install.sh (symlink ~/.local/bin/waspflow). Tracks main.
+echo ""
+echo "Setting up waspflow (agent orchestration)..."
+WASPFLOW_DIR="$HOME/code/waspflow"
+if [[ -d "$WASPFLOW_DIR/.git" ]]; then
+  git -C "$WASPFLOW_DIR" pull --ff-only --quiet || echo "  (waspflow pull skipped — local changes or offline)"
+elif [[ ! -d "$WASPFLOW_DIR" ]]; then
+  git clone --quiet https://github.com/tnunamak/waspflow.git "$WASPFLOW_DIR" \
+    || echo "  (waspflow clone failed — skipping; clone it manually later)"
+fi
+[[ -f "$WASPFLOW_DIR/install.sh" ]] && bash "$WASPFLOW_DIR/install.sh"
 
 # Git local config (only on first run)
 if [[ ! -f ~/.gitconfig.local ]]; then
