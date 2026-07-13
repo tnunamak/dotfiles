@@ -228,6 +228,10 @@ def parse_active_slots(payload: Any) -> list[SlotSample]:
         task_id = slot.get("id_task")
         prompt_tokens = slot.get("n_prompt_tokens_processed")
         next_token = slot.get("next_token")
+        if isinstance(next_token, list):
+            if len(next_token) != 1 or not isinstance(next_token[0], dict):
+                raise ValueError("processing slot has an ambiguous next token")
+            next_token = next_token[0]
         decoded_tokens = next_token.get("n_decoded") if isinstance(next_token, dict) else None
         if not isinstance(task_id, (str, int)) or isinstance(task_id, bool) or task_id == "":
             raise ValueError("processing slot has no task id")
