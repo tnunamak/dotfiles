@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Start the locally-built BeeLlama server with its verified operator defaults.
+#
+# --print-command and --dry-run are intentionally side-effect-free: they render
+# a shell-quoted argv without requiring the Bee checkout, GPU budget, model, or
+# chat-template files to exist. They make the service's effective invocation
+# inspectable and testable without starting a model server.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: llama-bee-start [--print-command|--dry-run] [llama-server arguments...]
+
+Starts BeeLlama with the local operator defaults. Environment variables named
+LLAMA_BEE_* override the corresponding model, cache, template, and GPU defaults.
+--print-command and --dry-run print the exact shell-quoted command and exit.
+EOF
+}
+
+print_command=false
+case "${1:-}" in
+  --print-command|--dry-run)
+    print_command=true
+    shift
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+esac
+
+applications_dir="${LLAMA_BEE_APPLICATIONS_DIR:-$HOME/applications}"
+bee_dir="${LLAMA_BEE_DIR:-$applications_dir/beellama}"
+llama_server="${LLAMA_BEE_SERVER:-$bee_dir/build/bin/llama-server}"
+gpu_budget_file="${LLAMA_BEE_GPU_BUDGET_FILE:-$applications_dir/config/gpu_budget.sh}"
+
+model="${LLAMA_BEE_MODEL:-/media/windows/AI Models/LLMs/GGUF/Qwen3.6-27B-UD-Q4_K_XL-mtp.gguf}"
+port="${LLAMA_BEE_PORT:-5051}"
+ctx_size="${LLAMA_BEE_CTX:-102400}"
+ctx_checkpoints="${LLAMA_BEE_CTX_CHECKPOINTS:-16}"
+checkpoint_min_step="${LLAMA_BEE_CHECKPOINT_MIN_STEP:-256}"
+cache_ram="${LLAMA_BEE_CACHE_RAM:-4096}"
+cache_type_k="${LLAMA_BEE_CTK:-q5_0}"
+cache_type_v="${LLAMA_BEE_CTV:-q4_1}"
+
+# Keep the known-good Qwen 3.6 template local instead of relying on an HF cache.
+default_chat_template="/media/windows/AI Models/LLMs/Chat Templates/Qwen-Fixed-Chat-Templates/23a40b0bd4d197c31d39e3c442fd2cd6100b3971/chat_template.jinja"
+chat_template="$default_chat_template"
+if [[ ${LLAMA_BEE_CHAT_TEMPLATE+x} ]]; then
+  chat_template="$LLAMA_BEE_CHAT_TEMPLATE"
+fi
+
+chat_template_kwargs='{"preserve_thinking":true}'
+if [[ ${LLAMA_BEE_CHAT_TEMPLATE_KWARGS+x} ]]; then
+  chat_template_kwargs="$LLAMA_BEE_CHAT_TEMPLATE_KWARGS"
+fi
+
+server_args=(
+  --model "$model"
+  --port "$port"
+  --host 127.0.0.1
+  --slots
+  --n-gpu-layers 999
+  -np 1
+  --ctx-size "$ctx_size"
+  --ctx-checkpoints "$ctx_checkpoints"
+  --checkpoint-min-step "$checkpoint_min_step"
+  --cache-ram "$cache_ram"
+  --cache-type-k "$cache_type_k"
+  --cache-type-v "$cache_type_v"
+  --cache-type-k-draft q8_0
+  --cache-type-v-draft q8_0
+  -b 2048
+  -ub 512
+  --flash-attn on
+  --no-host
+  --jinja
+  --reasoning on
+  --reasoning-budget -1
+  --reasoning-format deepseek
+)
+
+if [[ -n "$chat_template" && "$chat_template" != embedded ]]; then
+  server_args+=(--chat-template-file "$chat_template")
+fi
+if [[ -n "$chat_template_kwargs" ]]; then
+  server_args+=(--chat-template-kwargs "$chat_template_kwargs")
+fi
+
+server_args+=(
+  --kv-unified
+  --metrics
+  --no-mmap
+  --mlock
+  --temp 0.6
+  --top-k 20
+  --top-p 1.0
+  --min-p 0.0
+  --repeat-penalty 1.0
+  --spec-draft-p-min 0.75
+)
+
+if [[ "${LLAMA_BEE_MTP:-1}" == 1 ]]; then
+  server_args+=(--spec-type mtp --spec-draft-n-max "${LLAMA_BEE_MTP_MAX:-3}")
+fi
+if [[ -n "${LLAMA_BEE_MMPROJ:-}" ]]; then
+  server_args+=(--mmproj "$LLAMA_BEE_MMPROJ")
+  if [[ "${LLAMA_BEE_NO_MMPROJ_OFFLOAD:-0}" == 1 ]]; then
+    server_args+=(--no-mmproj-offload)
+  fi
+fi
+if [[ -n "${LLAMA_BEE_TENSOR_SPLIT:-}" ]]; then
+  server_args+=(--tensor-split "$LLAMA_BEE_TENSOR_SPLIT")
+fi
+server_args+=("$@")
+
+if "$print_command"; then
+  printf 'exec'
+  printf ' %q' "$llama_server" "${server_args[@]}"
+  printf '\n'
+  exit 0
+fi
+
+if [[ ! -r "$gpu_budget_file" ]]; then
+  echo "ERROR: BeeLlama GPU budget file not found: $gpu_budget_file" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$gpu_budget_file"
+if [[ "${GPU1_LLM:-0}" -lt 1 ]]; then
+  echo "ERROR: BeeLlama requires GPU1_LLM>=1, got ${GPU1_LLM:-unset}" >&2
+  exit 1
+fi
+if [[ ! -x "$llama_server" ]]; then
+  echo "ERROR: BeeLlama server not executable: $llama_server" >&2
+  exit 1
+fi
+if [[ -n "$chat_template" && "$chat_template" != embedded && ! -f "$chat_template" ]]; then
+  echo "ERROR: LLAMA_BEE_CHAT_TEMPLATE not found: $chat_template" >&2
+  exit 1
+fi
+
+# The server replaces this wrapper, so systemd tracks the actual llama-server
+# process. Bash process substitutions retain the existing line-buffered filters:
+# they suppress only noisy info-level srv/slot messages; warnings and errors pass.
+filter_pattern=' I (srv|slot) '
+export CUDA_VISIBLE_DEVICES="${LLAMA_BEE_VISIBLE_DEVICES:-1}"
+exec "$llama_server" "${server_args[@]}" \
+  > >(grep --line-buffered -vE "$filter_pattern") \
+  2> >(grep --line-buffered -vE "$filter_pattern" >&2)

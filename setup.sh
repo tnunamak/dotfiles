@@ -199,7 +199,7 @@ fi
 
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux bee-watchdog-systemd)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux bee-watchdog-systemd llama-bee-systemd)
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
@@ -207,9 +207,9 @@ echo "Stowing packages: ${PACKAGES[*]}"
 # - bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
 # - tmux: systemd drop-in dirs (e.g. tmux.service.d) must be real dirs,
 #   not symlinks — systemd does not follow directory symlinks for drop-ins.
-# - bee-watchdog-systemd: keep the user-unit parents real while linking only
-#   this watchdog, which avoids claiming unrelated systemd units.
-NO_FOLD_PKGS=(bin nvim claude tmux bee-watchdog-systemd)
+# - bee-*-systemd: keep the user-unit parents real while linking only their
+#   dedicated units and drop-ins, which avoids claiming unrelated user units.
+NO_FOLD_PKGS=(bin nvim claude tmux bee-watchdog-systemd llama-bee-systemd)
 
 # Remove files that tools create before stow can link them
 # (claude/rtk init write ~/.claude/settings.json as a regular file)
