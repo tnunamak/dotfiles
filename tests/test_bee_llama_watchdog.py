@@ -227,6 +227,10 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertTrue((evidence / "nvidia-smi.txt").exists())
         self.assertTrue((evidence / "process-state.txt").exists())
         self.assertEqual([command[0][0] for command in commands], ["journalctl", "nvidia-smi", "ps"])
+        ps_fields = commands[2][0][2].split(",")
+        self.assertNotIn("args", ps_fields)
+        self.assertNotIn("command", ps_fields)
+        self.assertEqual(ps_fields, ["pid", "ppid", "stat", "etime", "pcpu", "pmem", "comm", "wchan"])
 
     def test_command_line_rejects_non_localhost_endpoints(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
