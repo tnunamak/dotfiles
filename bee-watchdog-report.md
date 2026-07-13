@@ -3,20 +3,45 @@
 ## Behavior
 
 `bee-llama-watchdog` is a user-service watchdog for `llama-bee.service`. It
-runs every 30 seconds by default and observes only systemd's `ActiveState` for
-that unit. It never makes an HTTP request to Bee: no queue, task, generation,
-completion, health, metrics, or other engine endpoint is configured or called.
+runs every 30 seconds by default and observes only systemd's `ActiveState`,
+`SubState`, and `ActiveEnterTimestampMonotonic` for that unit. It never makes
+an HTTP request to Bee: no queue, task, generation, completion, health,
+metrics, or other engine endpoint is configured or called.
 Consequently, monitoring cannot queue, cancel, inspect, or time out an engine
 task.
 
 The restart criterion is deliberately narrow and explainable: systemd must
-report `inactive` or `failed` twice consecutively. At the default cadence this
-is two observations across 60 seconds. `active` clears the count. A
-transitioning state (`activating`, `deactivating`, or `reloading`), a failed or
-timed-out systemd command, and any unrecognized response are `unknown`; each
-clears the count and cannot trigger a restart. This is fail-closed: a long or
-blocked request is not evidence that the service is unavailable, and no
-request-duration timeout is part of the watchdog's decision.
+report the stable pairs `inactive/dead` or `failed/failed` twice
+consecutively. At the default cadence the second observation is normally 30
+seconds after the baseline. `active/running` records the current monotonic activation generation
+and clears the count. A transitioning high-level state (`activating`,
+`deactivating`, `reloading`, or `refreshing`), any other state/substate pair, a
+failed or timed-out systemd command, and malformed output all clear the count
+and cannot trigger a restart. This is fail-closed: a long or blocked request is
+not evidence that the service is unavailable, and no request-duration timeout
+is part of the watchdog's decision.
+
+## Startup/restart grace correction — 2026-07-13
+
+The incident timeline was: `systemctl restart llama-bee` began at 07:48:16;
+the old server required `SIGKILL` at 07:48:26; the replacement started at
+07:48:27 and was still loading; a watchdog action at 07:48:29 caused a
+redundant second restart. The watchdog now carries the complete systemd state
+tuple instead of collapsing it to `ActiveState`. `deactivating/stop-*` and
+`activating/start` are explicitly transitional, while the replacement's new
+`active/running` monotonic activation generation clears any prior dead-unit
+evidence. If a brief replacement generation is missed between polls, a larger
+monotonic activation timestamp on a later dead observation likewise discards
+the old generation's evidence. Model loading is not checked at all:
+`llama-bee.service` is `Type=simple`, so `active/running` is expected before
+the model is ready to serve requests.
+
+This is state-based grace, not a fixed sleep. It waits for a systemd state
+transition or a new activation generation, never an arbitrary number of
+seconds. The tradeoff is intentional: if systemd still says `active/running`,
+the watchdog declines to diagnose a hung or loading engine; only two stable,
+confirmed dead/failed observations permit recovery. That keeps legal long work
+and an operator restart out of the watchdog's failure domain.
 
 This leaves normal recovery intact. `llama-bee.service` has its own
 `Restart=on-failure` policy; if the unit remains `inactive` or `failed` after
@@ -71,11 +96,19 @@ systemd-analyze --user verify systemd/.config/systemd/user/bee-llama-watchdog.se
 ```
 
 The focused suite deterministically covers active service stability; the
-two-sample inactive boundary; active and unknown resets; `failed` and
-`inactive` systemd states; transitional, timed-out, and failed systemd probes;
-strict rate accounting; evidence capture; CLI validation; and an isolated real
-Stow installation. It also asserts that the watchdog source contains no engine
-HTTP client, queue/task fields, or endpoint path.
+two-sample stable-dead/failed recovery boundary; active, transition, and
+unknown resets; strict state/substate parsing; strict rate accounting; evidence
+capture; CLI validation; and an isolated real Stow installation. Its
+`test_operator_restart_and_model_loading_never_restart` sequence is exactly:
+`active/running` → `deactivating/stop-sigkill` → `activating/start` → new
+`active/running` while the model is not ready → ready. It asserts zero restart
+actions and zero evidence captures. `test_second_confirmed_dead_observation_recovers_once` proves that
+two `failed/failed` observations still produce one restart.
+`test_new_activation_generation_discards_old_dead_evidence` proves that a
+larger monotonic activation timestamp discards old-generation evidence before
+starting a new two-observation recovery decision. The suite also asserts that
+the watchdog source contains no engine HTTP client, queue/task fields, or
+endpoint path.
 
 ## Incident correction and limits
 
