@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+# Explicit agent-resume policy for tmux-resurrect sidecars.
+#
+# tmux-resurrect restores terminal layout. This command is the separate
+# execution boundary: it reads the assistant-resurrect sidecar, records
+# deferred entries, and resumes only a selected entry or an explicitly applied
+# automatic lease. It never calls the third-party restore script.
+set -euo pipefail
+
+RESURRECT_DIR="${TMUX_AGENT_RESUME_RESURRECT_DIR:-${HOME}/.tmux/resurrect}"
+SIDECAR_FILE="${TMUX_AGENT_RESUME_SIDECAR_FILE:-${RESURRECT_DIR}/assistant-sessions.json}"
+STATE_DIR="${TMUX_AGENT_RESUME_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/tmux-agent-resume}"
+STATE_FILE="${TMUX_AGENT_RESUME_STATE_FILE:-${STATE_DIR}/state.json}"
+TMUX_BIN="${TMUX_AGENT_RESUME_TMUX:-tmux}"
+DEFAULT_TTL=900
+MAX_TTL=3600
+
+usage() {
+  cat <<'EOF'
+Usage: tmux-agent-resume <command> [options]
+
+Commands:
+  record-deferred          Record every saved entry as deferred; runs after layout restore.
+  status --json            Inspect saved entries, leases, panes, and attachment gates.
+  plan --json              Print the deterministic, non-executing recovery plan.
+  grant SELECTOR --auto [--ttl SECONDS] [--allow-headless --owner NAME]
+                           Create a short-lived automatic-resume lease only.
+  resume SELECTOR [--allow-headless --owner NAME]
+                           Explicitly resume one selected entry now.
+  apply --execute-auto     Resume only currently eligible automatic leases.
+  orphans --json           Report-only placeholder; this version never kills processes.
+
+SELECTOR is an entry id, tmux pane address, or saved agent session id. A selector
+must match exactly one saved entry. --allow-headless is intentionally restricted
+to a named orchestration owner and is recorded in the lease.
+EOF
+}
+
+die() { printf 'tmux-agent-resume: %s\n' "$*" >&2; exit 2; }
+
+now_epoch() {
+  if [[ -n "${TMUX_AGENT_RESUME_NOW:-}" ]]; then
+    [[ "$TMUX_AGENT_RESUME_NOW" =~ ^[0-9]+$ ]] || die 'TMUX_AGENT_RESUME_NOW must be an epoch integer'
+    printf '%s\n' "$TMUX_AGENT_RESUME_NOW"
+  else
+    date +%s
+  fi
+}
+
+now_iso() {
+  if [[ -n "${TMUX_AGENT_RESUME_NOW_ISO:-}" ]]; then
+    printf '%s\n' "$TMUX_AGENT_RESUME_NOW_ISO"
+  else
+    date -u +%Y-%m-%dT%H:%M:%SZ
+  fi
+}
+
+read_state() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    printf '%s\n' '{"version":1,"entries":[]}'
+    return
+  fi
+  jq -ce '
+    if .version == 1 and (.entries | type == "array") then .
+    else error("unsupported lease state") end
+  ' "$STATE_FILE" || die "invalid lease state: $STATE_FILE"
+}
+
+write_state() {
+  local value="$1" tmp
+  mkdir -p "$STATE_DIR"
+  tmp="$(mktemp "${STATE_FILE}.new.XXXXXX")"
+  trap 'rm -f "$tmp"' RETURN
+  printf '%s\n' "$value" >"$tmp"
+  mv "$tmp" "$STATE_FILE"
+  trap - RETURN
+}
+
+lock_state() {
+  mkdir -p "$STATE_DIR"
+  exec {STATE_LOCK_FD}>"${STATE_DIR}/state.lock"
+  flock -x "$STATE_LOCK_FD"
+}
+
+unlock_state() {
+  flock -u "$STATE_LOCK_FD"
+  exec {STATE_LOCK_FD}>&-
+  unset STATE_LOCK_FD
+}
+
+source_entries() {
+  if [[ ! -f "$SIDECAR_FILE" ]]; then
+    printf '%s\n' '[]'
+    return
+  fi
+  jq -ce '
+    . as $sidecar
+    | [($sidecar.sessions // [])[]
+      | select((.pane | type == "string" and length > 0)
+          and (.tool | type == "string" and length > 0)
+          and (.session_id | type == "string" and length > 0))
+      | . + {
+          id: ((.tool + "\u001f" + .pane + "\u001f" + .session_id) | @base64),
+          saved_at: ($sidecar.timestamp // null)
+        }]
+    | unique_by(.id)
+    | sort_by(.id)
+  ' "$SIDECAR_FILE" || die "invalid assistant sidecar: $SIDECAR_FILE"
+}
+
+record_deferred() {
+  local state source merged
+  lock_state
+  state="$(read_state)"
+  source="$(source_entries)"
+  merged="$(jq -cn \
+    --argjson old "$state" --argjson source "$source" --arg timestamp "$(now_iso)" '
+      ($old.entries // []) as $old_entries
+      | ($source | map(.id)) as $source_ids
+      | {
+          version: 1,
+          entries: (
+            [ $source[] as $entry
+              | ($old_entries | map(select(.id == $entry.id)) | .[0]) as $previous
+              | $entry + {
+                  deferred_at: ($previous.deferred_at // $timestamp),
+                  lease: ($previous.lease // null)
+                }
+            ]
+            + [ $old_entries[] | select(.id as $id | ($source_ids | index($id) | not)) ]
+            | sort_by(.id)
+          )
+        }
+    ')"
+  write_state "$merged"
+  unlock_state
+  jq -cn --argjson entries "$source" '{recorded: ($entries | length), mode: "deferred"}'
+}
+
+live_tmux_state() {
+  local panes clients
+  panes="$($TMUX_BIN list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || true)"
+  clients="$($TMUX_BIN list-clients -F '#{client_session}' 2>/dev/null || true)"
+  jq -Rn --arg panes "$panes" --arg clients "$clients" '
+    {
+      panes: ($panes | split("\n") | map(select(length > 0)) | unique | sort),
+      attached_sessions: ($clients | split("\n") | map(select(length > 0)) | unique | sort)
+    }
+  '
+}
+
+session_has_client() {
+  local session="$1" clients
+  clients="$($TMUX_BIN list-clients -t "$session" -F '#{client_session}' 2>/dev/null || true)"
+  [[ -n "$clients" ]]
+}
+
+status_json() {
+  local state source live now
+  state="$(read_state)"
+  source="$(source_entries)"
+  live="$(live_tmux_state)"
+  now="$(now_epoch)"
+  jq -cn --argjson stored "$state" --argjson source "$source" --argjson live "$live" --argjson now "$now" '
+    ($stored.entries // []) as $stored_entries
+    | [ $source[] as $entry
+        | ($stored_entries | map(select(.id == $entry.id)) | .[0]) as $stored
+        | $entry + {
+            deferred_at: ($stored.deferred_at // null),
+            lease: ($stored.lease // null),
+            session: ($entry.pane | split(":")[0])
+          }
+        | .pane as $pane
+        | .session as $session
+        | .pane_exists = ($live.panes | index($pane) != null)
+        | .attached = ($live.attached_sessions | index($session) != null)
+        | . + (
+            if .lease == null then
+              {state: "deferred", reason: "no explicit resume lease", action: "defer"}
+            elif (.pane_exists | not) then
+              {state: "deferred", reason: "saved pane is absent", action: "defer"}
+            elif (.lease.expires_at | tonumber) <= $now then
+              {state: "expired", reason: "lease expired", action: "defer"}
+            elif .lease.consumed_at != null then
+              {state: "deferred", reason: "automatic lease already consumed", action: "defer"}
+            elif .lease.policy == "manual" then
+              {state: "deferred", reason: "manual lease requires explicit selected resume", action: "defer"}
+            elif .lease.policy == "explicit-auto" and .lease.allow_headless then
+              {state: "eligible", reason: "unexpired explicit headless lease", action: "resume"}
+            elif .lease.policy == "explicit-auto" and .attached then
+              {state: "eligible", reason: "unexpired explicit lease and attached client", action: "resume"}
+            elif .lease.policy == "explicit-auto" then
+              {state: "deferred", reason: "automatic lease requires an attached client", action: "defer"}
+            else
+              {state: "deferred", reason: "unsupported lease policy", action: "defer"}
+            end
+          )
+      ]
+      | sort_by(.id) as $entries
+    | {
+        version: 1,
+        now: $now,
+        sidecar: $source | length,
+        entries: $entries,
+        summary: ($entries | group_by(.state) | map({key: .[0].state, value: length}) | from_entries)
+      }
+  '
+}
+
+plan_json() {
+  status_json | jq '
+    [.entries[] | select(.state == "expired") | {
+      id, pane, tool, session_id,
+      owner: (.lease.owner // null),
+      reason: "expired lease; report-only ownership audit candidate"
+    }] as $orphan_candidates
+    | {
+      version,
+      now,
+      entries: [.entries[] | {id, pane, tool, session_id, state, reason, action, lease}],
+      orphan_candidates: $orphan_candidates,
+      orphan_report: "report-only; candidates are lease evidence, never a signal to kill a process"
+    }
+  '
+}
+
+select_entry() {
+  local selector="$1" status matches count
+  status="$(status_json)"
+  matches="$(jq -c --arg selector "$selector" '
+    [.entries[] | select(.id == $selector or .pane == $selector or .session_id == $selector)]
+  ' <<<"$status")"
+  count="$(jq 'length' <<<"$matches")"
+  (( count == 1 )) || die "selector must match exactly one saved entry (matched $count)"
+  jq -c '.[0]' <<<"$matches"
+}
+
+validate_ttl() {
+  local ttl="$1"
+  [[ "$ttl" =~ ^[0-9]+$ ]] || die '--ttl must be an integer number of seconds'
+  (( ttl > 0 && ttl <= MAX_TTL )) || die "--ttl must be between 1 and $MAX_TTL seconds"
+}
+
+new_owner_token() {
+  printf 'tmux-agent-%s-%s-%s\n' "$(now_epoch)" "$$" "${RANDOM}${RANDOM}"
+}
+
+put_lease() {
+  local id="$1" policy="$2" ttl="$3" allow_headless="$4" owner="$5" state now expires token updated
+  lock_state
+  state="$(read_state)"
+  now="$(now_epoch)"
+  expires=$((now + ttl))
+  token="$(new_owner_token)"
+  updated="$(jq -cn --argjson state "$state" --arg id "$id" --arg policy "$policy" \
+    --argjson issued_at "$now" --argjson expires_at "$expires" --argjson allow_headless "$allow_headless" \
+    --arg owner "$owner" --arg owner_token "$token" '
+      $state | .entries |= map(
+        if .id == $id then .lease = {
+          policy: $policy,
+          issued_at: $issued_at,
+          expires_at: $expires_at,
+          last_confirmed_heartbeat: $issued_at,
+          allow_headless: $allow_headless,
+          owner: $owner,
+          owner_token: $owner_token
+        } else . end
+      )
+    ')"
+  write_state "$updated"
+  unlock_state
+  jq -cn --arg id "$id" --arg policy "$policy" --argjson expires_at "$expires" \
+    --arg owner "$owner" --arg owner_token "$token" \
+    '{id: $id, policy: $policy, expires_at: $expires_at, owner: $owner, owner_token: $owner_token}'
+}
+
+consume_auto_lease() {
+  local id="$1" owner_token="$2" issued_at="$3" pane="$4" state now updated
+  # A lease is a one-dispatch permit. Locking closes the two-apply race; the
+  # permit is consumed before send-keys so a failed dispatch is fail-closed.
+  lock_state
+  "$TMUX_BIN" list-panes -t "$pane" >/dev/null 2>&1 || {
+    unlock_state
+    return 1
+  }
+  state="$(read_state)"
+  now="$(now_epoch)"
+  if ! jq -e --arg id "$id" --arg owner_token "$owner_token" --argjson issued_at "$issued_at" --argjson now "$now" '
+    .entries[]
+    | select(.id == $id)
+    | .lease
+    | .policy == "explicit-auto"
+      and .owner_token == $owner_token
+      and .issued_at == $issued_at
+      and .consumed_at == null
+      and (.expires_at | tonumber) > $now
+  ' <<<"$state" >/dev/null; then
+    unlock_state
+    return 1
+  fi
+  updated="$(jq -c --arg id "$id" --argjson now "$now" '
+    .entries |= map(
+      if .id == $id then .lease.consumed_at = $now else . end
+    )
+  ' <<<"$state")"
+  write_state "$updated"
+  unlock_state
+}
+
+shell_quote() {
+  local value="$1"
+  printf "'%s'" "${value//\'/\'\"\'\"\'}"
+}
+
+resume_command() {
+  local entry="$1" tool session_id cwd cli_args owner_token
+  tool="$(jq -r '.tool' <<<"$entry")"
+  session_id="$(jq -r '.session_id' <<<"$entry")"
+  cwd="$(jq -r '.cwd // empty' <<<"$entry")"
+  cli_args="$(jq -r '.cli_args // empty' <<<"$entry")"
+  owner_token="$(jq -r '.lease.owner_token' <<<"$entry")"
+
+  case "$tool" in
+    claude) session_id="--resume $(shell_quote "$session_id")" ;;
+    codex) session_id="resume $(shell_quote "$session_id")" ;;
+    opencode) session_id="-s $(shell_quote "$session_id")" ;;
+    pi) session_id="--session $(shell_quote "$session_id")" ;;
+    omp|grok) session_id="--resume $(shell_quote "$session_id")" ;;
+    *) die "unsupported saved tool: $tool" ;;
+  esac
+
+  # The sidecar is data, not a shell program. Preserve plain captured tokens
+  # without evaluating quotes, command substitutions, or glob patterns.
+  local -a args=()
+  local token
+  if [[ "$tool" != grok ]]; then
+    read -r -a args <<<"$cli_args"
+    if (( ${#args[@]} > 0 )) && [[ "${args[0]##*/}" == "$tool" ]]; then
+      args=("${args[@]:1}")
+    fi
+  fi
+  local rendered_args=""
+  for token in "${args[@]}"; do
+    rendered_args+=" $(shell_quote "$token")"
+  done
+
+  local prefix=""
+  if [[ -n "$cwd" && "$cwd" != "null" ]]; then
+    prefix="cd $(shell_quote "$cwd") 2>/dev/null || exit; "
+  fi
+  # setsid supplies a per-resume process group and passes a non-secret owner
+  # token to descendants. This release only reports ownership candidates;
+  # it never sends a signal to them.
+  printf '%senv TMUX_AGENT_RESUME_OWNER_TOKEN=%s setsid --wait %s%s %s' \
+    "$prefix" "$(shell_quote "$owner_token")" "$(shell_quote "$tool")" "$rendered_args" "$session_id"
+}
+
+run_entry() {
+  local entry="$1" pane session allow_headless policy expires now pane_command command_line
+  pane="$(jq -r '.pane' <<<"$entry")"
+  session="${pane%%:*}"
+  allow_headless="$(jq -r '.lease.allow_headless' <<<"$entry")"
+  policy="$(jq -r '.lease.policy' <<<"$entry")"
+  expires="$(jq -r '.lease.expires_at' <<<"$entry")"
+  [[ "$expires" =~ ^[0-9]+$ ]] || die "lease has no valid expiry for $pane"
+  now="$(now_epoch)"
+  (( now < expires )) || die "lease expired for $pane"
+  [[ "$policy" == manual || "$policy" == explicit-auto ]] || die "unsupported lease policy for $pane"
+  "$TMUX_BIN" list-panes -t "$pane" >/dev/null 2>&1 || die "saved pane is absent: $pane"
+  if [[ "$allow_headless" != true ]] && ! session_has_client "$session"; then
+    die "an attached client is required for $session (use --allow-headless --owner NAME only for an orchestrator)"
+  fi
+  pane_command="$($TMUX_BIN display-message -t "$pane" -p '#{pane_current_command}' 2>/dev/null || true)"
+  pane_command="${pane_command#-}"
+  case "$pane_command" in bash|zsh|fish|sh|dash|ksh|tcsh|csh|nu) ;; *) die "target pane is not a shell: $pane_command" ;; esac
+  command_line="$(resume_command "$entry")"
+  "$TMUX_BIN" send-keys -t "$pane" "$command_line" Enter
+  mkdir -p "$RESURRECT_DIR"
+  printf '[%s] selected resume %s in %s\n' "$(now_iso)" "$(jq -r '.tool' <<<"$entry")" "$pane" >>"${RESURRECT_DIR}/agent-resume.log"
+}
+
+parse_lease_options() {
+  TTL="$DEFAULT_TTL"
+  ALLOW_HEADLESS=false
+  OWNER="interactive"
+  while (( $# )); do
+    case "$1" in
+      --ttl) TTL="${2:-}"; shift 2 ;;
+      --allow-headless) ALLOW_HEADLESS=true; shift ;;
+      --owner) OWNER="${2:-}"; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  validate_ttl "$TTL"
+  if [[ "$ALLOW_HEADLESS" == true ]]; then
+    [[ -n "$OWNER" && "$OWNER" != interactive ]] || die '--allow-headless requires a named --owner'
+  fi
+}
+
+command="${1:-}"
+case "$command" in
+  record-deferred)
+    [[ $# -eq 1 ]] || die 'record-deferred takes no options'
+    record_deferred
+    ;;
+  status)
+    [[ "${2:-}" == --json && $# -eq 2 ]] || die 'usage: status --json'
+    status_json
+    ;;
+  plan)
+    [[ "${2:-}" == --json && $# -eq 2 ]] || die 'usage: plan --json'
+    plan_json
+    ;;
+  grant)
+    selector="${2:-}"; [[ -n "$selector" ]] || die 'usage: grant SELECTOR --auto [options]'
+    [[ "${3:-}" == --auto ]] || die 'grant requires --auto'
+    parse_lease_options "${@:4}"
+    record_deferred >/dev/null
+    entry="$(select_entry "$selector")"
+    lease="$(put_lease "$(jq -r '.id' <<<"$entry")" explicit-auto "$TTL" "$ALLOW_HEADLESS" "$OWNER")"
+    jq -cn --argjson lease "$lease" '{granted: $lease}'
+    ;;
+  resume)
+    selector="${2:-}"; [[ -n "$selector" ]] || die 'usage: resume SELECTOR [options]'
+    parse_lease_options "${@:3}"
+    record_deferred >/dev/null
+    entry="$(select_entry "$selector")"
+    pane="$(jq -r '.pane' <<<"$entry")"
+    session="${pane%%:*}"
+    if [[ "$ALLOW_HEADLESS" != true ]] && ! session_has_client "$session"; then
+      die "an attached client is required for $session (use --allow-headless --owner NAME only for an orchestrator)"
+    fi
+    put_lease "$(jq -r '.id' <<<"$entry")" manual "$TTL" "$ALLOW_HEADLESS" "$OWNER" >/dev/null
+    entry="$(select_entry "$selector")"
+    run_entry "$entry"
+    jq -cn --arg id "$(jq -r '.id' <<<"$entry")" '{resumed: $id}'
+    ;;
+  apply)
+    [[ "${2:-}" == --execute-auto && $# -eq 2 ]] || die 'usage: apply --execute-auto'
+    status="$(status_json)"
+    applied=()
+    while IFS= read -r entry; do
+      if consume_auto_lease "$(jq -r '.id' <<<"$entry")" \
+        "$(jq -r '.lease.owner_token' <<<"$entry")" \
+        "$(jq -r '.lease.issued_at' <<<"$entry")" \
+        "$(jq -r '.pane' <<<"$entry")"; then
+        run_entry "$entry"
+        applied+=("$(jq -r '.id' <<<"$entry")")
+      fi
+    done < <(jq -c '.entries[] | select(.state == "eligible" and .lease.policy == "explicit-auto")' <<<"$status")
+    jq -cn '{applied: $ARGS.positional}' --args "${applied[@]}"
+    ;;
+  orphans)
+    [[ "${2:-}" == --json && $# -eq 2 ]] || die 'usage: orphans --json'
+    status_json | jq '{
+      mode: "report-only",
+      candidates: [
+        .entries[] | select(.state == "expired") | {
+          id, pane, tool, session_id,
+          owner: (.lease.owner // null),
+          reason: "expired lease; inspect ownership before any future explicit reap"
+        }
+      ],
+      reason: "no automatic killing is implemented"
+    }'
+    ;;
+  -h|--help|help|'') usage ;;
+  *) die "unknown command: $command" ;;
+esac
