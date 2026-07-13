@@ -36,7 +36,7 @@ class WatchdogHarness:
         self.logger = MemoryLogger()
         self.active = True
         self.health = {"status": "ok"}
-        self.slots = {"slots": []}
+        self.slots = []
         self.restarts = 0
         self.restart_success = True
         self.captures = []
@@ -85,12 +85,17 @@ class WatchdogHarness:
             self.watchdog.poll_once()
 
     @staticmethod
-    def processing(task="task-1", prompt=0, decoded=0):
-        return {"slots": [{"id_task": task, "is_processing": True, "n_prompt_tokens_processed": prompt, "next_token": {"n_decoded": decoded}}]}
+    def processing(task=1, prompt=0, decoded=0):
+        return [WatchdogHarness.processing_slot(task, prompt, decoded)]
 
     @staticmethod
-    def processing_slot(task="task-1", prompt=0, decoded=0):
-        return {"id_task": task, "is_processing": True, "n_prompt_tokens_processed": prompt, "next_token": {"n_decoded": decoded}}
+    def processing_slot(task=1, prompt=0, decoded=0):
+        return {
+            "id_task": task,
+            "is_processing": True,
+            "n_prompt_tokens_processed": prompt,
+            "next_token": [{"n_decoded": decoded, "has_next_token": True, "n_remain": 0}],
+        }
 
 
 class BeeLlamaWatchdogTests(unittest.TestCase):
@@ -112,10 +117,37 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
             self.harness.poll()
         self.assertEqual(self.harness.restarts, 0)
 
+    def test_live_top_level_list_parses_numeric_task_and_singleton_next_token_array(self):
+        self.assertEqual(
+            watchdog_module.parse_active_slots(self.harness.processing(task=42, prompt=17, decoded=3)),
+            [watchdog_module.SlotSample("42", 17, 3)],
+        )
+
+    def test_direct_object_next_token_remains_supported(self):
+        self.assertEqual(
+            watchdog_module.parse_active_slots(
+                [{"id_task": 42, "is_processing": True, "n_prompt_tokens_processed": 17, "next_token": {"n_decoded": 3}}]
+            ),
+            [watchdog_module.SlotSample("42", 17, 3)],
+        )
+
+    def test_empty_multi_element_and_ambiguous_next_token_arrays_fail_closed(self):
+        malformed_next_tokens = [
+            [],
+            [{"n_decoded": 3}, {"n_decoded": 4}],
+            [[{"n_decoded": 3}]],
+        ]
+        for next_token in malformed_next_tokens:
+            with self.subTest(next_token=next_token):
+                slot = self.harness.processing_slot()
+                slot["next_token"] = next_token
+                with self.assertRaises(ValueError):
+                    watchdog_module.parse_active_slots([slot])
+
     def test_idle_resets_stagnation(self):
         self.harness.slots = self.harness.processing()
         self.harness.poll(6)
-        self.harness.slots = {"slots": [{"id_task": "task-1", "is_processing": False, "n_prompt_tokens_processed": 0, "next_token": {"n_decoded": 0}}]}
+        self.harness.slots = [{"id_task": 1, "is_processing": False, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0, "has_next_token": False, "n_remain": 0}]}]
         self.harness.poll()
         self.harness.slots = self.harness.processing()
         self.harness.poll(6)
@@ -132,7 +164,7 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
     def test_malformed_response_resets_stagnation(self):
         self.harness.slots = self.harness.processing()
         self.harness.poll(6)
-        self.harness.slots = {"slots": [{"id_task": "task-1", "is_processing": True}]}
+        self.harness.slots = [{"id_task": 1, "is_processing": True}]
         self.harness.poll()
         self.harness.slots = self.harness.processing()
         self.harness.poll(6)
@@ -186,10 +218,10 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
 
     def test_multiple_processing_slots_track_each_task_independently(self):
-        self.harness.slots = {"slots": [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving")]}
+        self.harness.slots = [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving")]
         self.harness.poll()
         for decoded in range(1, 7):
-            self.harness.slots = {"slots": [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving", decoded=decoded)]}
+            self.harness.slots = [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving", decoded=decoded)]
             self.harness.poll()
         self.assertEqual(self.harness.restarts, 1)
         self.assertEqual(self.harness.captures, ["stagnant"])
