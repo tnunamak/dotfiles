@@ -59,6 +59,20 @@ fi
 # Print the nudge to stdout (plain text — PreCompact injects via stdout on exit 0).
 printf 'Research-capture reminder: this session used web-research tools (%s) and the conversation is about to be compacted. If real prior-art, library, or design research was done and the findings are worth keeping, capture them to ai/research/ now (new entry + one line in INDEX.md, per ai/research/README.md) before they are summarized away. Skip if there are no durable findings.\n' "$tool_kinds"
 
+# 3b. Record that the nudge actually fired — one line per fire, so effectiveness
+# is measurable after the fact (the hook is otherwise invisible: fires, prints,
+# forgets). Fields: ISO-timestamp<TAB>session-id<TAB>comma-separated tool kinds.
+# `wc -l` this file to see how often the nudge fired; cross-reference corpus
+# commits to see if captures followed. Fail-silent; capped to the last 500 lines.
+fire_log="$STATE_DIR/fire-log.tsv"
+{
+    ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+    printf '%s\t%s\t%s\n' "$ts" "${session_id:-unknown}" "$tool_kinds" >> "$fire_log"
+    if [ "$(wc -l < "$fire_log" 2>/dev/null || echo 0)" -gt 500 ]; then
+        tail -500 "$fire_log" > "${fire_log}.tmp" 2>/dev/null && mv "${fire_log}.tmp" "$fire_log" 2>/dev/null || rm -f "${fire_log}.tmp" 2>/dev/null
+    fi
+} 2>/dev/null || true
+
 # 4. Delete the consumed flag file so it does not nudge again for the same research.
 rm -f "$flag_file" 2>/dev/null || true
 
