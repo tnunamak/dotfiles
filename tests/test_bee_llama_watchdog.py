@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import io
 import json
@@ -5,12 +6,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from contextlib import redirect_stderr
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).parents[1] / "bin/.local/bin/bee-llama-watchdog"
+REPOSITORY = Path(__file__).parents[1]
 SPEC = importlib.util.spec_from_loader("bee_llama_watchdog", SourceFileLoader("bee_llama_watchdog", str(SCRIPT)))
 assert SPEC and SPEC.loader
 watchdog_module = importlib.util.module_from_spec(SPEC)
@@ -35,6 +38,7 @@ class WatchdogHarness:
         self.health = {"status": "ok"}
         self.slots = {"slots": []}
         self.restarts = 0
+        self.restart_success = True
         self.captures = []
         self.now = 10_000.0
         self.config = watchdog_module.WatchdogConfig(
@@ -74,7 +78,7 @@ class WatchdogHarness:
 
     def restart(self):
         self.restarts += 1
-        return True
+        return self.restart_success
 
     def poll(self, count=1):
         for _ in range(count):
@@ -83,6 +87,10 @@ class WatchdogHarness:
     @staticmethod
     def processing(task="task-1", prompt=0, decoded=0):
         return {"slots": [{"id_task": task, "is_processing": True, "n_prompt_tokens_processed": prompt, "next_token": {"n_decoded": decoded}}]}
+
+    @staticmethod
+    def processing_slot(task="task-1", prompt=0, decoded=0):
+        return {"id_task": task, "is_processing": True, "n_prompt_tokens_processed": prompt, "next_token": {"n_decoded": decoded}}
 
 
 class BeeLlamaWatchdogTests(unittest.TestCase):
@@ -146,6 +154,11 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertEqual(self.harness.restarts, 1)
         self.assertEqual(self.harness.captures, ["slot-timeouts"])
 
+    def test_errno_timeout_counts_toward_the_slots_timeout_threshold(self):
+        self.harness.slots = urllib.error.URLError(OSError(errno.ETIMEDOUT, "timed out"))
+        self.harness.poll(6)
+        self.assertEqual(self.harness.restarts, 1)
+
     def test_stagnation_threshold_and_progress_recovery(self):
         self.harness.slots = self.harness.processing(prompt=5)
         self.harness.poll(6)
@@ -164,6 +177,29 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertEqual(self.harness.restarts, 2)
         self.assertEqual(self.harness.captures, ["slot-timeouts", "slot-timeouts"])
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
+
+    def test_failed_restart_attempt_still_consumes_the_strict_restart_budget(self):
+        self.harness.restart_success = False
+        self.harness.slots = TimeoutError()
+        self.harness.poll(18)
+        self.assertEqual(self.harness.restarts, 2)
+        self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
+
+    def test_multiple_processing_slots_track_each_task_independently(self):
+        self.harness.slots = {"slots": [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving")]}
+        self.harness.poll()
+        for decoded in range(1, 7):
+            self.harness.slots = {"slots": [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving", decoded=decoded)]}
+            self.harness.poll()
+        self.assertEqual(self.harness.restarts, 1)
+        self.assertEqual(self.harness.captures, ["stagnant"])
+
+    def test_six_stagnant_comparisons_require_a_baseline_plus_six_repeats(self):
+        self.harness.slots = self.harness.processing()
+        self.harness.poll(6)
+        self.assertEqual(self.harness.restarts, 0)
+        self.harness.poll()
+        self.assertEqual(self.harness.restarts, 1)
 
     def test_restart_history_persists_across_instances(self):
         history = watchdog_module.RestartHistory(self.harness.root / "persisted.json", 2, 1800)
@@ -195,6 +231,34 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
     def test_command_line_rejects_non_localhost_endpoints(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             watchdog_module.parse_arguments(["--slots-url", "http://example.test/slots"])
+
+    def test_setup_stows_the_watchdog_executable_and_user_unit(self):
+        setup = (REPOSITORY / "setup.sh").read_text()
+        self.assertRegex(setup, r"PACKAGES=\([^)]*\bbee-watchdog-systemd\b")
+        self.assertRegex(setup, r"NO_FOLD_PKGS=\([^)]*\bbee-watchdog-systemd\b")
+        with tempfile.TemporaryDirectory(dir=self.harness.root) as target:
+            subprocess.run(["stow", "-d", str(REPOSITORY), "-t", target, "--no-folding", "bin"], check=True)
+            user_units = Path(target) / ".config/systemd/user"
+            user_units.mkdir(parents=True)
+            for name in ("gpu-incident-watcher.service", "tmp-reaper.service", "tmp-reaper.timer"):
+                (user_units / name).write_text("existing unit\n")
+            subprocess.run(
+                [
+                    "stow",
+                    "-d",
+                    str(REPOSITORY),
+                    "-t",
+                    target,
+                    "--no-folding",
+                    "bee-watchdog-systemd",
+                ],
+                check=True,
+            )
+            self.assertTrue((Path(target) / ".local/bin/bee-llama-watchdog").is_symlink())
+            installed_unit = Path(target) / ".config/systemd/user/bee-llama-watchdog.service"
+            self.assertTrue(installed_unit.is_symlink())
+            self.assertEqual(installed_unit.resolve(), REPOSITORY / "systemd/.config/systemd/user/bee-llama-watchdog.service")
+            self.assertEqual((user_units / "tmp-reaper.service").read_text(), "existing unit\n")
 
 
 if __name__ == "__main__":

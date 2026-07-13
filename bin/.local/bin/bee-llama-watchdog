@@ -10,6 +10,7 @@ or logs prompts or generated tokens.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shutil
@@ -95,17 +96,17 @@ class EventLogger:
 
 
 class LivenessState:
-    """Explicit progress/timeout state for one active BeeLlama task."""
+    """Explicit progress/timeout state for every currently processing task."""
 
     def __init__(self, threshold: int) -> None:
         self.threshold = threshold
-        self.previous: SlotSample | None = None
-        self.stagnant_samples = 0
+        self.previous_by_task: dict[str, SlotSample] = {}
+        self.stagnant_samples_by_task: dict[str, int] = {}
         self.slot_timeouts = 0
 
     def reset(self) -> None:
-        self.previous = None
-        self.stagnant_samples = 0
+        self.previous_by_task.clear()
+        self.stagnant_samples_by_task.clear()
         self.slot_timeouts = 0
 
     def observe_idle(self) -> None:
@@ -116,32 +117,41 @@ class LivenessState:
         self.reset()
 
     def observe_timeout(self) -> bool:
-        self.previous = None
-        self.stagnant_samples = 0
+        self.previous_by_task.clear()
+        self.stagnant_samples_by_task.clear()
         self.slot_timeouts += 1
         return self.slot_timeouts >= self.threshold
 
-    def observe_sample(self, sample: SlotSample) -> bool:
+    def observe_samples(self, samples: list[SlotSample]) -> bool:
         self.slot_timeouts = 0
-        previous = self.previous
-        if previous is None or sample.task_id != previous.task_id:
-            self.previous = sample
-            self.stagnant_samples = 0
-            return False
+        active_task_ids = {sample.task_id for sample in samples}
+        for task_id in tuple(self.previous_by_task):
+            if task_id not in active_task_ids:
+                self.previous_by_task.pop(task_id)
+                self.stagnant_samples_by_task.pop(task_id, None)
 
-        prompt_delta = sample.prompt_tokens_processed - previous.prompt_tokens_processed
-        decoded_delta = sample.decoded_tokens - previous.decoded_tokens
-        self.previous = sample
-        if prompt_delta > 0 or decoded_delta > 0:
-            self.stagnant_samples = 0
-            return False
-        if prompt_delta < 0 or decoded_delta < 0:
-            # A counter reset is not trustworthy evidence of a stuck task.
-            self.stagnant_samples = 0
-            return False
+        for sample in samples:
+            previous = self.previous_by_task.get(sample.task_id)
+            self.previous_by_task[sample.task_id] = sample
+            if previous is None:
+                self.stagnant_samples_by_task[sample.task_id] = 0
+                continue
 
-        self.stagnant_samples += 1
-        return self.stagnant_samples >= self.threshold
+            prompt_delta = sample.prompt_tokens_processed - previous.prompt_tokens_processed
+            decoded_delta = sample.decoded_tokens - previous.decoded_tokens
+            if prompt_delta > 0 or decoded_delta > 0:
+                self.stagnant_samples_by_task[sample.task_id] = 0
+                continue
+            if prompt_delta < 0 or decoded_delta < 0:
+                # A counter reset is not trustworthy evidence of a stuck task.
+                self.stagnant_samples_by_task[sample.task_id] = 0
+                continue
+
+            stagnant_samples = self.stagnant_samples_by_task.get(sample.task_id, 0) + 1
+            self.stagnant_samples_by_task[sample.task_id] = stagnant_samples
+            if stagnant_samples >= self.threshold:
+                return True
+        return False
 
 
 class RestartHistory:
@@ -197,13 +207,8 @@ def is_health_ok(payload: Any) -> bool:
     return isinstance(payload, dict) and payload.get("status") == "ok"
 
 
-def parse_active_slot(payload: Any) -> SlotSample | None:
-    """Return one processing slot, or reject ambiguous/malformed slot payloads.
-
-    BeeLlama has used both a top-level list and {"slots": [...]} payloads. A
-    watchdog restart is destructive enough that multiple processing slots are
-    treated as unknown instead of guessing which task represents liveness.
-    """
+def parse_active_slots(payload: Any) -> list[SlotSample]:
+    """Parse every processing slot, treating malformed payloads as unknown."""
     if isinstance(payload, dict):
         slots = payload.get("slots", payload if "id_task" in payload else None)
     else:
@@ -213,22 +218,27 @@ def parse_active_slot(payload: Any) -> SlotSample | None:
     if not isinstance(slots, list):
         raise ValueError("slots payload is not a list")
 
-    processing_slots = [slot for slot in slots if isinstance(slot, dict) and slot.get("is_processing") is True]
-    if not processing_slots:
-        return None
-    if len(processing_slots) != 1:
-        raise ValueError("multiple processing slots")
-
-    slot = processing_slots[0]
-    task_id = slot.get("id_task")
-    prompt_tokens = slot.get("n_prompt_tokens_processed")
-    next_token = slot.get("next_token")
-    decoded_tokens = next_token.get("n_decoded") if isinstance(next_token, dict) else None
-    if not isinstance(task_id, (str, int)) or isinstance(task_id, bool) or task_id == "":
-        raise ValueError("processing slot has no task id")
-    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (prompt_tokens, decoded_tokens)):
-        raise ValueError("processing slot has invalid progress counters")
-    return SlotSample(str(task_id), prompt_tokens, decoded_tokens)
+    samples: list[SlotSample] = []
+    task_ids: set[str] = set()
+    for slot in slots:
+        if not isinstance(slot, dict) or not isinstance(slot.get("is_processing"), bool):
+            raise ValueError("slots payload has an invalid slot")
+        if not slot["is_processing"]:
+            continue
+        task_id = slot.get("id_task")
+        prompt_tokens = slot.get("n_prompt_tokens_processed")
+        next_token = slot.get("next_token")
+        decoded_tokens = next_token.get("n_decoded") if isinstance(next_token, dict) else None
+        if not isinstance(task_id, (str, int)) or isinstance(task_id, bool) or task_id == "":
+            raise ValueError("processing slot has no task id")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (prompt_tokens, decoded_tokens)):
+            raise ValueError("processing slot has invalid progress counters")
+        normalized_task_id = str(task_id)
+        if normalized_task_id in task_ids:
+            raise ValueError("multiple processing slots share a task id")
+        task_ids.add(normalized_task_id)
+        samples.append(SlotSample(normalized_task_id, prompt_tokens, decoded_tokens))
+    return samples
 
 
 def default_runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
@@ -349,15 +359,15 @@ class BeeLlamaWatchdog:
             return
 
         try:
-            sample = parse_active_slot(slots)
+            samples = parse_active_slots(slots)
         except ValueError:
             self.liveness.observe_unknown()
             self.logger.write("slots response malformed or ambiguous; liveness reset")
             return
-        if sample is None:
+        if not samples:
             self.liveness.observe_idle()
             return
-        if self.liveness.observe_sample(sample):
+        if self.liveness.observe_samples(samples):
             self._handle_trigger("stagnant")
 
     def _handle_trigger(self, reason: Literal["stagnant", "slot-timeouts"]) -> None:
@@ -375,7 +385,8 @@ class BeeLlamaWatchdog:
 def is_timeout(error: BaseException) -> bool:
     if isinstance(error, (TimeoutError, socket.timeout, subprocess.TimeoutExpired)):
         return True
-    return isinstance(error, urllib.error.URLError) and isinstance(error.reason, (TimeoutError, socket.timeout))
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    return isinstance(reason, OSError) and reason.errno == errno.ETIMEDOUT
 
 
 def make_config(arguments: argparse.Namespace) -> WatchdogConfig:
