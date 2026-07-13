@@ -1,63 +1,46 @@
 #!/usr/bin/env python3
-"""Restart llama-bee only after explicit liveness evidence crosses a bound.
+"""Restart llama-bee only after confirmed systemd service unavailability.
 
-The liveness decision is deliberately kept separate from HTTP, subprocess, and
-filesystem effects so the state machine can be tested without a running model.
-It only observes task identifiers and numeric progress counters; it never reads
-or logs prompts or generated tokens.
+The watchdog deliberately avoids every Bee HTTP endpoint. In particular, it
+never inspects queue or task state, so monitoring cannot enqueue, cancel, or
+otherwise perturb an engine request. Its restart decision is separate from
+command, filesystem, and evidence-capture effects so it can be tested without
+a running model.
 """
 
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Protocol
+from typing import Callable, Iterable, Literal, Protocol
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:5051"
 DEFAULT_UNIT = "llama-bee.service"
 DEFAULT_INTERVAL_SECONDS = 30.0
-DEFAULT_STAGNANT_THRESHOLD = 6
-DEFAULT_SLOTS_UNAVAILABLE_THRESHOLD = 36
-DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
+DEFAULT_INACTIVE_THRESHOLD = 2
 DEFAULT_RESTART_WINDOW_SECONDS = 30 * 60
 DEFAULT_RESTART_LIMIT = 2
 COMMAND_TIMEOUT_SECONDS = 5.0
 MAX_CAPTURE_BYTES = 256 * 1024
 MAX_EVIDENCE_DIRECTORIES = 30
 
-
-@dataclass(frozen=True)
-class SlotSample:
-    """The only slot fields used to make a liveness decision."""
-
-    task_id: str
-    prompt_tokens_processed: int
-    decoded_tokens: int
+ServiceState = Literal["active", "inactive", "unknown"]
+RestartReason = Literal["unit-inactive"]
 
 
 @dataclass(frozen=True)
 class WatchdogConfig:
-    health_url: str
-    slots_url: str
     unit: str
     interval_seconds: float
-    stagnant_threshold: int
-    slots_unavailable_threshold: int
-    http_timeout_seconds: float
+    inactive_threshold: int
     restart_limit: int
     restart_window_seconds: float
     state_dir: Path
@@ -69,10 +52,6 @@ class WatchdogConfig:
 
 class CommandRunner(Protocol):
     def __call__(self, command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]: ...
-
-
-class JsonFetcher(Protocol):
-    def __call__(self, url: str, timeout: float) -> Any: ...
 
 
 class EventLogger:
@@ -89,72 +68,27 @@ class EventLogger:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             log_path = self.state_dir / "watchdog.log"
             if log_path.exists() and log_path.stat().st_size > 1024 * 1024:
-                rotated = self.state_dir / "watchdog.log.1"
-                os.replace(log_path, rotated)
+                os.replace(log_path, self.state_dir / "watchdog.log.1")
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
         except OSError as error:
             print(f"[bee-llama-watchdog] could not write state log: {error}", file=sys.stderr, flush=True)
 
 
-class LivenessState:
-    """Separate readable-progress and slots-unavailable clocks."""
+class UnavailabilityState:
+    """Counts only confirmed inactive service-manager observations."""
 
-    def __init__(self, stagnant_threshold: int, slots_unavailable_threshold: int) -> None:
-        self.stagnant_threshold = stagnant_threshold
-        self.slots_unavailable_threshold = slots_unavailable_threshold
-        self.previous_by_task: dict[str, SlotSample] = {}
-        self.stagnant_samples_by_task: dict[str, int] = {}
-        self.slot_timeouts = 0
+    def __init__(self, inactive_threshold: int) -> None:
+        self.inactive_threshold = inactive_threshold
+        self.consecutive_inactive = 0
 
-    def reset(self) -> None:
-        self.previous_by_task.clear()
-        self.stagnant_samples_by_task.clear()
-        self.slot_timeouts = 0
+    def observe_active_or_unknown(self) -> None:
+        """Fail closed: active and unconfirmed state both clear restart evidence."""
+        self.consecutive_inactive = 0
 
-    def observe_idle(self) -> None:
-        self.reset()
-
-    def observe_unknown(self) -> None:
-        """Fail safe: unknown data cannot be evidence of a hang."""
-        self.reset()
-
-    def observe_timeout(self) -> bool:
-        self.previous_by_task.clear()
-        self.stagnant_samples_by_task.clear()
-        self.slot_timeouts += 1
-        return self.slot_timeouts >= self.slots_unavailable_threshold
-
-    def observe_samples(self, samples: list[SlotSample]) -> bool:
-        self.slot_timeouts = 0
-        active_task_ids = {sample.task_id for sample in samples}
-        for task_id in tuple(self.previous_by_task):
-            if task_id not in active_task_ids:
-                self.previous_by_task.pop(task_id)
-                self.stagnant_samples_by_task.pop(task_id, None)
-
-        for sample in samples:
-            previous = self.previous_by_task.get(sample.task_id)
-            self.previous_by_task[sample.task_id] = sample
-            if previous is None:
-                self.stagnant_samples_by_task[sample.task_id] = 0
-                continue
-
-            prompt_delta = sample.prompt_tokens_processed - previous.prompt_tokens_processed
-            decoded_delta = sample.decoded_tokens - previous.decoded_tokens
-            if prompt_delta > 0 or decoded_delta > 0:
-                self.stagnant_samples_by_task[sample.task_id] = 0
-                continue
-            if prompt_delta < 0 or decoded_delta < 0:
-                # A counter reset is not trustworthy evidence of a stuck task.
-                self.stagnant_samples_by_task[sample.task_id] = 0
-                continue
-
-            stagnant_samples = self.stagnant_samples_by_task.get(sample.task_id, 0) + 1
-            self.stagnant_samples_by_task[sample.task_id] = stagnant_samples
-            if stagnant_samples >= self.stagnant_threshold:
-                return True
-        return False
+    def observe_inactive(self) -> bool:
+        self.consecutive_inactive += 1
+        return self.consecutive_inactive >= self.inactive_threshold
 
 
 class RestartHistory:
@@ -200,54 +134,6 @@ class RestartHistory:
             temporary_path.unlink(missing_ok=True)
 
 
-def fetch_json(url: str, timeout: float) -> Any:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 -- fixed localhost URL by default
-        return json.load(response)
-
-
-def is_health_ok(payload: Any) -> bool:
-    return isinstance(payload, dict) and payload.get("status") == "ok"
-
-
-def parse_active_slots(payload: Any) -> list[SlotSample]:
-    """Parse every processing slot, treating malformed payloads as unknown."""
-    if isinstance(payload, dict):
-        slots = payload.get("slots", payload if "id_task" in payload else None)
-    else:
-        slots = payload
-    if isinstance(slots, dict):
-        slots = [slots]
-    if not isinstance(slots, list):
-        raise ValueError("slots payload is not a list")
-
-    samples: list[SlotSample] = []
-    task_ids: set[str] = set()
-    for slot in slots:
-        if not isinstance(slot, dict) or not isinstance(slot.get("is_processing"), bool):
-            raise ValueError("slots payload has an invalid slot")
-        if not slot["is_processing"]:
-            continue
-        task_id = slot.get("id_task")
-        prompt_tokens = slot.get("n_prompt_tokens_processed")
-        next_token = slot.get("next_token")
-        if isinstance(next_token, list):
-            if len(next_token) != 1 or not isinstance(next_token[0], dict):
-                raise ValueError("processing slot has an ambiguous next token")
-            next_token = next_token[0]
-        decoded_tokens = next_token.get("n_decoded") if isinstance(next_token, dict) else None
-        if not isinstance(task_id, (str, int)) or isinstance(task_id, bool) or task_id == "":
-            raise ValueError("processing slot has no task id")
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (prompt_tokens, decoded_tokens)):
-            raise ValueError("processing slot has invalid progress counters")
-        normalized_task_id = str(task_id)
-        if normalized_task_id in task_ids:
-            raise ValueError("multiple processing slots share a task id")
-        task_ids.add(normalized_task_id)
-        samples.append(SlotSample(normalized_task_id, prompt_tokens, decoded_tokens))
-    return samples
-
-
 def default_runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(command, check=False, capture_output=True, timeout=timeout)
 
@@ -257,6 +143,30 @@ def command_succeeded(runner: CommandRunner, command: list[str]) -> bool:
         return runner(command, COMMAND_TIMEOUT_SECONDS).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def systemd_service_state(runner: CommandRunner, systemctl_bin: str, unit: str) -> ServiceState:
+    """Read the unit state without contacting the Bee process.
+
+    Only systemd's stable inactive and failed states prove service
+    unavailability. Transitioning states and command errors are unknown so
+    they cannot cause an automated restart.
+    """
+    try:
+        result = runner(
+            [systemctl_bin, "--user", "show", "--property=ActiveState", "--value", unit],
+            COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    active_state = result.stdout.decode("utf-8", errors="replace").strip()
+    if active_state == "active":
+        return "active"
+    if active_state in {"inactive", "failed"}:
+        return "inactive"
+    return "unknown"
 
 
 def write_bounded_command_output(path: Path, command: list[str], runner: CommandRunner) -> None:
@@ -283,7 +193,7 @@ class EvidenceCapture:
         self.logger = logger
         self.wall_clock = wall_clock
 
-    def capture(self, reason: Literal["readable-stagnant", "slots-unavailable"]) -> None:
+    def capture(self, reason: RestartReason) -> None:
         try:
             evidence_root = self.config.state_dir / "evidence"
             evidence_root.mkdir(parents=True, exist_ok=True)
@@ -321,64 +231,36 @@ class BeeLlamaWatchdog:
     def __init__(
         self,
         config: WatchdogConfig,
-        service_active: Callable[[], bool],
-        json_fetcher: JsonFetcher,
-        capture: Callable[[Literal["readable-stagnant", "slots-unavailable"]], None],
+        service_state: Callable[[], ServiceState],
+        capture: Callable[[RestartReason], None],
         restart: Callable[[], bool],
         restart_history: RestartHistory,
         logger: EventLogger,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
-        self.service_active = service_active
-        self.json_fetcher = json_fetcher
+        self.service_state = service_state
         self.capture = capture
         self.restart = restart
         self.restart_history = restart_history
         self.logger = logger
         self.wall_clock = wall_clock
-        self.liveness = LivenessState(config.stagnant_threshold, config.slots_unavailable_threshold)
+        self.unavailability = UnavailabilityState(config.inactive_threshold)
 
     def poll_once(self) -> None:
-        if not self.service_active():
-            self.liveness.reset()
+        state = self.service_state()
+        if state == "active":
+            self.unavailability.observe_active_or_unknown()
             return
-        try:
-            health = self.json_fetcher(self.config.health_url, self.config.http_timeout_seconds)
-        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
-            self.liveness.observe_unknown()
-            self.logger.write("health check unavailable; liveness reset")
+        if state == "unknown":
+            self.unavailability.observe_active_or_unknown()
+            self.logger.write("unit state unavailable or transitional; no restart")
             return
-        if not is_health_ok(health):
-            self.liveness.observe_unknown()
-            self.logger.write("health is not ok; liveness reset")
-            return
+        if self.unavailability.observe_inactive():
+            self._handle_trigger("unit-inactive")
 
-        try:
-            slots = self.json_fetcher(self.config.slots_url, self.config.http_timeout_seconds)
-        except Exception as error:  # classified immediately; no untrusted payload is logged
-            if is_timeout(error):
-                if self.liveness.observe_timeout():
-                    self._handle_trigger("slots-unavailable")
-            else:
-                self.liveness.observe_unknown()
-                self.logger.write("slots request unavailable; liveness reset")
-            return
-
-        try:
-            samples = parse_active_slots(slots)
-        except ValueError:
-            self.liveness.observe_unknown()
-            self.logger.write("slots response malformed or ambiguous; liveness reset")
-            return
-        if not samples:
-            self.liveness.observe_idle()
-            return
-        if self.liveness.observe_samples(samples):
-            self._handle_trigger("readable-stagnant")
-
-    def _handle_trigger(self, reason: Literal["readable-stagnant", "slots-unavailable"]) -> None:
-        self.liveness.reset()
+    def _handle_trigger(self, reason: RestartReason) -> None:
+        self.unavailability.observe_active_or_unknown()
         if not self.restart_history.allow_and_record(self.wall_clock()):
             self.logger.write(f"{reason} threshold reached; automated restart rate-limited")
             return
@@ -389,31 +271,14 @@ class BeeLlamaWatchdog:
             self.logger.write(f"restart command failed after {reason} threshold")
 
 
-def is_timeout(error: BaseException) -> bool:
-    if isinstance(error, (TimeoutError, socket.timeout, subprocess.TimeoutExpired)):
-        return True
-    reason = error.reason if isinstance(error, urllib.error.URLError) else error
-    return isinstance(reason, OSError) and reason.errno == errno.ETIMEDOUT
-
-
 def make_config(arguments: argparse.Namespace) -> WatchdogConfig:
-    base_url = arguments.base_url.rstrip("/")
-    state_dir = Path(arguments.state_dir).expanduser()
-    health_url = arguments.health_url or f"{base_url}/health"
-    slots_url = arguments.slots_url or f"{base_url}/slots"
-    validate_local_http_url(health_url, "health URL")
-    validate_local_http_url(slots_url, "slots URL")
     return WatchdogConfig(
-        health_url=health_url,
-        slots_url=slots_url,
         unit=arguments.unit,
         interval_seconds=arguments.interval_seconds,
-        stagnant_threshold=arguments.stagnant_threshold,
-        slots_unavailable_threshold=arguments.slots_unavailable_threshold,
-        http_timeout_seconds=arguments.http_timeout_seconds,
+        inactive_threshold=arguments.inactive_threshold,
         restart_limit=arguments.restart_limit,
         restart_window_seconds=arguments.restart_window_seconds,
-        state_dir=state_dir,
+        state_dir=Path(arguments.state_dir).expanduser(),
         systemctl_bin=arguments.systemctl_bin,
         journalctl_bin=arguments.journalctl_bin,
         nvidia_smi_bin=arguments.nvidia_smi_bin,
@@ -421,33 +286,17 @@ def make_config(arguments: argparse.Namespace) -> WatchdogConfig:
     )
 
 
-def validate_local_http_url(url: str, label: str) -> None:
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.username or parsed.password:
-        raise ValueError(f"{label} must be an unauthenticated http://127.0.0.1 URL")
-
-
 def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     state_home = os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default=os.environ.get("BEE_LLAMA_WATCHDOG_BASE_URL", DEFAULT_BASE_URL))
-    parser.add_argument("--health-url", default=os.environ.get("BEE_LLAMA_WATCHDOG_HEALTH_URL"))
-    parser.add_argument("--slots-url", default=os.environ.get("BEE_LLAMA_WATCHDOG_SLOTS_URL"))
     parser.add_argument("--unit", default=os.environ.get("BEE_LLAMA_WATCHDOG_UNIT", DEFAULT_UNIT))
     parser.add_argument("--interval-seconds", type=float, default=float(os.environ.get("BEE_LLAMA_WATCHDOG_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS)))
     parser.add_argument(
-        "--stagnant-threshold",
+        "--inactive-threshold",
         type=int,
-        default=int(os.environ.get("BEE_LLAMA_WATCHDOG_STAGNANT_THRESHOLD", DEFAULT_STAGNANT_THRESHOLD)),
-        help="consecutive readable stagnant comparisons before restart",
+        default=int(os.environ.get("BEE_LLAMA_WATCHDOG_INACTIVE_THRESHOLD", DEFAULT_INACTIVE_THRESHOLD)),
+        help="consecutive confirmed inactive or failed unit observations before restart",
     )
-    parser.add_argument(
-        "--slots-unavailable-threshold",
-        type=int,
-        default=int(os.environ.get("BEE_LLAMA_WATCHDOG_SLOTS_UNAVAILABLE_THRESHOLD", DEFAULT_SLOTS_UNAVAILABLE_THRESHOLD)),
-        help="consecutive /slots timeouts while health is ok before restart",
-    )
-    parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("BEE_LLAMA_WATCHDOG_HTTP_TIMEOUT_SECONDS", DEFAULT_HTTP_TIMEOUT_SECONDS)))
     parser.add_argument("--restart-limit", type=int, default=int(os.environ.get("BEE_LLAMA_WATCHDOG_RESTART_LIMIT", DEFAULT_RESTART_LIMIT)))
     parser.add_argument("--restart-window-seconds", type=float, default=float(os.environ.get("BEE_LLAMA_WATCHDOG_RESTART_WINDOW_SECONDS", DEFAULT_RESTART_WINDOW_SECONDS)))
     parser.add_argument("--state-dir", default=os.environ.get("BEE_LLAMA_WATCHDOG_STATE_DIR", os.path.join(state_home, "bee-llama-watchdog")))
@@ -456,16 +305,10 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--nvidia-smi-bin", default=os.environ.get("BEE_LLAMA_WATCHDOG_NVIDIA_SMI_BIN", "nvidia-smi"))
     parser.add_argument("--ps-bin", default=os.environ.get("BEE_LLAMA_WATCHDOG_PS_BIN", "ps"))
     arguments = parser.parse_args(argv)
-    if arguments.interval_seconds <= 0 or arguments.http_timeout_seconds <= 0:
-        parser.error("interval and HTTP timeout must be positive")
-    if arguments.stagnant_threshold < 1 or arguments.slots_unavailable_threshold < 1:
-        parser.error("stagnant and slots-unavailable thresholds must be positive")
+    if arguments.interval_seconds <= 0 or arguments.inactive_threshold < 1:
+        parser.error("interval and inactive threshold must be positive")
     if arguments.restart_limit < 1 or arguments.restart_window_seconds <= 0:
         parser.error("restart limit and window must be positive")
-    try:
-        make_config(arguments)
-    except ValueError as error:
-        parser.error(str(error))
     return arguments
 
 
@@ -474,8 +317,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     logger = EventLogger(config.state_dir)
     runner = default_runner
 
-    def service_active() -> bool:
-        return command_succeeded(runner, [config.systemctl_bin, "--user", "is-active", "--quiet", config.unit])
+    def service_state() -> ServiceState:
+        return systemd_service_state(runner, config.systemctl_bin, config.unit)
 
     def restart() -> bool:
         return command_succeeded(runner, [config.systemctl_bin, "--user", "restart", config.unit])
@@ -483,8 +326,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     capture = EvidenceCapture(config, runner, logger, time.time)
     watchdog = BeeLlamaWatchdog(
         config=config,
-        service_active=service_active,
-        json_fetcher=fetch_json,
+        service_state=service_state,
         capture=capture.capture,
         restart=restart,
         restart_history=RestartHistory(config.state_dir / "restart-history.json", config.restart_limit, config.restart_window_seconds),
@@ -493,8 +335,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     logger.write(
         "starting; "
         f"interval={config.interval_seconds:g}s "
-        f"stagnant_threshold={config.stagnant_threshold} "
-        f"slots_unavailable_threshold={config.slots_unavailable_threshold}"
+        f"inactive_threshold={config.inactive_threshold}"
     )
     while True:
         watchdog.poll_once()

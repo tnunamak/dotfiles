@@ -1,4 +1,3 @@
-import errno
 import importlib.util
 import io
 import json
@@ -6,7 +5,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import urllib.error
 from contextlib import redirect_stderr
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -30,25 +28,19 @@ class MemoryLogger:
 
 
 class WatchdogHarness:
-    def __init__(self, *, stagnant_threshold=6, slots_unavailable_threshold=36, restart_limit=2):
+    def __init__(self, *, inactive_threshold=2, restart_limit=2):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
         self.logger = MemoryLogger()
-        self.active = True
-        self.health = {"status": "ok"}
-        self.slots = []
+        self.service_state = "active"
         self.restarts = 0
         self.restart_success = True
         self.captures = []
         self.now = 10_000.0
         self.config = watchdog_module.WatchdogConfig(
-            health_url="health",
-            slots_url="slots",
             unit="llama-bee.service",
-            interval_seconds=1,
-            stagnant_threshold=stagnant_threshold,
-            slots_unavailable_threshold=slots_unavailable_threshold,
-            http_timeout_seconds=1,
+            interval_seconds=30,
+            inactive_threshold=inactive_threshold,
             restart_limit=restart_limit,
             restart_window_seconds=1800,
             state_dir=self.root,
@@ -59,8 +51,7 @@ class WatchdogHarness:
         )
         self.watchdog = watchdog_module.BeeLlamaWatchdog(
             config=self.config,
-            service_active=lambda: self.active,
-            json_fetcher=self.fetch,
+            service_state=lambda: self.service_state,
             capture=self.captures.append,
             restart=self.restart,
             restart_history=watchdog_module.RestartHistory(self.root / "history.json", restart_limit, 1800),
@@ -71,12 +62,6 @@ class WatchdogHarness:
     def close(self):
         self.temporary_directory.cleanup()
 
-    def fetch(self, url, timeout):
-        value = self.health if url == "health" else self.slots
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
     def restart(self):
         self.restarts += 1
         return self.restart_success
@@ -84,19 +69,6 @@ class WatchdogHarness:
     def poll(self, count=1):
         for _ in range(count):
             self.watchdog.poll_once()
-
-    @staticmethod
-    def processing(task=1, prompt=0, decoded=0):
-        return [WatchdogHarness.processing_slot(task, prompt, decoded)]
-
-    @staticmethod
-    def processing_slot(task=1, prompt=0, decoded=0):
-        return {
-            "id_task": task,
-            "is_processing": True,
-            "n_prompt_tokens_processed": prompt,
-            "next_token": [{"n_decoded": decoded, "has_next_token": True, "n_remain": 0}],
-        }
 
 
 class BeeLlamaWatchdogTests(unittest.TestCase):
@@ -106,138 +78,51 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
     def tearDown(self):
         self.harness.close()
 
-    def test_healthy_prompt_progress_never_restarts(self):
-        for prompt in range(8):
-            self.harness.slots = self.harness.processing(prompt=prompt)
-            self.harness.poll()
+    def test_active_service_never_restarts(self):
+        self.harness.poll(10)
         self.assertEqual(self.harness.restarts, 0)
 
-    def test_healthy_generation_progress_never_restarts(self):
-        for decoded in range(8):
-            self.harness.slots = self.harness.processing(prompt=50, decoded=decoded)
-            self.harness.poll()
-        self.assertEqual(self.harness.restarts, 0)
-
-    def test_live_top_level_list_parses_numeric_task_and_singleton_next_token_array(self):
-        self.assertEqual(
-            watchdog_module.parse_active_slots(self.harness.processing(task=42, prompt=17, decoded=3)),
-            [watchdog_module.SlotSample("42", 17, 3)],
-        )
-
-    def test_direct_object_next_token_remains_supported(self):
-        self.assertEqual(
-            watchdog_module.parse_active_slots(
-                [{"id_task": 42, "is_processing": True, "n_prompt_tokens_processed": 17, "next_token": {"n_decoded": 3}}]
-            ),
-            [watchdog_module.SlotSample("42", 17, 3)],
-        )
-
-    def test_empty_multi_element_and_ambiguous_next_token_arrays_fail_closed(self):
-        malformed_next_tokens = [
-            [],
-            [{"n_decoded": 3}, {"n_decoded": 4}],
-            [[{"n_decoded": 3}]],
-        ]
-        for next_token in malformed_next_tokens:
-            with self.subTest(next_token=next_token):
-                slot = self.harness.processing_slot()
-                slot["next_token"] = next_token
-                with self.assertRaises(ValueError):
-                    watchdog_module.parse_active_slots([slot])
-
-    def test_idle_resets_stagnation(self):
-        self.harness.slots = self.harness.processing()
-        self.harness.poll(6)
-        self.harness.slots = [{"id_task": 1, "is_processing": False, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0, "has_next_token": False, "n_remain": 0}]}]
+    def test_first_confirmed_inactive_observation_is_a_baseline(self):
+        self.harness.service_state = "inactive"
         self.harness.poll()
-        self.harness.slots = self.harness.processing()
-        self.harness.poll(6)
         self.assertEqual(self.harness.restarts, 0)
 
-    def test_task_change_resets_stagnation(self):
-        self.harness.slots = self.harness.processing(task="first")
-        self.harness.poll(6)
-        self.harness.slots = self.harness.processing(task="second")
-        self.harness.poll()
-        self.harness.poll(5)
-        self.assertEqual(self.harness.restarts, 0)
-
-    def test_malformed_response_resets_stagnation(self):
-        self.harness.slots = self.harness.processing()
-        self.harness.poll(6)
-        self.harness.slots = [{"id_task": 1, "is_processing": True}]
-        self.harness.poll()
-        self.harness.slots = self.harness.processing()
-        self.harness.poll(6)
-        self.assertEqual(self.harness.restarts, 0)
-        self.assertIn("slots response malformed or ambiguous; liveness reset", self.harness.logger.messages)
-
-    def test_loading_or_non_ok_health_resets_stagnation_without_restart(self):
-        self.harness.slots = self.harness.processing()
-        self.harness.poll(6)
-        self.harness.health = {"status": "loading"}
-        self.harness.poll()
-        self.harness.health = {"status": "ok"}
-        self.harness.poll(6)
-        self.assertEqual(self.harness.restarts, 0)
-
-    def test_thirty_five_slots_timeouts_while_healthy_do_not_restart(self):
-        self.harness.slots = TimeoutError("deliberately not logged")
-        self.harness.poll(35)
-        self.assertEqual(self.harness.restarts, 0)
-
-    def test_thirty_sixth_slots_timeout_while_healthy_restarts_once(self):
-        self.harness.slots = TimeoutError("deliberately not logged")
-        self.harness.poll(36)
+    def test_second_confirmed_inactive_observation_restarts_once(self):
+        self.harness.service_state = "inactive"
+        self.harness.poll(2)
         self.assertEqual(self.harness.restarts, 1)
-        self.assertEqual(self.harness.captures, ["slots-unavailable"])
+        self.assertEqual(self.harness.captures, ["unit-inactive"])
 
-    def test_errno_timeout_counts_toward_the_slots_unavailable_threshold(self):
-        self.harness.slots = urllib.error.URLError(OSError(errno.ETIMEDOUT, "timed out"))
-        self.harness.poll(36)
-        self.assertEqual(self.harness.restarts, 1)
-
-    def test_stagnation_threshold_and_progress_recovery(self):
-        self.harness.slots = self.harness.processing(prompt=5)
-        self.harness.poll(6)
-        self.harness.slots = self.harness.processing(prompt=6)
+    def test_active_state_resets_inactive_evidence(self):
+        self.harness.service_state = "inactive"
         self.harness.poll()
-        self.harness.slots = self.harness.processing(prompt=6)
-        self.harness.poll(5)
+        self.harness.service_state = "active"
+        self.harness.poll()
+        self.harness.service_state = "inactive"
+        self.harness.poll()
         self.assertEqual(self.harness.restarts, 0)
-        self.harness.poll()
-        self.assertEqual(self.harness.restarts, 1)
-        self.assertEqual(self.harness.captures, ["readable-stagnant"])
 
-    def test_restart_rate_limit_allows_only_two_per_window(self):
-        self.harness.slots = TimeoutError()
-        self.harness.poll(108)
+    def test_unknown_state_resets_inactive_evidence_and_never_restarts(self):
+        self.harness.service_state = "inactive"
+        self.harness.poll()
+        self.harness.service_state = "unknown"
+        self.harness.poll(10)
+        self.assertEqual(self.harness.restarts, 0)
+        self.assertIn("unit state unavailable or transitional; no restart", self.harness.logger.messages)
+
+    def test_restart_rate_limit_allows_only_two_inactive_recoveries_per_window(self):
+        self.harness.service_state = "inactive"
+        self.harness.poll(6)
         self.assertEqual(self.harness.restarts, 2)
-        self.assertEqual(self.harness.captures, ["slots-unavailable", "slots-unavailable"])
+        self.assertEqual(self.harness.captures, ["unit-inactive", "unit-inactive"])
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
 
     def test_failed_restart_attempt_still_consumes_the_strict_restart_budget(self):
         self.harness.restart_success = False
-        self.harness.slots = TimeoutError()
-        self.harness.poll(108)
+        self.harness.service_state = "inactive"
+        self.harness.poll(6)
         self.assertEqual(self.harness.restarts, 2)
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
-
-    def test_multiple_processing_slots_track_each_task_independently(self):
-        self.harness.slots = [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving")]
-        self.harness.poll()
-        for decoded in range(1, 7):
-            self.harness.slots = [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving", decoded=decoded)]
-            self.harness.poll()
-        self.assertEqual(self.harness.restarts, 1)
-        self.assertEqual(self.harness.captures, ["readable-stagnant"])
-
-    def test_six_stagnant_comparisons_require_a_baseline_plus_six_repeats(self):
-        self.harness.slots = self.harness.processing()
-        self.harness.poll(6)
-        self.assertEqual(self.harness.restarts, 0)
-        self.harness.poll()
-        self.assertEqual(self.harness.restarts, 1)
 
     def test_restart_history_persists_across_instances(self):
         history = watchdog_module.RestartHistory(self.harness.root / "persisted.json", 2, 1800)
@@ -245,6 +130,49 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertTrue(history.allow_and_record(2.0))
         self.assertFalse(watchdog_module.RestartHistory(self.harness.root / "persisted.json", 2, 1800).allow_and_record(3.0))
         self.assertEqual(json.loads((self.harness.root / "persisted.json").read_text()), [1.0, 2.0])
+
+    def test_systemd_state_reads_only_the_service_manager(self):
+        commands = []
+
+        def runner(command, timeout):
+            commands.append((command, timeout))
+            return subprocess.CompletedProcess(command, 0, b"active\n", b"")
+
+        self.assertEqual(watchdog_module.systemd_service_state(runner, "systemctl", "llama-bee.service"), "active")
+        self.assertEqual(
+            commands,
+            [(["systemctl", "--user", "show", "--property=ActiveState", "--value", "llama-bee.service"], watchdog_module.COMMAND_TIMEOUT_SECONDS)],
+        )
+
+    def test_systemd_failed_and_inactive_states_are_confirmed_unavailability(self):
+        for state in (b"inactive\n", b"failed\n"):
+            with self.subTest(state=state):
+                def runner(command, timeout):
+                    return subprocess.CompletedProcess(command, 0, state, b"")
+
+                self.assertEqual(watchdog_module.systemd_service_state(runner, "systemctl", "llama-bee.service"), "inactive")
+
+    def test_systemd_transitional_command_failure_and_timeout_are_unknown(self):
+        outcomes = [
+            subprocess.CompletedProcess([], 0, b"activating\n", b""),
+            subprocess.CompletedProcess([], 1, b"failed\n", b""),
+            OSError("systemctl unavailable"),
+            subprocess.TimeoutExpired(["systemctl"], 5),
+        ]
+        for outcome in outcomes:
+            with self.subTest(outcome=outcome):
+                def runner(command, timeout, outcome=outcome):
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    return outcome
+
+                self.assertEqual(watchdog_module.systemd_service_state(runner, "systemctl", "llama-bee.service"), "unknown")
+
+    def test_watchdog_source_has_no_engine_http_or_task_observation(self):
+        source = SCRIPT.read_text()
+        for forbidden in ("/slots", "urlopen", "urllib", "requests", "id_task", "next_token"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
     def test_evidence_uses_injected_commands(self):
         commands = []
@@ -259,8 +187,8 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
             self.harness.logger,
             wall_clock=lambda: 0,
         )
-        capture.capture("readable-stagnant")
-        evidence = self.harness.root / "evidence" / "19700101T000000Z-readable-stagnant"
+        capture.capture("unit-inactive")
+        evidence = self.harness.root / "evidence" / "19700101T000000Z-unit-inactive"
         self.assertTrue((evidence / "journal.txt").exists())
         self.assertTrue((evidence / "nvidia-smi.txt").exists())
         self.assertTrue((evidence / "process-state.txt").exists())
@@ -270,20 +198,16 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertNotIn("command", ps_fields)
         self.assertEqual(ps_fields, ["pid", "ppid", "stat", "etime", "pcpu", "pmem", "comm", "wchan"])
 
-    def test_command_line_rejects_non_localhost_endpoints(self):
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            watchdog_module.parse_arguments(["--slots-url", "http://example.test/slots"])
-
-    def test_command_line_exposes_positive_independent_thresholds(self):
+    def test_command_line_exposes_only_non_perturbing_inactive_threshold(self):
         defaults = watchdog_module.parse_arguments([])
-        self.assertEqual(defaults.stagnant_threshold, 6)
-        self.assertEqual(defaults.slots_unavailable_threshold, 36)
-        arguments = watchdog_module.parse_arguments(["--stagnant-threshold", "7", "--slots-unavailable-threshold", "40"])
-        self.assertEqual(arguments.stagnant_threshold, 7)
-        self.assertEqual(arguments.slots_unavailable_threshold, 40)
-        for option in ("--stagnant-threshold", "--slots-unavailable-threshold"):
-            with self.subTest(option=option), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                watchdog_module.parse_arguments([option, "0"])
+        self.assertEqual(defaults.inactive_threshold, 2)
+        arguments = watchdog_module.parse_arguments(["--inactive-threshold", "3"])
+        self.assertEqual(arguments.inactive_threshold, 3)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            watchdog_module.parse_arguments(["--inactive-threshold", "0"])
+        for removed_option in ("--base-url", "--health-url", "--slots-url", "--stagnant-threshold", "--slots-unavailable-threshold", "--http-timeout-seconds"):
+            with self.subTest(removed_option=removed_option), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                watchdog_module.parse_arguments([removed_option, "1"])
 
     def test_setup_stows_the_watchdog_executable_and_user_unit(self):
         setup = (REPOSITORY / "setup.sh").read_text()
