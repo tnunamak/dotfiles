@@ -4,17 +4,48 @@
 # registry-driven and fail-open. This script only resolves the fastest
 # available tokensmash binary and provides a last-resort plain exec so a
 # broken tokensmash install can never block launching the agent.
+
+# Scoped scratch redirect (see ai/research/agentic-context-design/coding-agent-
+# scratch-goes-to-a-scoped-disk-tmpdir-not-a-global-tmpdir-override-of-a-ram-
+# tmpfs.md): agents produce GB-scale scratch (package extracts, browser
+# profiles, large command-output capture, parallel workers) that wedges the
+# intentionally small RAM-backed /tmp tmpfs. Redirect scratch to a disk-backed
+# dir SCOPED to the agent process tree here (NOT a global TMPDIR export, which
+# would surrender tmpfs benefits for all normal dev work). TMPDIR covers
+# well-behaved subprocesses (Codex reads it into its sandbox writable-roots);
+# CLAUDE_CODE_TMPDIR moves Claude Code's own temp tree. /tmp is left writable —
+# Claude has open bugs hardcoding some paths to /tmp/claude-* regardless.
+AGENT_SCRATCH="${AGENT_SCRATCH:-$HOME/.tmp/agent}"
+mkdir -p "$AGENT_SCRATCH" 2>/dev/null || true
+export TMPDIR="$AGENT_SCRATCH"
+export CLAUDE_CODE_TMPDIR="$AGENT_SCRATCH"
+
 tool="$1"
 
-TSBIN="$HOME/code/tokensmash/.venv/bin/tokensmash"
-if [ -x "$TSBIN" ]; then
-  exec "$TSBIN" launch "$@"
-fi
-if command -v tokensmash >/dev/null 2>&1; then
-  exec tokensmash launch "$@"
+# Study actuation is gated on the crossover study being LIVE. While the study
+# mode is anything but "live" (currently "off"), routing through `tokensmash
+# launch` is a pure no-op that still costs a ~0.4s Python process on every agent
+# launch — so we skip tokensmash entirely and exec the real agent directly. The
+# scratch redirect above is unconditional (it's the load-bearing part). To
+# re-enable actuation, set the study back to live (`tokensmash study` config
+# mode: "live"); no change to this file or the shell wrappers is needed.
+STUDY_CONFIG="${TOKENSMASH_STUDY_CONFIG:-$HOME/.local/state/tokensmash/study/config.json}"
+study_live=0
+if [ -f "$STUDY_CONFIG" ] && grep -q '"mode"[[:space:]]*:[[:space:]]*"live"' "$STUDY_CONFIG" 2>/dev/null; then
+  study_live=1
 fi
 
-# Last resort: plain agent, no actuation.
+if [ "$study_live" -eq 1 ]; then
+  TSBIN="$HOME/code/tokensmash/.venv/bin/tokensmash"
+  if [ -x "$TSBIN" ]; then
+    exec "$TSBIN" launch "$@"
+  fi
+  if command -v tokensmash >/dev/null 2>&1; then
+    exec tokensmash launch "$@"
+  fi
+fi
+
+# Study off (or tokensmash unavailable): plain agent, no actuation.
 shift 2>/dev/null || true
 real=$(command -v "$tool" 2>/dev/null)
 [ -n "$real" ] && exec "$real" "$@"
