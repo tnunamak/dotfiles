@@ -5,7 +5,8 @@
 #    indices for tmux-local-attach-main to consume.
 # 3. Kill the detached restored grouped sessions so the attach script never
 #    races on them (it always creates fresh sessions instead).
-# 4. Chain to tmux-assistant-resurrect's restore hook.
+# 4. Record assistant entries as deferred. Layout recovery never implies agent
+#    execution recovery; selected or leased resumes use tmux-agent-resume.
 set -euo pipefail
 
 RESURRECT_DIR="${HOME}/.tmux/resurrect"
@@ -15,7 +16,7 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
 RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
 RESTORE_STAMP_FILE="${STATE_DIR}/main.restore-stamp"
 
-ASSISTANT_RESTORE="${HOME}/.tmux/plugins/tmux-assistant-resurrect/scripts/restore-assistant-sessions.sh"
+RESUME_CLI="${TMUX_AGENT_RESUME_BIN:-${HOME}/.local/bin/tmux-agent-resume}"
 
 mkdir -p "$STATE_DIR"
 
@@ -72,7 +73,10 @@ for session_name in "${restored_sessions[@]}"; do
   tmux kill-session -t "=$session_name" >/dev/null 2>&1 || true
 done
 
-# Chain to tmux-assistant-resurrect
-if [[ -f "$ASSISTANT_RESTORE" ]]; then
-  bash "$ASSISTANT_RESTORE"
+# Do not call tmux-assistant-resurrect's replay script here. A sidecar is a
+# historical inventory, not current consent to launch agents or their MCP
+# descendants. The local CLI snapshots the inventory into deferred state and
+# exposes status/plan for an explicit later decision.
+if [[ -x "$RESUME_CLI" ]]; then
+  "$RESUME_CLI" record-deferred >>"${RESURRECT_DIR}/agent-resume.log" 2>&1 || true
 fi

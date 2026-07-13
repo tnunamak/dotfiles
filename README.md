@@ -84,7 +84,7 @@ Every kitty window auto-attaches to tmux via grouped sessions. Each window gets 
 **How it works:**
 - `tmux-local-attach-main` — race-safe script creates/reuses grouped sessions
 - `tmux-resurrect` + `tmux-continuum` — auto-save/restore layout across reboots
-- `tmux-assistant-resurrect` — auto-resumes Claude Code / Codex sessions
+- `tmux-assistant-resurrect` — saves Claude Code / Codex session metadata; recovery is lease-gated
 - `continuum-boot` — starts tmux via systemd at login (before desktop)
 - Smart window selection — new kitty windows pick unviewed tmux windows, or create new ones
 
@@ -102,6 +102,27 @@ Every kitty window auto-attaches to tmux via grouped sessions. Each window gets 
 **SSH:** Auto-attaches to `main` session. Skip with `NOTMUX=1`.
 
 **Escape hatch:** `NOTMUX=1 kitty` opens a plain terminal (for debugging tmux itself).
+
+### Agent recovery safety
+
+tmux-resurrect restores the pane layout, but a restored agent entry is **deferred**
+by default. Inspect it without launching anything with:
+
+```bash
+tmux-agent-resume status --json
+tmux-agent-resume plan --json
+```
+
+Resume one saved entry only after selecting its pane/id/session id:
+
+```bash
+tmux-agent-resume resume main:3.0
+```
+
+An orchestrator may grant a short automatic lease, which is still blocked until
+the target tmux session has an attached client. Headless execution requires the
+separate, recorded `--allow-headless --owner NAME` escape hatch. See
+[`tmux-agent-resume.md`](tmux-agent-resume.md) for rollback and operating details.
 
 **kitty essentials:**
 - `ctrl+shift+f5` — reload kitty config

@@ -12,7 +12,6 @@
 set -euo pipefail
 
 ASSISTANT_SAVE="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
-ASSISTANT_RESTORE="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/restore-assistant-sessions.sh"
 # Upstream tmux-resurrect's save script (NOT owned — patched in place here rather
 # than via a PR). Patch 3 makes its pane-content capture skip assistant panes.
 RESURRECT_SAVE="$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
@@ -258,49 +257,6 @@ if [[ -f "$ASSISTANT_SAVE" ]] &&
   else
     rm -f "${ASSISTANT_SAVE}.artmp"
     log "warning: patch 5 NOT applied (marker missing or bash -n failed) — file left untouched"
-  fi
-fi
-
-# Patch 7: wait for a client once per tmux session during assistant replay.
-# The upstream hook waits up to 5s before every saved pane. On a headless boot
-# with many saved assistants this serializes into minutes of no-client waits.
-# The condition is session-scoped, not pane-scoped: once a session has either
-# seen a client or timed out, every pane in that session has the same answer.
-if [[ -f "$ASSISTANT_RESTORE" ]] &&
-   ! grep -qF 'AR-Patch7' "$ASSISTANT_RESTORE" &&
-   grep -qF 'client_wait=0' "$ASSISTANT_RESTORE"; then
-  perl -0777 -pe '
-    my $fn = q{# AR-Patch7 (patch-assistant-resurrect.sh): cache the per-session client wait.
-declare -A _ar_client_wait_done=()
-wait_for_session_client_once() {
-	local tmux_session="$1"
-	[ -n "$tmux_session" ] || return 0
-	if [ -n "${_ar_client_wait_done[$tmux_session]:-}" ]; then
-		return 0
-	fi
-	_ar_client_wait_done[$tmux_session]=1
-	local client_wait=0
-	while [ "$(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l)" -eq 0 ] && [ $client_wait -lt 50 ]; do
-		sleep 0.1
-		client_wait=$((client_wait + 1))
-	done
-	if [ $client_wait -ge 50 ]; then
-		log "no client attached to session '\''$tmux_session'\'' after 5s; replaying anyway (TUI startup queries may miss responses)"
-	fi
-}
-
-};
-    s{(log "restoring \$count assistant session\(s\)\.\.\."\n\n)}{$1$fn} or die "insert point not found";
-    s{\n\t# Wait for at least one client to attach to this pane'"'"'s session before\n\t# replaying\. TUI tools that query the terminal at startup .*?\n\tif \[ \$client_wait -ge 50 \]; then\n\t\tlog "no client attached to session '"'"'\$tmux_session'"'"' after 5s; replaying anyway \(TUI startup queries may miss responses\)"\n\tfi\n}{\n\twait_for_session_client_once "\$tmux_session"\n}s or die "wait block not found";
-  ' "$ASSISTANT_RESTORE" >"${ASSISTANT_RESTORE}.artmp"
-  if grep -qF 'AR-Patch7' "${ASSISTANT_RESTORE}.artmp" && bash -n "${ASSISTANT_RESTORE}.artmp" 2>/dev/null; then
-    cat "${ASSISTANT_RESTORE}.artmp" >"$ASSISTANT_RESTORE"
-    rm -f "${ASSISTANT_RESTORE}.artmp"
-    log "applied patch 7: cache assistant restore client wait per session"
-    applied=$((applied + 1))
-  else
-    rm -f "${ASSISTANT_RESTORE}.artmp"
-    log "warning: patch 7 NOT applied (marker missing or bash -n failed) — file left untouched"
   fi
 fi
 
