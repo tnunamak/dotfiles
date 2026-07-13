@@ -148,6 +148,35 @@ fi
 # Cleanup kill switch so it doesn't affect other suites if this script is re-run.
 rm -f "$TEST_STATE/OFF"
 
+# ── Test 7: fire-log — nudge appends one line when it fires, none otherwise ────
+
+fire_log="$TEST_STATE/fire-log.tsv"
+rm -f "$fire_log"
+
+# a) A real fire (flag present) writes exactly one line with the tool kind.
+posttooluse_json "WebSearch" "session-t7" | "$DETECT" || true
+precompact_json "session-t7" | "$NUDGE" >/dev/null || true
+if [ ! -f "$fire_log" ]; then
+    fail "Test 7: fire-log not created after the nudge fired"
+elif [ "$(wc -l < "$fire_log")" -ne 1 ]; then
+    fail "Test 7: expected 1 fire-log line, got $(wc -l < "$fire_log")"
+elif ! grep -q "WebSearch" "$fire_log"; then
+    fail "Test 7: fire-log line missing the tool kind"
+elif ! grep -q "session-t7" "$fire_log"; then
+    fail "Test 7: fire-log line missing the session id"
+else
+    # b) A no-fire call (NO pending flags at all) must NOT append a line.
+    # Clear every flag first — the nudge's glob fallback fires on ANY pending
+    # flag, so a leftover from an earlier test would (correctly) fire and log.
+    rm -f "$TEST_STATE"/research-pending-* 2>/dev/null || true
+    precompact_json "session-nobody" | "$NUDGE" >/dev/null || true
+    if [ "$(wc -l < "$fire_log")" -ne 1 ]; then
+        fail "Test 7: a no-fire nudge still appended to the fire-log"
+    else
+        pass "Test 7: fire-log gets one line per fire, none when it doesn't fire"
+    fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 echo ""
