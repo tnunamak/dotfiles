@@ -1,0 +1,14 @@
+[Unit]
+Description=Restart BeeLlama only after healthy task progress stalls
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/bee-llama-watchdog
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
