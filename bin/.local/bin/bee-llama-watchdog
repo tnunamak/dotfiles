@@ -295,7 +295,7 @@ class EvidenceCapture:
             write_bounded_command_output(directory / "nvidia-smi.txt", [self.config.nvidia_smi_bin], self.runner)
             write_bounded_command_output(
                 directory / "process-state.txt",
-                [self.config.ps_bin, "-eo", "pid,ppid,stat,etime,pcpu,pmem,comm,args", "--sort=-pcpu"],
+                [self.config.ps_bin, "-eo", "pid,ppid,stat,etime,pcpu,pmem,comm,wchan", "--sort=-pcpu"],
                 self.runner,
             )
             (directory / "DONE").write_text("\n", encoding="utf-8")

@@ -31,7 +31,9 @@ Before an allowed restart, it writes capped evidence under the disk-backed
 `~/.local/state/bee-llama-watchdog/evidence/`): the unit's journal, `nvidia-smi`,
 and process state. Each artifact is capped at 256 KiB, commands time out after
 five seconds, and only the newest 30 evidence directories are retained. The
-watchdog keeps a durable restart history and permits no more than two automated
+process-state artifact is metadata only (`pid`, `ppid`, `stat`, `etime`, CPU,
+memory, executable name, and wait channel); it never requests command arguments
+or command text. The watchdog keeps a durable restart history and permits no more than two automated
 restart attempts in a rolling 30-minute window. It records the attempt before
 running `systemctl`, so an ambiguous or failed command cannot bypass the safety
 budget. If that history is unreadable or the limit is reached, it logs and does
@@ -73,6 +75,8 @@ progress, idle/task-change resets, malformed slots, loading/non-OK health,
 timeout classification and accumulation, the baseline-plus-six comparison
 threshold, multiple processing slots, evidence commands, durable restart
 history, failed-restart accounting, and the two-attempts-per-30-minutes guard.
+The evidence test asserts that the process snapshot excludes both `args` and
+`command` fields.
 It also performs an isolated real Stow installation with unrelated pre-existing
 units and verifies that only the executable and watchdog unit are linked.
 
