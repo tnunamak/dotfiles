@@ -32,7 +32,7 @@ class WatchdogHarness:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
         self.logger = MemoryLogger()
-        self.service_state = "active"
+        self.service_state = self.unit_state("active", "running", 10_000_000)
         self.restarts = 0
         self.restart_success = True
         self.captures = []
@@ -66,6 +66,10 @@ class WatchdogHarness:
         self.restarts += 1
         return self.restart_success
 
+    @staticmethod
+    def unit_state(active_state, sub_state, active_enter_timestamp_monotonic):
+        return watchdog_module.SystemdUnitState(active_state, sub_state, active_enter_timestamp_monotonic)
+
     def poll(self, count=1):
         for _ in range(count):
             self.watchdog.poll_once()
@@ -83,35 +87,62 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertEqual(self.harness.restarts, 0)
 
     def test_first_confirmed_inactive_observation_is_a_baseline(self):
-        self.harness.service_state = "inactive"
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 10_000_000)
         self.harness.poll()
         self.assertEqual(self.harness.restarts, 0)
 
-    def test_second_confirmed_inactive_observation_restarts_once(self):
-        self.harness.service_state = "inactive"
+    def test_second_confirmed_dead_observation_recovers_once(self):
+        self.harness.service_state = self.harness.unit_state("failed", "failed", 10_000_000)
         self.harness.poll(2)
         self.assertEqual(self.harness.restarts, 1)
         self.assertEqual(self.harness.captures, ["unit-inactive"])
 
     def test_active_state_resets_inactive_evidence(self):
-        self.harness.service_state = "inactive"
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 10_000_000)
         self.harness.poll()
-        self.harness.service_state = "active"
+        self.harness.service_state = self.harness.unit_state("active", "running", 20_000_000)
         self.harness.poll()
-        self.harness.service_state = "inactive"
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 20_000_000)
         self.harness.poll()
         self.assertEqual(self.harness.restarts, 0)
+
+    def test_new_activation_generation_discards_old_dead_evidence(self):
+        self.harness.poll()
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 10_000_000)
+        self.harness.poll()
+        # The watchdog missed a brief active/running replacement. Its larger
+        # monotonic timestamp still proves this is a new service generation.
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 20_000_000)
+        self.harness.poll(2)
+        self.assertEqual(self.harness.restarts, 0)
+        self.harness.poll()
+        self.assertEqual(self.harness.restarts, 1)
 
     def test_unknown_state_resets_inactive_evidence_and_never_restarts(self):
-        self.harness.service_state = "inactive"
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 10_000_000)
         self.harness.poll()
-        self.harness.service_state = "unknown"
+        self.harness.service_state = None
         self.harness.poll(10)
         self.assertEqual(self.harness.restarts, 0)
-        self.assertIn("unit state unavailable or transitional; no restart", self.harness.logger.messages)
+        self.assertIn("unit state unavailable, transitional, or not stably dead; no restart", self.harness.logger.messages)
+
+    def test_operator_restart_and_model_loading_never_restart(self):
+        self.harness.poll()
+        self.harness.service_state = self.harness.unit_state("deactivating", "stop-sigkill", 10_000_000)
+        self.harness.poll()
+        self.harness.service_state = self.harness.unit_state("activating", "start", 10_000_000)
+        self.harness.poll()
+        # Type=simple becomes active before the model can accept a request.
+        # Health is intentionally absent from this harness and the watchdog API.
+        self.harness.service_state = self.harness.unit_state("active", "running", 20_000_000)
+        self.harness.poll(10)
+        self.harness.poll()
+        self.assertEqual(self.harness.restarts, 0)
+        self.assertEqual(self.harness.captures, [])
+        self.assertEqual(self.harness.watchdog.unavailability.active_enter_timestamp_monotonic, 20_000_000)
 
     def test_restart_rate_limit_allows_only_two_inactive_recoveries_per_window(self):
-        self.harness.service_state = "inactive"
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 10_000_000)
         self.harness.poll(6)
         self.assertEqual(self.harness.restarts, 2)
         self.assertEqual(self.harness.captures, ["unit-inactive", "unit-inactive"])
@@ -119,7 +150,7 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
 
     def test_failed_restart_attempt_still_consumes_the_strict_restart_budget(self):
         self.harness.restart_success = False
-        self.harness.service_state = "inactive"
+        self.harness.service_state = self.harness.unit_state("inactive", "dead", 10_000_000)
         self.harness.poll(6)
         self.assertEqual(self.harness.restarts, 2)
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
@@ -131,42 +162,71 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertFalse(watchdog_module.RestartHistory(self.harness.root / "persisted.json", 2, 1800).allow_and_record(3.0))
         self.assertEqual(json.loads((self.harness.root / "persisted.json").read_text()), [1.0, 2.0])
 
-    def test_systemd_state_reads_only_the_service_manager(self):
+    def test_systemd_unit_state_reads_restart_relevant_service_manager_properties(self):
         commands = []
 
         def runner(command, timeout):
             commands.append((command, timeout))
-            return subprocess.CompletedProcess(command, 0, b"active\n", b"")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                b"SubState=running\nActiveEnterTimestampMonotonic=123456\nActiveState=active\n",
+                b"",
+            )
 
-        self.assertEqual(watchdog_module.systemd_service_state(runner, "systemctl", "llama-bee.service"), "active")
+        self.assertEqual(
+            watchdog_module.systemd_unit_state(runner, "systemctl", "llama-bee.service"),
+            watchdog_module.SystemdUnitState("active", "running", 123456),
+        )
         self.assertEqual(
             commands,
-            [(["systemctl", "--user", "show", "--property=ActiveState", "--value", "llama-bee.service"], watchdog_module.COMMAND_TIMEOUT_SECONDS)],
+            [
+                (
+                    [
+                        "systemctl",
+                        "--user",
+                        "show",
+                        "--property=ActiveState,SubState,ActiveEnterTimestampMonotonic",
+                        "llama-bee.service",
+                    ],
+                    watchdog_module.COMMAND_TIMEOUT_SECONDS,
+                )
+            ],
         )
 
-    def test_systemd_failed_and_inactive_states_are_confirmed_unavailability(self):
-        for state in (b"inactive\n", b"failed\n"):
+    def test_only_stable_dead_and_failed_states_are_confirmed_unavailability(self):
+        for state in (b"ActiveState=inactive\nSubState=dead\nActiveEnterTimestampMonotonic=123\n", b"ActiveState=failed\nSubState=failed\nActiveEnterTimestampMonotonic=123\n"):
             with self.subTest(state=state):
                 def runner(command, timeout):
                     return subprocess.CompletedProcess(command, 0, state, b"")
 
-                self.assertEqual(watchdog_module.systemd_service_state(runner, "systemctl", "llama-bee.service"), "inactive")
+                unit_state = watchdog_module.systemd_unit_state(runner, "systemctl", "llama-bee.service")
+                self.assertIsNotNone(unit_state)
+                self.assertEqual(unit_state.watchdog_state(), "inactive")
 
-    def test_systemd_transitional_command_failure_and_timeout_are_unknown(self):
+    def test_systemd_transitions_command_failure_and_malformed_output_do_not_confirm_unavailability(self):
         outcomes = [
-            subprocess.CompletedProcess([], 0, b"activating\n", b""),
-            subprocess.CompletedProcess([], 1, b"failed\n", b""),
-            OSError("systemctl unavailable"),
-            subprocess.TimeoutExpired(["systemctl"], 5),
+            (subprocess.CompletedProcess([], 0, b"ActiveState=activating\nSubState=start\nActiveEnterTimestampMonotonic=123\n", b""), "transitional"),
+            (subprocess.CompletedProcess([], 0, b"ActiveState=deactivating\nSubState=stop-sigterm\nActiveEnterTimestampMonotonic=123\n", b""), "transitional"),
+            (subprocess.CompletedProcess([], 0, b"ActiveState=inactive\nSubState=stop\nActiveEnterTimestampMonotonic=123\n", b""), "unknown"),
+            (subprocess.CompletedProcess([], 0, b"ActiveState=active\nSubState=running\nActiveEnterTimestampMonotonic=not-a-number\n", b""), None),
+            (subprocess.CompletedProcess([], 1, b"failed\n", b""), None),
+            (OSError("systemctl unavailable"), None),
+            (subprocess.TimeoutExpired(["systemctl"], 5), None),
         ]
-        for outcome in outcomes:
+        for outcome, expected_state in outcomes:
             with self.subTest(outcome=outcome):
                 def runner(command, timeout, outcome=outcome):
                     if isinstance(outcome, BaseException):
                         raise outcome
                     return outcome
 
-                self.assertEqual(watchdog_module.systemd_service_state(runner, "systemctl", "llama-bee.service"), "unknown")
+                unit_state = watchdog_module.systemd_unit_state(runner, "systemctl", "llama-bee.service")
+                if expected_state is None:
+                    self.assertIsNone(unit_state)
+                else:
+                    self.assertIsNotNone(unit_state)
+                    self.assertEqual(unit_state.watchdog_state(), expected_state)
 
     def test_watchdog_source_has_no_engine_http_or_task_observation(self):
         source = SCRIPT.read_text()

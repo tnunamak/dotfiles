@@ -32,7 +32,7 @@ COMMAND_TIMEOUT_SECONDS = 5.0
 MAX_CAPTURE_BYTES = 256 * 1024
 MAX_EVIDENCE_DIRECTORIES = 30
 
-ServiceState = Literal["active", "inactive", "unknown"]
+ServiceState = Literal["active", "inactive", "transitional", "unknown"]
 RestartReason = Literal["unit-inactive"]
 
 
@@ -48,6 +48,31 @@ class WatchdogConfig:
     journalctl_bin: str
     nvidia_smi_bin: str
     ps_bin: str
+
+
+@dataclass(frozen=True)
+class SystemdUnitState:
+    """The service-manager facts needed to distinguish a stop from a restart."""
+
+    active_state: str
+    sub_state: str
+    active_enter_timestamp_monotonic: int
+
+    def watchdog_state(self) -> ServiceState:
+        """Classify only states that are safe for this passive watchdog.
+
+        `ActiveState` is intentionally not enough: a service restart moves
+        through a more specific stop/start state.  Conversely, a Type=simple
+        service is active while its model is still loading; `active/running`
+        is therefore sufficient and never receives a readiness probe.
+        """
+        if self.active_state == "active" and self.sub_state == "running":
+            return "active"
+        if self.active_state in {"activating", "deactivating", "reloading", "refreshing"}:
+            return "transitional"
+        if (self.active_state, self.sub_state) in {("inactive", "dead"), ("failed", "failed")}:
+            return "inactive"
+        return "unknown"
 
 
 class CommandRunner(Protocol):
@@ -76,17 +101,36 @@ class EventLogger:
 
 
 class UnavailabilityState:
-    """Counts only confirmed inactive service-manager observations."""
+    """Counts only confirmed dead generations of the service-manager unit."""
 
     def __init__(self, inactive_threshold: int) -> None:
         self.inactive_threshold = inactive_threshold
         self.consecutive_inactive = 0
+        self.active_enter_timestamp_monotonic: int | None = None
 
-    def observe_active_or_unknown(self) -> None:
-        """Fail closed: active and unconfirmed state both clear restart evidence."""
+    def observe_active(self, active_enter_timestamp_monotonic: int) -> None:
+        """Record the running generation and clear stale failure evidence."""
+        self.active_enter_timestamp_monotonic = active_enter_timestamp_monotonic
         self.consecutive_inactive = 0
 
-    def observe_inactive(self) -> bool:
+    def observe_transitional_or_unknown(self) -> None:
+        """Fail closed: a stop/start transition is never failure evidence."""
+        self.consecutive_inactive = 0
+
+    def observe_inactive(self, active_enter_timestamp_monotonic: int) -> bool:
+        """Count only failures from the already-observed service generation.
+
+        A newer activation timestamp proves that systemd started a replacement
+        since the watchdog last saw it running. Discard observations from the
+        old generation instead of letting them restart the replacement.
+        """
+        if (
+            self.active_enter_timestamp_monotonic is not None
+            and active_enter_timestamp_monotonic > self.active_enter_timestamp_monotonic
+        ):
+            self.active_enter_timestamp_monotonic = active_enter_timestamp_monotonic
+            self.consecutive_inactive = 0
+            return False
         self.consecutive_inactive += 1
         return self.consecutive_inactive >= self.inactive_threshold
 
@@ -145,28 +189,38 @@ def command_succeeded(runner: CommandRunner, command: list[str]) -> bool:
         return False
 
 
-def systemd_service_state(runner: CommandRunner, systemctl_bin: str, unit: str) -> ServiceState:
-    """Read the unit state without contacting the Bee process.
-
-    Only systemd's stable inactive and failed states prove service
-    unavailability. Transitioning states and command errors are unknown so
-    they cannot cause an automated restart.
-    """
+def systemd_unit_state(runner: CommandRunner, systemctl_bin: str, unit: str) -> SystemdUnitState | None:
+    """Read systemd's stable state facts without contacting the Bee process."""
     try:
         result = runner(
-            [systemctl_bin, "--user", "show", "--property=ActiveState", "--value", unit],
+            [
+                systemctl_bin,
+                "--user",
+                "show",
+                "--property=ActiveState,SubState,ActiveEnterTimestampMonotonic",
+                unit,
+            ],
             COMMAND_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
+        return None
     if result.returncode != 0:
-        return "unknown"
-    active_state = result.stdout.decode("utf-8", errors="replace").strip()
-    if active_state == "active":
-        return "active"
-    if active_state in {"inactive", "failed"}:
-        return "inactive"
-    return "unknown"
+        return None
+    values: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name in values:
+            return None
+        values[name] = value
+    if set(values) != {"ActiveState", "SubState", "ActiveEnterTimestampMonotonic"}:
+        return None
+    try:
+        active_enter_timestamp_monotonic = int(values["ActiveEnterTimestampMonotonic"])
+    except ValueError:
+        return None
+    if active_enter_timestamp_monotonic < 0:
+        return None
+    return SystemdUnitState(values["ActiveState"], values["SubState"], active_enter_timestamp_monotonic)
 
 
 def write_bounded_command_output(path: Path, command: list[str], runner: CommandRunner) -> None:
@@ -231,7 +285,7 @@ class BeeLlamaWatchdog:
     def __init__(
         self,
         config: WatchdogConfig,
-        service_state: Callable[[], ServiceState],
+        service_state: Callable[[], SystemdUnitState | None],
         capture: Callable[[RestartReason], None],
         restart: Callable[[], bool],
         restart_history: RestartHistory,
@@ -248,19 +302,22 @@ class BeeLlamaWatchdog:
         self.unavailability = UnavailabilityState(config.inactive_threshold)
 
     def poll_once(self) -> None:
-        state = self.service_state()
+        unit_state = self.service_state()
+        state = unit_state.watchdog_state() if unit_state is not None else "unknown"
         if state == "active":
-            self.unavailability.observe_active_or_unknown()
+            assert unit_state is not None
+            self.unavailability.observe_active(unit_state.active_enter_timestamp_monotonic)
             return
-        if state == "unknown":
-            self.unavailability.observe_active_or_unknown()
-            self.logger.write("unit state unavailable or transitional; no restart")
+        if state in {"transitional", "unknown"}:
+            self.unavailability.observe_transitional_or_unknown()
+            self.logger.write("unit state unavailable, transitional, or not stably dead; no restart")
             return
-        if self.unavailability.observe_inactive():
+        assert unit_state is not None
+        if self.unavailability.observe_inactive(unit_state.active_enter_timestamp_monotonic):
             self._handle_trigger("unit-inactive")
 
     def _handle_trigger(self, reason: RestartReason) -> None:
-        self.unavailability.observe_active_or_unknown()
+        self.unavailability.observe_transitional_or_unknown()
         if not self.restart_history.allow_and_record(self.wall_clock()):
             self.logger.write(f"{reason} threshold reached; automated restart rate-limited")
             return
@@ -317,8 +374,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     logger = EventLogger(config.state_dir)
     runner = default_runner
 
-    def service_state() -> ServiceState:
-        return systemd_service_state(runner, config.systemctl_bin, config.unit)
+    def service_state() -> SystemdUnitState | None:
+        return systemd_unit_state(runner, config.systemctl_bin, config.unit)
 
     def restart() -> bool:
         return command_succeeded(runner, [config.systemctl_bin, "--user", "restart", config.unit])
