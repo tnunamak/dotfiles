@@ -1,5 +1,5 @@
 [Unit]
-Description=Restart BeeLlama only after healthy task progress stalls
+Description=Restart BeeLlama after confirmed systemd unavailability
 After=default.target
 
 [Service]
