@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restart llama-bee only after its healthy active task stops making progress.
+"""Restart llama-bee only after explicit liveness evidence crosses a bound.
 
 The liveness decision is deliberately kept separate from HTTP, subprocess, and
 filesystem effects so the state machine can be tested without a running model.
@@ -30,7 +30,8 @@ from typing import Any, Callable, Iterable, Literal, Protocol
 DEFAULT_BASE_URL = "http://127.0.0.1:5051"
 DEFAULT_UNIT = "llama-bee.service"
 DEFAULT_INTERVAL_SECONDS = 30.0
-DEFAULT_THRESHOLD = 6
+DEFAULT_STAGNANT_THRESHOLD = 6
+DEFAULT_SLOTS_UNAVAILABLE_THRESHOLD = 36
 DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
 DEFAULT_RESTART_WINDOW_SECONDS = 30 * 60
 DEFAULT_RESTART_LIMIT = 2
@@ -54,7 +55,8 @@ class WatchdogConfig:
     slots_url: str
     unit: str
     interval_seconds: float
-    threshold: int
+    stagnant_threshold: int
+    slots_unavailable_threshold: int
     http_timeout_seconds: float
     restart_limit: int
     restart_window_seconds: float
@@ -96,10 +98,11 @@ class EventLogger:
 
 
 class LivenessState:
-    """Explicit progress/timeout state for every currently processing task."""
+    """Separate readable-progress and slots-unavailable clocks."""
 
-    def __init__(self, threshold: int) -> None:
-        self.threshold = threshold
+    def __init__(self, stagnant_threshold: int, slots_unavailable_threshold: int) -> None:
+        self.stagnant_threshold = stagnant_threshold
+        self.slots_unavailable_threshold = slots_unavailable_threshold
         self.previous_by_task: dict[str, SlotSample] = {}
         self.stagnant_samples_by_task: dict[str, int] = {}
         self.slot_timeouts = 0
@@ -120,7 +123,7 @@ class LivenessState:
         self.previous_by_task.clear()
         self.stagnant_samples_by_task.clear()
         self.slot_timeouts += 1
-        return self.slot_timeouts >= self.threshold
+        return self.slot_timeouts >= self.slots_unavailable_threshold
 
     def observe_samples(self, samples: list[SlotSample]) -> bool:
         self.slot_timeouts = 0
@@ -149,7 +152,7 @@ class LivenessState:
 
             stagnant_samples = self.stagnant_samples_by_task.get(sample.task_id, 0) + 1
             self.stagnant_samples_by_task[sample.task_id] = stagnant_samples
-            if stagnant_samples >= self.threshold:
+            if stagnant_samples >= self.stagnant_threshold:
                 return True
         return False
 
@@ -280,7 +283,7 @@ class EvidenceCapture:
         self.logger = logger
         self.wall_clock = wall_clock
 
-    def capture(self, reason: Literal["stagnant", "slot-timeouts"]) -> None:
+    def capture(self, reason: Literal["readable-stagnant", "slots-unavailable"]) -> None:
         try:
             evidence_root = self.config.state_dir / "evidence"
             evidence_root.mkdir(parents=True, exist_ok=True)
@@ -320,7 +323,7 @@ class BeeLlamaWatchdog:
         config: WatchdogConfig,
         service_active: Callable[[], bool],
         json_fetcher: JsonFetcher,
-        capture: Callable[[Literal["stagnant", "slot-timeouts"]], None],
+        capture: Callable[[Literal["readable-stagnant", "slots-unavailable"]], None],
         restart: Callable[[], bool],
         restart_history: RestartHistory,
         logger: EventLogger,
@@ -334,7 +337,7 @@ class BeeLlamaWatchdog:
         self.restart_history = restart_history
         self.logger = logger
         self.wall_clock = wall_clock
-        self.liveness = LivenessState(config.threshold)
+        self.liveness = LivenessState(config.stagnant_threshold, config.slots_unavailable_threshold)
 
     def poll_once(self) -> None:
         if not self.service_active():
@@ -356,7 +359,7 @@ class BeeLlamaWatchdog:
         except Exception as error:  # classified immediately; no untrusted payload is logged
             if is_timeout(error):
                 if self.liveness.observe_timeout():
-                    self._handle_trigger("slot-timeouts")
+                    self._handle_trigger("slots-unavailable")
             else:
                 self.liveness.observe_unknown()
                 self.logger.write("slots request unavailable; liveness reset")
@@ -372,9 +375,9 @@ class BeeLlamaWatchdog:
             self.liveness.observe_idle()
             return
         if self.liveness.observe_samples(samples):
-            self._handle_trigger("stagnant")
+            self._handle_trigger("readable-stagnant")
 
-    def _handle_trigger(self, reason: Literal["stagnant", "slot-timeouts"]) -> None:
+    def _handle_trigger(self, reason: Literal["readable-stagnant", "slots-unavailable"]) -> None:
         self.liveness.reset()
         if not self.restart_history.allow_and_record(self.wall_clock()):
             self.logger.write(f"{reason} threshold reached; automated restart rate-limited")
@@ -405,7 +408,8 @@ def make_config(arguments: argparse.Namespace) -> WatchdogConfig:
         slots_url=slots_url,
         unit=arguments.unit,
         interval_seconds=arguments.interval_seconds,
-        threshold=arguments.threshold,
+        stagnant_threshold=arguments.stagnant_threshold,
+        slots_unavailable_threshold=arguments.slots_unavailable_threshold,
         http_timeout_seconds=arguments.http_timeout_seconds,
         restart_limit=arguments.restart_limit,
         restart_window_seconds=arguments.restart_window_seconds,
@@ -431,7 +435,18 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slots-url", default=os.environ.get("BEE_LLAMA_WATCHDOG_SLOTS_URL"))
     parser.add_argument("--unit", default=os.environ.get("BEE_LLAMA_WATCHDOG_UNIT", DEFAULT_UNIT))
     parser.add_argument("--interval-seconds", type=float, default=float(os.environ.get("BEE_LLAMA_WATCHDOG_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS)))
-    parser.add_argument("--threshold", type=int, default=int(os.environ.get("BEE_LLAMA_WATCHDOG_THRESHOLD", DEFAULT_THRESHOLD)))
+    parser.add_argument(
+        "--stagnant-threshold",
+        type=int,
+        default=int(os.environ.get("BEE_LLAMA_WATCHDOG_STAGNANT_THRESHOLD", DEFAULT_STAGNANT_THRESHOLD)),
+        help="consecutive readable stagnant comparisons before restart",
+    )
+    parser.add_argument(
+        "--slots-unavailable-threshold",
+        type=int,
+        default=int(os.environ.get("BEE_LLAMA_WATCHDOG_SLOTS_UNAVAILABLE_THRESHOLD", DEFAULT_SLOTS_UNAVAILABLE_THRESHOLD)),
+        help="consecutive /slots timeouts while health is ok before restart",
+    )
     parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("BEE_LLAMA_WATCHDOG_HTTP_TIMEOUT_SECONDS", DEFAULT_HTTP_TIMEOUT_SECONDS)))
     parser.add_argument("--restart-limit", type=int, default=int(os.environ.get("BEE_LLAMA_WATCHDOG_RESTART_LIMIT", DEFAULT_RESTART_LIMIT)))
     parser.add_argument("--restart-window-seconds", type=float, default=float(os.environ.get("BEE_LLAMA_WATCHDOG_RESTART_WINDOW_SECONDS", DEFAULT_RESTART_WINDOW_SECONDS)))
@@ -441,8 +456,10 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--nvidia-smi-bin", default=os.environ.get("BEE_LLAMA_WATCHDOG_NVIDIA_SMI_BIN", "nvidia-smi"))
     parser.add_argument("--ps-bin", default=os.environ.get("BEE_LLAMA_WATCHDOG_PS_BIN", "ps"))
     arguments = parser.parse_args(argv)
-    if arguments.interval_seconds <= 0 or arguments.threshold < 1 or arguments.http_timeout_seconds <= 0:
-        parser.error("interval, threshold, and HTTP timeout must be positive")
+    if arguments.interval_seconds <= 0 or arguments.http_timeout_seconds <= 0:
+        parser.error("interval and HTTP timeout must be positive")
+    if arguments.stagnant_threshold < 1 or arguments.slots_unavailable_threshold < 1:
+        parser.error("stagnant and slots-unavailable thresholds must be positive")
     if arguments.restart_limit < 1 or arguments.restart_window_seconds <= 0:
         parser.error("restart limit and window must be positive")
     try:
@@ -473,7 +490,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         restart_history=RestartHistory(config.state_dir / "restart-history.json", config.restart_limit, config.restart_window_seconds),
         logger=logger,
     )
-    logger.write(f"starting; interval={config.interval_seconds:g}s threshold={config.threshold}")
+    logger.write(
+        "starting; "
+        f"interval={config.interval_seconds:g}s "
+        f"stagnant_threshold={config.stagnant_threshold} "
+        f"slots_unavailable_threshold={config.slots_unavailable_threshold}"
+    )
     while True:
         watchdog.poll_once()
         time.sleep(config.interval_seconds)

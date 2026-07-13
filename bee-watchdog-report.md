@@ -14,10 +14,22 @@ one. Idle slots, a changed/disappeared task, malformed data, unavailable/non-OK
 health, and counter resets clear the relevant watchdog state. Increased prompt
 or decode counters clear that task's stagnant count.
 
-The first observation of a task is a baseline, not evidence of stagnation. Only
-after six subsequent same-task observations with neither counter changed does
-the watchdog restart; this is a baseline plus six stagnant comparisons. It also
-restarts after six `/slots` timeouts while the health check remains OK.
+The watchdog has two explicit, independent liveness clocks. The first readable
+observation of a task is a baseline, not evidence of stagnation. Only after six
+subsequent same-task observations with neither counter changed does the
+watchdog restart; this is a baseline plus six readable-stagnant comparisons.
+Separately, it restarts only after 36 consecutive `/slots` timeouts while the
+health check remains OK. A readable slots response resets the unavailable
+clock; idle, task changes, progress, malformed data, unavailable/non-OK health,
+and counter resets retain their fail-safe reset semantics.
+
+The 36-sample default is an 18-minute hard bound at the 30-second polling
+interval. It is deliberately longer than the observed 4m16s healthy request
+that kept GPU 1 at 99% and ended naturally, and covers the configured legal
+`xhigh` reasoning budget: 16,384 generated tokens at roughly 21.5 tok/s plus a
+102,400-token prompt at roughly 780 tok/s is about 14 minutes before margin.
+Evidence and log reasons name the clock that fired: `readable-stagnant` or
+`slots-unavailable`.
 
 The implementation does not use `/metrics`, completion counters, prompts, or
 generated content. It never parses or logs payload content beyond those four
@@ -39,9 +51,12 @@ running `systemctl`, so an ambiguous or failed command cannot bypass the safety
 budget. If that history is unreadable or the limit is reached, it logs and does
 not restart.
 
-Loopback endpoint URLs, polling interval, thresholds, rate-limit settings,
+Loopback endpoint URLs, polling interval, `--stagnant-threshold` (default 6),
+`--slots-unavailable-threshold` (default 36), rate-limit settings,
 state directory, and system command paths are available as CLI flags and
-`BEE_LLAMA_WATCHDOG_*` environment variables for deterministic testing and
+`BEE_LLAMA_WATCHDOG_*` environment variables (including
+`BEE_LLAMA_WATCHDOG_STAGNANT_THRESHOLD` and
+`BEE_LLAMA_WATCHDOG_SLOTS_UNAVAILABLE_THRESHOLD`) for deterministic testing and
 local overrides. Endpoint overrides remain restricted to unauthenticated
 `http://127.0.0.1` URLs.
 
@@ -70,11 +85,13 @@ uv run --no-project python -m unittest discover -s tests -v
 systemd-analyze --user verify systemd/.config/systemd/user/bee-llama-watchdog.service
 ```
 
-The focused suite has 17 deterministic tests covering prompt and generation
+The focused suite has deterministic tests covering prompt and generation
 progress, idle/task-change resets, malformed slots, loading/non-OK health,
-timeout classification and accumulation, the baseline-plus-six comparison
+timeout classification and accumulation, 35 tolerated versus 36 triggering
+slots-unavailable timeouts, the baseline-plus-six readable-stagnant comparison
 threshold, multiple processing slots, evidence commands, durable restart
-history, failed-restart accounting, and the two-attempts-per-30-minutes guard.
+history, failed-restart accounting, CLI validation, and the
+two-attempts-per-30-minutes guard.
 The evidence test asserts that the process snapshot excludes both `args` and
 `command` fields.
 It also performs an isolated real Stow installation with unrelated pre-existing
@@ -87,5 +104,6 @@ silently stop liveness detection under parallel load; an `ETIMEDOUT` wrapped by
 `URLError` was not classified as a timeout; and the general `systemd` package
 was not installed (while naively adding it would conflict with unrelated units).
 The implementation now tracks every unique active task, handles wrapped kernel
-timeouts, and uses the dedicated stow package described above. The six-sample
-boundary and strict pre-restart rate accounting are covered by explicit tests.
+timeouts, and uses the dedicated stow package described above. The two distinct
+clock boundaries and strict pre-restart rate accounting are covered by explicit
+tests.

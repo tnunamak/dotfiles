@@ -30,7 +30,7 @@ class MemoryLogger:
 
 
 class WatchdogHarness:
-    def __init__(self, *, threshold=6, restart_limit=2):
+    def __init__(self, *, stagnant_threshold=6, slots_unavailable_threshold=36, restart_limit=2):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
         self.logger = MemoryLogger()
@@ -46,7 +46,8 @@ class WatchdogHarness:
             slots_url="slots",
             unit="llama-bee.service",
             interval_seconds=1,
-            threshold=threshold,
+            stagnant_threshold=stagnant_threshold,
+            slots_unavailable_threshold=slots_unavailable_threshold,
             http_timeout_seconds=1,
             restart_limit=restart_limit,
             restart_window_seconds=1800,
@@ -180,15 +181,20 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.harness.poll(6)
         self.assertEqual(self.harness.restarts, 0)
 
-    def test_six_slots_timeouts_while_healthy_restart_once(self):
+    def test_thirty_five_slots_timeouts_while_healthy_do_not_restart(self):
         self.harness.slots = TimeoutError("deliberately not logged")
-        self.harness.poll(6)
-        self.assertEqual(self.harness.restarts, 1)
-        self.assertEqual(self.harness.captures, ["slot-timeouts"])
+        self.harness.poll(35)
+        self.assertEqual(self.harness.restarts, 0)
 
-    def test_errno_timeout_counts_toward_the_slots_timeout_threshold(self):
+    def test_thirty_sixth_slots_timeout_while_healthy_restarts_once(self):
+        self.harness.slots = TimeoutError("deliberately not logged")
+        self.harness.poll(36)
+        self.assertEqual(self.harness.restarts, 1)
+        self.assertEqual(self.harness.captures, ["slots-unavailable"])
+
+    def test_errno_timeout_counts_toward_the_slots_unavailable_threshold(self):
         self.harness.slots = urllib.error.URLError(OSError(errno.ETIMEDOUT, "timed out"))
-        self.harness.poll(6)
+        self.harness.poll(36)
         self.assertEqual(self.harness.restarts, 1)
 
     def test_stagnation_threshold_and_progress_recovery(self):
@@ -201,19 +207,19 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
         self.assertEqual(self.harness.restarts, 0)
         self.harness.poll()
         self.assertEqual(self.harness.restarts, 1)
-        self.assertEqual(self.harness.captures, ["stagnant"])
+        self.assertEqual(self.harness.captures, ["readable-stagnant"])
 
     def test_restart_rate_limit_allows_only_two_per_window(self):
         self.harness.slots = TimeoutError()
-        self.harness.poll(18)
+        self.harness.poll(108)
         self.assertEqual(self.harness.restarts, 2)
-        self.assertEqual(self.harness.captures, ["slot-timeouts", "slot-timeouts"])
+        self.assertEqual(self.harness.captures, ["slots-unavailable", "slots-unavailable"])
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
 
     def test_failed_restart_attempt_still_consumes_the_strict_restart_budget(self):
         self.harness.restart_success = False
         self.harness.slots = TimeoutError()
-        self.harness.poll(18)
+        self.harness.poll(108)
         self.assertEqual(self.harness.restarts, 2)
         self.assertTrue(any("rate-limited" in message for message in self.harness.logger.messages))
 
@@ -224,7 +230,7 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
             self.harness.slots = [self.harness.processing_slot("stuck"), self.harness.processing_slot("moving", decoded=decoded)]
             self.harness.poll()
         self.assertEqual(self.harness.restarts, 1)
-        self.assertEqual(self.harness.captures, ["stagnant"])
+        self.assertEqual(self.harness.captures, ["readable-stagnant"])
 
     def test_six_stagnant_comparisons_require_a_baseline_plus_six_repeats(self):
         self.harness.slots = self.harness.processing()
@@ -253,8 +259,8 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
             self.harness.logger,
             wall_clock=lambda: 0,
         )
-        capture.capture("stagnant")
-        evidence = self.harness.root / "evidence" / "19700101T000000Z-stagnant"
+        capture.capture("readable-stagnant")
+        evidence = self.harness.root / "evidence" / "19700101T000000Z-readable-stagnant"
         self.assertTrue((evidence / "journal.txt").exists())
         self.assertTrue((evidence / "nvidia-smi.txt").exists())
         self.assertTrue((evidence / "process-state.txt").exists())
@@ -267,6 +273,17 @@ class BeeLlamaWatchdogTests(unittest.TestCase):
     def test_command_line_rejects_non_localhost_endpoints(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             watchdog_module.parse_arguments(["--slots-url", "http://example.test/slots"])
+
+    def test_command_line_exposes_positive_independent_thresholds(self):
+        defaults = watchdog_module.parse_arguments([])
+        self.assertEqual(defaults.stagnant_threshold, 6)
+        self.assertEqual(defaults.slots_unavailable_threshold, 36)
+        arguments = watchdog_module.parse_arguments(["--stagnant-threshold", "7", "--slots-unavailable-threshold", "40"])
+        self.assertEqual(arguments.stagnant_threshold, 7)
+        self.assertEqual(arguments.slots_unavailable_threshold, 40)
+        for option in ("--stagnant-threshold", "--slots-unavailable-threshold"):
+            with self.subTest(option=option), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                watchdog_module.parse_arguments([option, "0"])
 
     def test_setup_stows_the_watchdog_executable_and_user_unit(self):
         setup = (REPOSITORY / "setup.sh").read_text()
