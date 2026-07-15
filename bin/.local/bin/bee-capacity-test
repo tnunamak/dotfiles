@@ -1,56 +1,29 @@
 #!/usr/bin/env python3
-"""Transactionally test a BeeLlama capacity candidate without touching the live service.
+"""Safely test a non-persistent four-slot Bee candidate.
 
-This is a state machine, not a try/finally wrapper. Every `--apply` run goes
-through exactly these phases, in order:
+The controller is deliberately *not* the transaction owner.  It can preflight,
+stop the known-good unit, start a transient candidate, prove the candidate, and
+send heartbeats.  A separately supervised transient user service owns the
+durable receipt and is solely responsible for this terminal transition:
 
-  1. preflight       — read-only snapshot of the live known-good unit (loaded
-                        fragment/drop-ins, effective env, GPU index, MainPID,
-                        cgroup, port, health). Refuses on drift or ambiguity;
-                        nothing is stopped yet.
-  2. arm-rollback     — write an immutable receipt (preflight snapshot +
-                         deadline) to a disk-backed state directory, then
-                         launch a *detached* `systemd-run --user` rollback-
-                         owner unit that is supervised by the user's systemd
-                         instance, not by this controller process. If this
-                         controller dies, is OOM-killed, or the terminal is
-                         lost, the rollback owner still restores known-good
-                         when its deadline elapses or it is signaled.
-  3. stop-known-good  — `systemctl --user stop llama-bee.service`; poll until
-                         its cgroup has no member PIDs (GPU1 released).
-  4. candidate-scope  — run the candidate inside a uniquely named transient
-                         `systemd-run --user --scope` with explicit
-                         CUDA_VISIBLE_DEVICES=1 (never inherited).
-  5. prove-capability — health, a version-shaped /props fixture (frozen and
-                         supplied by the operator — this harness refuses to
-                         apply without one; see --props-fixture), /slots
-                         count, four bounded concurrent requests actually
-                         accepted and completed, and a GPU1-only VRAM floor
-                         measured after that load.
-  6. teardown-scope   — stop the candidate scope, verify it is empty.
-  7. exact-restore    — start known-good, re-snapshot, and require the
-                         restored snapshot to exactly match the preflight
-                         snapshot (fragment/drop-ins/env/GPU/port/health).
-  8. release-rollback — signal the external rollback owner to stand down.
-                         If any phase from 3 onward failed, times out, or
-                         this controller dies before reaching this phase,
-                         the rollback owner performs the restore itself,
-                         independently of this process's fate.
+    stop candidate -> prove its cgroup empty -> start known-good -> verify
+    exact identity/argv/environment/GPU/port/health -> write restore ack
 
-Defaults to plan/dry-run: no phase past preflight runs unless --apply is
-given, and preflight itself performs no writes. No candidate configuration
-is ever persisted; no SSH or tmux is touched; no secrets are read.
+If the controller, candidate, terminal, or controller cgroup disappears, a
+stale heartbeat grants that owner cleanup authority.  This relies on the user
+systemd manager surviving; losing that manager also loses both user services.
 
-Four slots (-np 4) share one KV cache sized by --ctx-size: 131072 total
-context is divided across the slots the server schedules concurrently, not
-131072 per slot. Operators sizing per-conversation context must divide
-accordingly.
+No persistent unit/drop-in is changed.  Default operation is a no-effect plan.
+The candidate is a non-blocking transient *service*, never a scope.  Its
+wrapper is run via ``env -i`` so a user manager's arbitrary inherited
+environment cannot leak into the trial.
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import fcntl
 import hashlib
 import json
 import os
@@ -60,29 +33,42 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Barrier
 from typing import Callable, Iterable, Protocol
 
 
 DEFAULT_UNIT = "llama-bee.service"
-DEFAULT_PORT = 5151
+DEFAULT_CANDIDATE_PORT = 5151
+DEFAULT_KNOWN_GOOD_PORT = 5051
 DEFAULT_PARALLEL = 4
 DEFAULT_CTX = 131072
 DEFAULT_GPU_INDEX = 1
 DEFAULT_PHASE_TIMEOUT_SECONDS = 180.0
-DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+DEFAULT_HEARTBEAT_SECONDS = 15.0
+DEFAULT_ROLLBACK_DEADLINE_SECONDS = 1200.0
+DEFAULT_POLL_SECONDS = 2.0
 DEFAULT_VRAM_FLOOR_MIB = 2048
-DEFAULT_ROLLBACK_DEADLINE_SECONDS = 600.0
 DEFAULT_START_SCRIPT = str(Path.home() / ".local/bin/llama-bee-start")
-CONCURRENT_REQUEST_COUNT = 4
+REQUEST_COUNT = 4
 
-
-# ---------------------------------------------------------------------------
-# External-boundary protocols. Every real systemctl/systemd-run/nvidia-smi/
-# HTTP/filesystem call goes through one of these so the state machine can be
-# driven by fakes in tests without touching live systemd or a GPU.
-# ---------------------------------------------------------------------------
+# This is the complete interface the wrapper currently consumes.  It is an
+# allowlist, not a prefix match: an unknown manager variable can never hitch a
+# ride into the candidate.  Required managed fields are intentionally here.
+ALLOWED_BEE_ENV = frozenset({
+    "LLAMA_BEE_APPLICATIONS_DIR", "LLAMA_BEE_DIR", "LLAMA_BEE_SERVER",
+    "LLAMA_BEE_GPU_BUDGET_FILE", "LLAMA_BEE_MODEL", "LLAMA_BEE_MMPROJ",
+    "LLAMA_BEE_PORT", "LLAMA_BEE_PARALLEL", "LLAMA_BEE_CTX",
+    "LLAMA_BEE_CTX_CHECKPOINTS", "LLAMA_BEE_CHECKPOINT_MIN_STEP",
+    "LLAMA_BEE_CACHE_RAM", "LLAMA_BEE_CTK", "LLAMA_BEE_CTV",
+    "LLAMA_BEE_CHAT_TEMPLATE", "LLAMA_BEE_CHAT_TEMPLATE_KWARGS",
+    "LLAMA_BEE_MTP", "LLAMA_BEE_MTP_MAX", "LLAMA_BEE_NO_MMPROJ_OFFLOAD",
+    "LLAMA_BEE_TENSOR_SPLIT", "LLAMA_BEE_VISIBLE_DEVICES",
+})
+REQUIRED_MANAGED_ENV = frozenset({"LLAMA_BEE_MODEL", "LLAMA_BEE_CTK", "LLAMA_BEE_CTV"})
+SAFE_RUNTIME_ENV = {"PATH": "/usr/bin:/bin"}
 
 
 class CommandRunner(Protocol):
@@ -94,69 +80,120 @@ def default_runner(command: list[str], timeout: float) -> subprocess.CompletedPr
 
 
 def state_directory() -> Path:
-    state_home = os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))
-    return Path(state_home) / "bee-capacity-test"
+    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "bee-capacity-test"
 
 
-# ---------------------------------------------------------------------------
-# Preflight snapshot: the exact identity of the live known-good instance.
-# ---------------------------------------------------------------------------
+def parse_systemctl_show(output: str) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+
+
+def parse_environment_dict(line: str) -> dict[str, str]:
+    return {key: value for token in shlex.split(line) if "=" in token for key, value in [token.split("=", 1)]}
+
+
+def parse_exec_argv(exec_start: str) -> tuple[str, ...]:
+    """Parse systemd's one-command ``ExecStart={ ... argv[]=... ; }`` form."""
+    marker = "argv[]="
+    if marker not in exec_start:
+        return ()
+    value = exec_start.split(marker, 1)[1].split(" ;", 1)[0].strip()
+    try:
+        return tuple(shlex.split(value))
+    except ValueError:
+        return ()
+
+
+def canonical_hash(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized and not normalized.endswith("\n"):
+        normalized += "\n"
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def derive_known_good_port(environment: dict[str, str], exec_argv: tuple[str, ...]) -> int | None:
+    """Use loaded effective config, never the candidate's alternate port."""
+    candidate = environment.get("LLAMA_BEE_PORT")
+    if candidate is None:
+        for index, value in enumerate(exec_argv):
+            if value == "--port" and index + 1 < len(exec_argv):
+                candidate = exec_argv[index + 1]
+                break
+    if candidate is None:
+        return DEFAULT_KNOWN_GOOD_PORT
+    try:
+        port = int(candidate)
+    except ValueError:
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def parse_gpu_index(environment: dict[str, str]) -> int | None:
+    value = environment.get("LLAMA_BEE_VISIBLE_DEVICES", str(DEFAULT_GPU_INDEX))
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class ApprovedSnapshot:
+    """Operator-provided content hashes.  Preflight never blesses new drift."""
+    fragment_hash: str
+    drop_in_hashes: dict[str, str]
+    exec_start: tuple[str, ...]
+    environment: dict[str, str]
+
+    @staticmethod
+    def from_json(data: dict) -> "ApprovedSnapshot":
+        return ApprovedSnapshot(
+            fragment_hash=data["fragment_hash"],
+            drop_in_hashes=dict(data["drop_in_hashes"]),
+            exec_start=tuple(data["exec_start"]),
+            environment=dict(data["environment"]),
+        )
+
+    def content_hash(self) -> str:
+        return canonical_hash(json.dumps({
+            "fragment_hash": self.fragment_hash,
+            "drop_in_hashes": self.drop_in_hashes,
+            "exec_start": self.exec_start,
+            "environment": self.environment,
+        }, sort_keys=True, separators=(",", ":")))
 
 
 @dataclass(frozen=True)
 class KnownGoodSnapshot:
     unit: str
-    active_state: str
     fragment_path: str
-    drop_in_paths: tuple[str, ...]
+    fragment_hash: str
+    drop_in_hashes: dict[str, str]
+    environment: dict[str, str]
+    exec_start: tuple[str, ...]
     main_pid: int
     control_group: str
-    environment: dict[str, str]
-    exec_start_path: str
     port: int
     gpu_index: int
-    health_ok: bool
+    approved_hash: str
 
-    def identity_key(self) -> dict:
-        """The subset that a restored instance must reproduce exactly."""
+    def identity(self) -> dict:
         return {
-            "fragment_path": self.fragment_path,
-            "drop_in_paths": list(self.drop_in_paths),
-            "environment": self.environment,
-            "exec_start_path": self.exec_start_path,
-            "gpu_index": self.gpu_index,
-            "port": self.port,
+            "fragment_path": self.fragment_path, "fragment_hash": self.fragment_hash,
+            "drop_in_hashes": self.drop_in_hashes, "environment": self.environment,
+            "exec_start": self.exec_start, "port": self.port, "gpu_index": self.gpu_index,
+            "approved_hash": self.approved_hash,
         }
 
     def to_json(self) -> dict:
-        return {
-            "unit": self.unit,
-            "active_state": self.active_state,
-            "fragment_path": self.fragment_path,
-            "drop_in_paths": list(self.drop_in_paths),
-            "main_pid": self.main_pid,
-            "control_group": self.control_group,
-            "environment": self.environment,
-            "exec_start_path": self.exec_start_path,
-            "port": self.port,
-            "gpu_index": self.gpu_index,
-            "health_ok": self.health_ok,
-        }
+        return {**self.identity(), "unit": self.unit, "main_pid": self.main_pid, "control_group": self.control_group}
 
     @staticmethod
     def from_json(data: dict) -> "KnownGoodSnapshot":
         return KnownGoodSnapshot(
-            unit=data["unit"],
-            active_state=data["active_state"],
-            fragment_path=data["fragment_path"],
-            drop_in_paths=tuple(data["drop_in_paths"]),
-            main_pid=data["main_pid"],
-            control_group=data["control_group"],
-            environment=data["environment"],
-            exec_start_path=data["exec_start_path"],
-            port=data["port"],
-            gpu_index=data["gpu_index"],
-            health_ok=data["health_ok"],
+            unit=data["unit"], fragment_path=data["fragment_path"], fragment_hash=data["fragment_hash"],
+            drop_in_hashes=dict(data["drop_in_hashes"]), environment=dict(data["environment"]),
+            exec_start=tuple(data["exec_start"]), main_pid=int(data["main_pid"]),
+            control_group=data["control_group"], port=int(data["port"]), gpu_index=int(data["gpu_index"]),
+            approved_hash=data["approved_hash"],
         )
 
 
@@ -165,418 +202,276 @@ class PreflightFailure:
     reason: str
 
 
-def parse_systemctl_show(output: str) -> dict[str, str]:
-    """Parse `systemctl show --property=A,B,C` KEY=VALUE lines (one per property)."""
-    parsed: dict[str, str] = {}
-    for line in output.splitlines():
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        parsed[key] = value
-    return parsed
-
-
-def parse_exec_start_path(exec_start_value: str) -> str:
-    """`ExecStart={ path=/x/y ; argv[]=... ; ... }` -> "/x/y"."""
-    marker = "path="
-    start = exec_start_value.find(marker)
-    if start == -1:
-        return ""
-    start += len(marker)
-    end = exec_start_value.find(" ;", start)
-    return exec_start_value[start:end if end != -1 else None].strip()
-
-
-def parse_gpu_index(environment_line: str) -> int | None:
-    for token in environment_line.split():
-        if token.startswith("LLAMA_BEE_VISIBLE_DEVICES="):
-            value = token.split("=", 1)[1].strip('"')
-            try:
-                return int(value)
-            except ValueError:
-                return None
-    return None
-
-
-def parse_environment_dict(environment_line: str) -> dict[str, str]:
-    """Best-effort split of systemd's space-joined, sometimes-quoted Environment= value."""
-    result: dict[str, str] = {}
-    for token in shlex.split(environment_line):
-        if "=" in token:
-            key, _, value = token.partition("=")
-            result[key] = value
-    return result
-
-
 class PreflightInspector:
-    """Read-only. Never stops, starts, or mutates anything."""
+    """Read-only loaded-unit identity capture and approval comparison."""
 
-    def __init__(
-        self,
-        runner: CommandRunner,
-        systemctl_bin: str,
-        expected_unit: str,
-        expected_gpu_index: int,
-        expected_port: int,
-        health_checker: Callable[[int], bool],
-        timeout: float,
-    ) -> None:
-        self.runner = runner
-        self.systemctl_bin = systemctl_bin
-        self.expected_unit = expected_unit
-        self.expected_gpu_index = expected_gpu_index
-        self.expected_port = expected_port
-        self.health_checker = health_checker
-        self.timeout = timeout
+    def __init__(self, runner: CommandRunner, systemctl_bin: str, unit: str, approved: ApprovedSnapshot,
+                 health: Callable[[int], bool], read_text: Callable[[str], str], timeout: float,
+                 expected_gpu: int = DEFAULT_GPU_INDEX) -> None:
+        self.runner, self.systemctl_bin, self.unit = runner, systemctl_bin, unit
+        self.approved, self.health, self.read_text, self.timeout, self.expected_gpu = approved, health, read_text, timeout, expected_gpu
 
     def snapshot(self) -> KnownGoodSnapshot | PreflightFailure:
+        command = [self.systemctl_bin, "--user", "show", self.unit,
+                   "--property=ActiveState,FragmentPath,DropInPaths,MainPID,ControlGroup,Environment,ExecStart"]
         try:
-            result = self.runner(
-                [
-                    self.systemctl_bin,
-                    "--user",
-                    "show",
-                    self.expected_unit,
-                    "--property=ActiveState,FragmentPath,DropInPaths,MainPID,ControlGroup,Environment,ExecStart",
-                ],
-                self.timeout,
-            )
-        except (subprocess.TimeoutExpired, OSError) as error:
+            result = self.runner(command, self.timeout)
+        except (OSError, subprocess.TimeoutExpired) as error:
             return PreflightFailure(f"systemctl show failed: {error}")
-        if result.returncode != 0:
-            return PreflightFailure(f"systemctl show exited {result.returncode}: {result.stderr!r}")
-
-        properties = parse_systemctl_show(result.stdout.decode("utf-8", errors="replace"))
-        active_state = properties.get("ActiveState", "")
-        if active_state != "active":
-            return PreflightFailure(f"{self.expected_unit} is not active (ActiveState={active_state!r}); refusing ambiguous state")
-
-        fragment_path = properties.get("FragmentPath", "")
-        if not fragment_path:
-            return PreflightFailure("no FragmentPath reported; refusing ambiguous unit identity")
-
-        drop_in_paths = tuple(p for p in properties.get("DropInPaths", "").split() if p)
-
-        environment_line = properties.get("Environment", "")
-        environment = parse_environment_dict(environment_line)
-
-        gpu_index = parse_gpu_index(environment_line)
-        if gpu_index is None:
-            gpu_index = DEFAULT_GPU_INDEX  # wrapper's own default when unset
-        if gpu_index != self.expected_gpu_index:
-            return PreflightFailure(f"known-good resolves to GPU{gpu_index}, expected GPU{self.expected_gpu_index}; refusing")
-
-        exec_start_path = parse_exec_start_path(properties.get("ExecStart", ""))
-        if not exec_start_path:
-            return PreflightFailure("could not parse ExecStart path; refusing ambiguous identity")
-
+        if result.returncode:
+            return PreflightFailure(f"systemctl show exited {result.returncode}")
+        fields = parse_systemctl_show(result.stdout.decode(errors="replace"))
+        if fields.get("ActiveState") != "active":
+            return PreflightFailure("known-good is not active")
+        fragment = fields.get("FragmentPath", "")
+        drops = tuple(path for path in fields.get("DropInPaths", "").split() if path)
+        if not fragment:
+            return PreflightFailure("loaded unit has no FragmentPath")
         try:
-            main_pid = int(properties.get("MainPID", "0"))
+            fragment_hash = canonical_hash(self.read_text(fragment))
+            drop_hashes = {path: canonical_hash(self.read_text(path)) for path in drops}
+        except (OSError, UnicodeError) as error:
+            return PreflightFailure(f"cannot hash loaded unit content: {error}")
+        environment = parse_environment_dict(fields.get("Environment", ""))
+        unknown = sorted(set(environment) - ALLOWED_BEE_ENV)
+        missing = sorted(REQUIRED_MANAGED_ENV - set(environment))
+        if unknown or missing:
+            return PreflightFailure(f"loaded Bee environment is not allowlisted (unknown={unknown}, missing={missing})")
+        argv = parse_exec_argv(fields.get("ExecStart", ""))
+        if not argv:
+            return PreflightFailure("could not parse full loaded ExecStart argv")
+        gpu, port = parse_gpu_index(environment), derive_known_good_port(environment, argv)
+        if gpu != self.expected_gpu or port is None:
+            return PreflightFailure(f"loaded GPU/port is invalid (gpu={gpu!r}, port={port!r})")
+        try:
+            main_pid = int(fields.get("MainPID", "0"))
         except ValueError:
-            return PreflightFailure(f"unparseable MainPID: {properties.get('MainPID')!r}")
-        if main_pid <= 0:
-            return PreflightFailure(f"no live MainPID ({main_pid}); refusing ambiguous state")
-
-        control_group = properties.get("ControlGroup", "")
-        if not control_group:
-            return PreflightFailure("no ControlGroup reported; refusing ambiguous identity")
-
-        if not self.health_checker(self.expected_port):
-            return PreflightFailure(f"known-good did not answer /health on port {self.expected_port}")
-
-        return KnownGoodSnapshot(
-            unit=self.expected_unit,
-            active_state=active_state,
-            fragment_path=fragment_path,
-            drop_in_paths=drop_in_paths,
-            main_pid=main_pid,
-            control_group=control_group,
-            environment=environment,
-            exec_start_path=exec_start_path,
-            port=self.expected_port,
-            gpu_index=gpu_index,
-            health_ok=True,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Transaction receipt: the disk-backed, immutable-once-written contract
-# between the controller and the externally supervised rollback owner.
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TransactionReceipt:
-    transaction_id: str
-    unit: str
-    snapshot: KnownGoodSnapshot
-    deadline_epoch_seconds: float
-    systemctl_bin: str
-    rollback_timeout_seconds: float
-
-    def to_json(self) -> dict:
-        return {
-            "transaction_id": self.transaction_id,
-            "unit": self.unit,
-            "snapshot": self.snapshot.to_json(),
-            "deadline_epoch_seconds": self.deadline_epoch_seconds,
-            "systemctl_bin": self.systemctl_bin,
-            "rollback_timeout_seconds": self.rollback_timeout_seconds,
-        }
-
-    @staticmethod
-    def from_json(data: dict) -> "TransactionReceipt":
-        return TransactionReceipt(
-            transaction_id=data["transaction_id"],
-            unit=data["unit"],
-            snapshot=KnownGoodSnapshot.from_json(data["snapshot"]),
-            deadline_epoch_seconds=data["deadline_epoch_seconds"],
-            systemctl_bin=data["systemctl_bin"],
-            rollback_timeout_seconds=data["rollback_timeout_seconds"],
-        )
-
-
-class ReceiptStore:
-    """Disk-backed receipt directory. Never under /tmp; never inside the
-    candidate's own cgroup/working directory, so candidate teardown cannot
-    remove it and a tmpfs cleaner cannot race it away."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def transaction_directory(self, transaction_id: str) -> Path:
-        return self.root / transaction_id
-
-    def write_receipt(self, receipt: TransactionReceipt) -> Path:
-        directory = self.transaction_directory(receipt.transaction_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        receipt_path = directory / "receipt.json"
-        receipt_path.write_text(json.dumps(receipt.to_json(), indent=2), encoding="utf-8")
-        os.chmod(receipt_path, 0o400)  # immutable-once-written: read-only after write
-        return receipt_path
-
-    def read_receipt(self, receipt_path: Path) -> TransactionReceipt:
-        return TransactionReceipt.from_json(json.loads(receipt_path.read_text(encoding="utf-8")))
-
-    def release_marker_path(self, transaction_id: str) -> Path:
-        return self.transaction_directory(transaction_id) / "released"
-
-    def mark_released(self, transaction_id: str) -> None:
-        marker_path = self.release_marker_path(transaction_id)
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text("released\n", encoding="utf-8")
-
-    def is_released(self, transaction_id: str) -> bool:
-        return self.release_marker_path(transaction_id).exists()
-
-
-# ---------------------------------------------------------------------------
-# External rollback owner: supervised by the user's systemd instance via
-# `systemd-run`, independent of the controller's process tree. It restores
-# known-good unconditionally unless released before its deadline.
-# ---------------------------------------------------------------------------
-
-
-class RollbackOwner:
-    """The logic run *inside* the detached rollback-owner process (or
-    directly, by tests, without spawning anything real)."""
-
-    def __init__(
-        self,
-        receipt: TransactionReceipt,
-        receipt_store: ReceiptStore,
-        runner: CommandRunner,
-        logger: Callable[[str], None],
-        wall_clock: Callable[[], float],
-        sleeper: Callable[[float], None],
-        poll_interval_seconds: float = 1.0,
-    ) -> None:
-        self.receipt = receipt
-        self.receipt_store = receipt_store
-        self.runner = runner
-        self.logger = logger
-        self.wall_clock = wall_clock
-        self.sleeper = sleeper
-        self.poll_interval_seconds = poll_interval_seconds
-
-    def wait_and_restore_if_unreleased(self) -> bool:
-        """Block until released or the deadline passes; restore only if not released.
-
-        Returns True if known-good was confirmed active by the time this
-        returns (whether because it was released and already fine, or
-        because this owner itself restored it).
-        """
-        while self.wall_clock() < self.receipt.deadline_epoch_seconds:
-            if self.receipt_store.is_released(self.receipt.transaction_id):
-                self.logger(f"transaction {self.receipt.transaction_id} released; rollback owner standing down")
-                return True
-            self.sleeper(self.poll_interval_seconds)
-        if self.receipt_store.is_released(self.receipt.transaction_id):
-            return True
-        self.logger(f"transaction {self.receipt.transaction_id} deadline reached without release; restoring {self.receipt.unit}")
-        return self._restore()
-
-    def _restore(self) -> bool:
-        return restore_known_good(self.runner, self.receipt.systemctl_bin, self.receipt.unit, self.receipt.rollback_timeout_seconds, self.logger)
-
-
-def restore_known_good(runner: CommandRunner, systemctl_bin: str, unit: str, timeout: float, logger: Callable[[str], None]) -> bool:
-    if systemd_unit_is_active(runner, systemctl_bin, unit, timeout):
-        return True
-    logger(f"{unit} not active; starting it")
-    try:
-        result = runner([systemctl_bin, "--user", "start", unit], timeout)
-    except (subprocess.TimeoutExpired, OSError) as error:
-        logger(f"start of {unit} failed: {error}")
-        return False
-    if result.returncode != 0:
-        logger(f"start of {unit} exited {result.returncode}: {result.stderr!r}")
-        return False
-    return systemd_unit_is_active(runner, systemctl_bin, unit, timeout)
-
-
-def systemd_unit_is_active(runner: CommandRunner, systemctl_bin: str, unit: str, timeout: float) -> bool:
-    try:
-        result = runner([systemctl_bin, "--user", "is-active", unit], timeout)
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return result.stdout.decode("utf-8", errors="replace").strip() == "active"
-
-
-def spawn_detached_rollback_owner(
-    runner: CommandRunner,
-    systemd_run_bin: str,
-    python_bin: str,
-    script_path: str,
-    receipt_path: Path,
-    transaction_id: str,
-    timeout: float,
-) -> bool:
-    """Launch the rollback owner as a transient systemd-run service, detached
-    from this controller's process tree. `--collect` unloads it once it
-    exits; it is not a child of, and does not depend on, this process."""
-    unit_name = f"bee-capacity-rollback-{transaction_id}"
-    command = [
-        systemd_run_bin,
-        "--user",
-        "--collect",
-        f"--unit={unit_name}",
-        "--",
-        python_bin,
-        script_path,
-        "--rollback-owner",
-        str(receipt_path),
-    ]
-    try:
-        result = runner(command, timeout)
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return result.returncode == 0
-
-
-def release_rollback_owner(runner: CommandRunner, systemctl_bin: str, transaction_id: str, receipt_store: ReceiptStore, timeout: float) -> None:
-    receipt_store.mark_released(transaction_id)
-    unit_name = f"bee-capacity-rollback-{transaction_id}"
-    try:
-        runner([systemctl_bin, "--user", "stop", unit_name], timeout)
-    except (subprocess.TimeoutExpired, OSError):
-        pass  # best-effort early stop; the owner also self-checks the release marker
-
-
-# ---------------------------------------------------------------------------
-# Candidate scope: uniquely identified transient systemd-run scope so every
-# descendant process is cgroup-tracked and can be torn down as a unit.
-# ---------------------------------------------------------------------------
+            main_pid = 0
+        cgroup = fields.get("ControlGroup", "")
+        if main_pid <= 0 or not cgroup:
+            return PreflightFailure("loaded unit has no live MainPID/cgroup")
+        if not self.health(port):
+            return PreflightFailure(f"known-good health failed on loaded port {port}")
+        if (fragment_hash != self.approved.fragment_hash or drop_hashes != self.approved.drop_in_hashes
+                or argv != self.approved.exec_start or environment != self.approved.environment):
+            return PreflightFailure("loaded unit content/ExecStart/environment differs from operator-approved hash snapshot")
+        return KnownGoodSnapshot(self.unit, fragment, fragment_hash, drop_hashes, environment, argv,
+                                 main_pid, cgroup, port, gpu, self.approved.content_hash())
 
 
 @dataclass(frozen=True)
 class CandidateSpec:
     start_script: str
-    port: int
-    parallel: int
-    ctx_size: int
-    kv_unified: bool
-    gpu_index: int
+    port: int = DEFAULT_CANDIDATE_PORT
+    parallel: int = DEFAULT_PARALLEL
+    ctx_size: int = DEFAULT_CTX
+    gpu_index: int = DEFAULT_GPU_INDEX
 
-    def env_overrides(self) -> dict[str, str]:
-        return {
-            "LLAMA_BEE_PORT": str(self.port),
-            "LLAMA_BEE_PARALLEL": str(self.parallel),
-            "LLAMA_BEE_CTX": str(self.ctx_size),
-            "LLAMA_BEE_VISIBLE_DEVICES": str(self.gpu_index),
-        }
+    def environment(self, loaded: dict[str, str]) -> dict[str, str]:
+        """Exact approved Bee environment plus the four explicit trial changes."""
+        if set(loaded) - ALLOWED_BEE_ENV:
+            raise ValueError("loaded environment contains non-allowlisted keys")
+        env = dict(loaded)
+        env.update({"LLAMA_BEE_PORT": str(self.port), "LLAMA_BEE_PARALLEL": str(self.parallel),
+                    "LLAMA_BEE_CTX": str(self.ctx_size), "LLAMA_BEE_VISIBLE_DEVICES": str(self.gpu_index)})
+        return env
 
-    def start_argv(self) -> list[str]:
-        argv = [self.start_script]
-        if self.kv_unified:
-            argv.append("--kv-unified")
-        return argv
-
-
-def candidate_scope_unit_name(transaction_id: str) -> str:
-    return f"bee-capacity-candidate-{transaction_id}"
-
-
-def start_candidate_scope(
-    runner: CommandRunner,
-    systemd_run_bin: str,
-    spec: CandidateSpec,
-    transaction_id: str,
-    timeout: float,
-) -> subprocess.CompletedProcess[bytes]:
-    unit_name = candidate_scope_unit_name(transaction_id)
-    command = [systemd_run_bin, "--user", "--scope", "--collect", f"--unit={unit_name}"]
-    for name, value in spec.env_overrides().items():
-        command += ["-p", f"Environment={name}={value}"]
-    command += ["--", *spec.start_argv()]
-    return runner(command, timeout)
+    def argv(self, loaded: dict[str, str]) -> list[str]:
+        # env -i is essential for user services: Environment= alone cannot
+        # subtract arbitrary variables inherited by the user service manager.
+        # The wrapper's shebang needs PATH; HOME is reconstructed only from
+        # the loaded approved wrapper path, not inherited from the controller.
+        script_path = Path(self.start_script).expanduser()
+        home = str(script_path.parents[2]) if script_path.is_absolute and len(script_path.parents) > 2 else str(Path.home())
+        clean_runtime = {**SAFE_RUNTIME_ENV, "HOME": home}
+        pairs = [f"{key}={value}" for key, value in sorted({**clean_runtime, **self.environment(loaded)}.items())]
+        return ["/usr/bin/env", "-i", *pairs, self.start_script, "--kv-unified"]
 
 
-def stop_candidate_scope(runner: CommandRunner, systemctl_bin: str, transaction_id: str, timeout: float) -> bool:
-    unit_name = candidate_scope_unit_name(transaction_id)
+def candidate_unit_name(transaction_id: str) -> str:
+    return f"bee-capacity-candidate-{transaction_id}.service"
+
+
+def owner_unit_name(transaction_id: str) -> str:
+    return f"bee-capacity-rollback-{transaction_id}.service"
+
+
+def start_transient_service(runner: CommandRunner, systemd_run: str, unit: str, argv: list[str], timeout: float) -> bool:
+    command = [systemd_run, "--user", "--no-block", "--unit=" + unit,
+               # Do not use --collect/CollectMode=inactive-or-failed here:
+               # teardown must successfully show NTasks=0 before restoration.
+               "--property=Type=exec", "--", *argv]
     try:
-        result = runner([systemctl_bin, "--user", "stop", unit_name], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+        return runner(command, timeout).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
 
 
-def candidate_scope_is_empty(runner: CommandRunner, systemctl_bin: str, transaction_id: str, timeout: float) -> bool:
-    unit_name = candidate_scope_unit_name(transaction_id)
+def unit_is_running(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
     try:
-        result = runner([systemctl_bin, "--user", "show", unit_name, "--property=NTasks,ActiveState"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
+        result = runner([systemctl, "--user", "show", unit, "--property=ActiveState,MainPID,ControlGroup,NTasks"], timeout)
+    except (OSError, subprocess.TimeoutExpired):
         return False
-    properties = parse_systemctl_show(result.stdout.decode("utf-8", errors="replace"))
-    active_state = properties.get("ActiveState", "")
-    if active_state in {"", "inactive", "failed"}:
+    if result.returncode:
+        return False
+    fields = parse_systemctl_show(result.stdout.decode(errors="replace"))
+    try:
+        return fields.get("ActiveState") == "active" and int(fields.get("MainPID", "0")) > 0 and int(fields.get("NTasks", "0")) > 0 and bool(fields.get("ControlGroup"))
+    except ValueError:
+        return False
+
+
+def stop_and_prove_empty(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
+    """Missing/failed show is unsafe, never interpreted as an empty cgroup."""
+    try:
+        stopped = runner([systemctl, "--user", "stop", unit], timeout)
+        shown = runner([systemctl, "--user", "show", unit, "--property=NTasks,ActiveState"], timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if stopped.returncode or shown.returncode:
+        return False
+    fields = parse_systemctl_show(shown.stdout.decode(errors="replace"))
+    try:
+        return fields.get("ActiveState") in {"inactive", "failed"} and int(fields["NTasks"]) == 0
+    except (KeyError, ValueError):
+        return False
+
+
+def stop_known_good_and_prove_empty(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
+    # Known-good must be inactive; unlike a candidate failed is not an accepted stopped state.
+    try:
+        stopped = runner([systemctl, "--user", "stop", unit], timeout)
+        shown = runner([systemctl, "--user", "show", unit, "--property=NTasks,ActiveState"], timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if stopped.returncode or shown.returncode:
+        return False
+    fields = parse_systemctl_show(shown.stdout.decode(errors="replace"))
+    try:
+        return fields.get("ActiveState") == "inactive" and int(fields["NTasks"]) == 0
+    except (KeyError, ValueError):
+        return False
+
+
+@dataclass
+class TransactionReceipt:
+    transaction_id: str
+    unit: str
+    candidate_unit: str
+    snapshot: KnownGoodSnapshot
+    deadline: float
+    heartbeat_seconds: float
+    controller_heartbeat: float
+    controller_phase: str = "armed"
+    owner_phase: str = "armed"
+    restore_attempts: int = 0
+    restore_ack: bool = False
+
+    def to_json(self) -> dict:
+        return {**self.__dict__, "snapshot": self.snapshot.to_json()}
+
+    @staticmethod
+    def from_json(data: dict) -> "TransactionReceipt":
+        copy = dict(data)
+        copy["snapshot"] = KnownGoodSnapshot.from_json(copy["snapshot"])
+        return TransactionReceipt(**copy)
+
+
+class ReceiptStore:
+    """A private disk-backed receipt.  Atomic replacements make each phase durable."""
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    @classmethod
+    def from_receipt_path(cls, receipt_path: Path) -> "ReceiptStore":
+        return cls(receipt_path.parent.parent)
+
+    def receipt_path(self, transaction_id: str) -> Path:
+        return self.root / transaction_id / "receipt.json"
+
+    def write(self, receipt: TransactionReceipt) -> Path:
+        directory = self.receipt_path(receipt.transaction_id).parent
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(directory, 0o700)
+        destination = directory / "receipt.json"
+        self._write_path(destination, receipt)
+        return destination
+
+    @staticmethod
+    def _write_path(destination: Path, receipt: TransactionReceipt) -> None:
+        directory = destination.parent
+        temporary = directory / ".receipt.tmp"
+        temporary.write_text(json.dumps(receipt.to_json(), sort_keys=True), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+
+    def read(self, receipt_path: Path) -> TransactionReceipt:
+        return TransactionReceipt.from_json(json.loads(receipt_path.read_text(encoding="utf-8")))
+
+    def update(self, receipt_path: Path, mutate: Callable[[TransactionReceipt], None]) -> TransactionReceipt:
+        lock_path = receipt_path.parent / ".receipt.lock"
+        with lock_path.open("a", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                receipt = self.read(receipt_path)
+                mutate(receipt)
+                self._write_path(receipt_path, receipt)
+                return receipt
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def verify_exact_restore(snapshot: KnownGoodSnapshot, inspector: PreflightInspector) -> bool:
+    live = inspector.snapshot()
+    return isinstance(live, KnownGoodSnapshot) and live.identity() == snapshot.identity()
+
+
+class RollbackOwner:
+    """The sole cleanup/restore authority; instantiated from receipt path only."""
+    def __init__(self, receipt_path: Path, runner: CommandRunner, inspector: PreflightInspector,
+                 logger: Callable[[str], None], wall_clock: Callable[[], float], sleeper: Callable[[float], None],
+                 poll_seconds: float = DEFAULT_POLL_SECONDS) -> None:
+        self.receipt_path, self.store = receipt_path, ReceiptStore.from_receipt_path(receipt_path)
+        self.runner, self.inspector, self.logger, self.wall_clock, self.sleeper, self.poll_seconds = runner, inspector, logger, wall_clock, sleeper, poll_seconds
+
+    def _update(self, mutate: Callable[[TransactionReceipt], None]) -> TransactionReceipt:
+        return self.store.update(self.receipt_path, mutate)
+
+    def recover_with(self, systemctl: str, timeout: float) -> bool:
+        receipt = self.store.read(self.receipt_path)
+        if receipt.restore_ack:
+            return True
+        self._update(lambda item: setattr(item, "owner_phase", "stopping-candidate"))
+        if not stop_and_prove_empty(self.runner, systemctl, receipt.candidate_unit, timeout):
+            self._update(lambda item: setattr(item, "owner_phase", "candidate-not-empty"))
+            return False
+        self._update(lambda item: setattr(item, "owner_phase", "restoring-known-good"))
+        self._update(lambda item: setattr(item, "restore_attempts", item.restore_attempts + 1))
+        try:
+            started = self.runner([systemctl, "--user", "start", receipt.unit], timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            started = None
+        if started is None or started.returncode or not verify_exact_restore(receipt.snapshot, self.inspector):
+            self._update(lambda item: setattr(item, "owner_phase", "restore-unverified"))
+            return False
+        self._update(lambda item: (setattr(item, "owner_phase", "complete"), setattr(item, "restore_ack", True)))
         return True
-    try:
-        n_tasks = int(properties.get("NTasks", "1"))
-    except ValueError:
-        return False
-    return n_tasks == 0
 
-
-def known_good_cgroup_is_empty(runner: CommandRunner, systemctl_bin: str, unit: str, timeout: float) -> bool:
-    try:
-        result = runner([systemctl_bin, "--user", "show", unit, "--property=NTasks,ActiveState"], timeout)
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    properties = parse_systemctl_show(result.stdout.decode("utf-8", errors="replace"))
-    if properties.get("ActiveState", "") != "inactive":
-        return False
-    try:
-        n_tasks = int(properties.get("NTasks", "1"))
-    except ValueError:
-        return False
-    return n_tasks == 0
-
-
-# ---------------------------------------------------------------------------
-# Capability proof: health, frozen /props shape, /slots count, four
-# concurrent bounded requests, GPU1-only VRAM floor after that load.
-# ---------------------------------------------------------------------------
+    def run(self, systemctl: str, timeout: float) -> bool:
+        """Remain armed until verified restore; expiry takes authority, never blind-starts."""
+        while True:
+            receipt = self.store.read(self.receipt_path)
+            now = self.wall_clock()
+            stale = now - receipt.controller_heartbeat >= receipt.heartbeat_seconds
+            requested = receipt.controller_phase == "cleanup-requested"
+            expired = now >= receipt.deadline
+            if requested or stale or expired:
+                if expired:
+                    self._update(lambda item: setattr(item, "owner_phase", "deadline-cleanup"))
+                if self.recover_with(systemctl, timeout):
+                    return True
+                self.logger(f"rollback remains armed; candidate teardown or exact restore not yet verified (attempt {receipt.restore_attempts + 1})")
+            self.sleeper(self.poll_seconds)
 
 
 @dataclass(frozen=True)
@@ -585,491 +480,275 @@ class GateFailure:
     reason: str
 
 
-class Gate(Protocol):
-    def __call__(self) -> GateFailure | None: ...
-
-
 def http_get_json(url: str, timeout: float) -> dict | list | None:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 (local-only fixed host)
-            return json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 local endpoint
+            return json.loads(response.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
         return None
 
 
-def http_post_json(url: str, payload: dict, timeout: float) -> tuple[int, dict | list | None]:
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")  # noqa: S310
+def http_post_json(url: str, payload: dict, timeout: float) -> tuple[int, dict | None]:
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")  # noqa: S310
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            status = response.status
-            parsed = json.loads(response.read().decode("utf-8"))
-            return status, parsed
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 local endpoint
+            body = json.loads(response.read().decode())
+            return response.status, body if isinstance(body, dict) else None
     except urllib.error.HTTPError as error:
         return error.code, None
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
         return 0, None
 
 
-def make_health_gate(base_url: str, timeout: float) -> Gate:
-    def gate() -> GateFailure | None:
-        body = http_get_json(f"{base_url}/health", timeout)
-        if not isinstance(body, dict) or body.get("status") != "ok":
-            return GateFailure("health", f"unhealthy or unreachable: {body!r}")
+def structural_difference(expected: object, actual: object, dynamic: set[tuple[str, ...]], path: tuple[str, ...] = ()) -> str | None:
+    if type(expected) is not type(actual):
+        return f"type drift at {'.'.join(path) or '<root>'}"
+    if path in dynamic:
         return None
-
-    return gate
-
-
-def load_props_fixture(path: str) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def make_props_gate(base_url: str, timeout: float, parallel: int, ctx_size: int, fixture: dict) -> Gate:
-    """Compares the live /props response against a frozen, operator-supplied
-    fixture's *shape* (same top-level and nested keys), then checks the
-    capacity-relevant values against the requested candidate config. This
-    harness intentionally does not guess a shape: --apply refuses to start
-    without a fixture (see main())."""
-    fixture_keys = set(fixture.keys())
-
-    def gate() -> GateFailure | None:
-        body = http_get_json(f"{base_url}/props", timeout)
-        if not isinstance(body, dict):
-            return GateFailure("props", "unreachable or non-JSON response")
-        live_keys = set(body.keys())
-        if not fixture_keys.issubset(live_keys):
-            return GateFailure("props", f"live /props missing fixture-frozen keys: {sorted(fixture_keys - live_keys)}")
-        total_slots = body.get("total_slots")
-        if total_slots != parallel:
-            return GateFailure("props", f"total_slots={total_slots!r}, expected {parallel}")
-        generation_settings = body.get("default_generation_settings")
-        context = generation_settings.get("n_ctx") if isinstance(generation_settings, dict) else None
-        if context is None:
-            context = body.get("n_ctx")
-        if context != ctx_size:
-            return GateFailure("props", f"context={context!r}, expected {ctx_size}")
-        return None
-
-    return gate
-
-
-def make_slots_gate(base_url: str, timeout: float, parallel: int) -> Gate:
-    def gate() -> GateFailure | None:
-        body = http_get_json(f"{base_url}/slots", timeout)
-        if not isinstance(body, list):
-            return GateFailure("slots", "unreachable, disabled, or non-JSON response")
-        if len(body) != parallel:
-            return GateFailure("slots", f"reported {len(body)} slots, expected {parallel}")
-        return None
-
-    return gate
-
-
-def run_concurrent_completion_probe(
-    base_url: str,
-    request_count: int,
-    timeout: float,
-    poster: Callable[[str, dict, float], tuple[int, dict | list | None]] = http_post_json,
-) -> GateFailure | None:
-    """Fire N simultaneous bounded completion requests with distinct request
-    IDs and require every single one to be accepted and complete — not
-    merely that the server reports N slots."""
-    url = f"{base_url}/completion"
-    payloads = [
-        {"prompt": f"bee-capacity-test probe {index}", "n_predict": 1, "id_slot": index}
-        for index in range(request_count)
-    ]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=request_count) as executor:
-        futures = [executor.submit(poster, url, payload, timeout) for payload in payloads]
-        outcomes = [future.result() for future in futures]
-
-    failed = [(index, status, body) for index, (status, body) in enumerate(outcomes) if status != 200 or not isinstance(body, dict)]
-    if failed:
-        return GateFailure("concurrent-completion", f"{len(failed)}/{request_count} requests not accepted/completed: {failed}")
+    if isinstance(expected, dict):
+        if set(expected) != set(actual):
+            return f"key drift at {'.'.join(path) or '<root>'}: expected {sorted(expected)}, got {sorted(actual)}"
+        for key in expected:
+            difference = structural_difference(expected[key], actual[key], dynamic, path + (key,))
+            if difference:
+                return difference
+    elif isinstance(expected, list):
+        if len(expected) != len(actual):
+            return f"list length drift at {'.'.join(path)}"
+        for index, (left, right) in enumerate(zip(expected, actual)):
+            difference = structural_difference(left, right, dynamic, path + (str(index),))
+            if difference:
+                return difference
+    elif expected != actual:
+        return f"value drift at {'.'.join(path)}"
     return None
 
 
-def make_concurrent_completion_gate(base_url: str, request_count: int, timeout: float) -> Gate:
+def make_props_gate(base_url: str, fixture: dict, parallel: int, context: int, timeout: float) -> Callable[[], GateFailure | None]:
+    context_path = ("default_generation_settings", "n_ctx") if isinstance(fixture.get("default_generation_settings"), dict) else ("n_ctx",)
+    dynamic = {("total_slots",), context_path}
     def gate() -> GateFailure | None:
-        return run_concurrent_completion_probe(base_url, request_count, timeout)
-
+        live = http_get_json(base_url + "/props", timeout)
+        if not isinstance(live, dict):
+            return GateFailure("props", "unreachable or non-object /props")
+        difference = structural_difference(fixture, live, dynamic)
+        if difference:
+            return GateFailure("props", difference)
+        cursor: object = live
+        for key in context_path:
+            cursor = cursor.get(key) if isinstance(cursor, dict) else None
+        if live.get("total_slots") != parallel or cursor != context:
+            return GateFailure("props", f"capacity values are slots={live.get('total_slots')!r}, context={cursor!r}")
+        return None
     return gate
 
 
-def parse_vram_free_mib_single_gpu(nvidia_smi_output: bytes) -> int | None:
-    text = nvidia_smi_output.decode("utf-8", errors="replace").strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) != 1:
-        return None
+def run_overlap_probe(base_url: str, timeout: float, get_slots: Callable[[str, float], dict | list | None] = http_get_json,
+                      post: Callable[[str, dict, float], tuple[int, dict | None]] = http_post_json) -> GateFailure | None:
+    """Fail closed unless /slots exposes each live request's slot and correlation.
+
+    Smallest live oracle: while four requests wait, /slots must expose
+    ``id_slot``, ``is_processing: true``, and a ``request_id`` equal to the
+    request correlation.  The installed API has not been asserted to expose
+    this shape; absence is a failed proof, not a simulated pass.
+    """
+    barrier = Barrier(REQUEST_COUNT + 1)
+    request_ids = [f"bee-capacity-{uuid.uuid4()}-{slot}" for slot in range(REQUEST_COUNT)]
+    def worker(slot: int) -> tuple[int, dict | None]:
+        barrier.wait(timeout=timeout)
+        return post(base_url + "/completion", {"prompt": request_ids[slot], "n_predict": 32,
+                                                  "id_slot": slot, "request_id": request_ids[slot]}, timeout)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=REQUEST_COUNT) as pool:
+        futures = [pool.submit(worker, slot) for slot in range(REQUEST_COUNT)]
+        barrier.wait(timeout=timeout)
+        slots = get_slots(base_url + "/slots", timeout)
+        outcomes = [future.result(timeout=timeout) for future in futures]
+    if not isinstance(slots, list):
+        return GateFailure("overlap", "/slots is unavailable; no live-slot oracle")
+    observed = {(item.get("id_slot"), item.get("request_id")) for item in slots
+                if isinstance(item, dict) and item.get("is_processing") is True}
+    expected = set(enumerate(request_ids))
+    if observed != expected:
+        return GateFailure("overlap", f"/slots cannot prove four correlated live slots (observed={observed!r})")
+    for slot, (status, body) in enumerate(outcomes):
+        if status != 200 or not isinstance(body, dict) or body.get("request_id") != request_ids[slot] or body.get("id_slot") != slot:
+            return GateFailure("overlap", f"completion {slot} was not correlated and complete")
+    return None
+
+
+def make_health_checker(timeout: float) -> Callable[[int], bool]:
+    return lambda port: http_get_json(f"http://127.0.0.1:{port}/health", timeout) == {"status": "ok"}
+
+
+def safe_float(value: str, label: str, parser: argparse.ArgumentParser) -> float:
     try:
-        return int(lines[0])
+        number = float(value)
     except ValueError:
-        return None
-
-
-def make_gpu1_vram_gate(runner: CommandRunner, nvidia_smi_bin: str, gpu_index: int, floor_mib: int, timeout: float) -> Gate:
-    def gate() -> GateFailure | None:
-        try:
-            result = runner(
-                [nvidia_smi_bin, f"--id={gpu_index}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-                timeout,
-            )
-        except (subprocess.TimeoutExpired, OSError) as error:
-            return GateFailure("vram", f"nvidia-smi failed: {error}")
-        if result.returncode != 0:
-            return GateFailure("vram", f"nvidia-smi exit {result.returncode}: {result.stderr!r}")
-        free_mib = parse_vram_free_mib_single_gpu(result.stdout)
-        if free_mib is None:
-            return GateFailure("vram", f"could not parse GPU{gpu_index} nvidia-smi output: {result.stdout!r}")
-        if free_mib < floor_mib:
-            return GateFailure("vram", f"GPU{gpu_index} {free_mib} MiB free < {floor_mib} MiB floor")
-        return None
-
-    return gate
-
-
-def evaluate_gates_until_pass_or_timeout(
-    gates: list[Gate],
-    timeout_seconds: float,
-    poll_interval_seconds: float,
-    wall_clock: Callable[[], float],
-    sleeper: Callable[[float], None],
-    logger: Callable[[str], None],
-) -> GateFailure | None:
-    deadline = wall_clock() + timeout_seconds
-    while True:
-        if wall_clock() >= deadline:
-            return GateFailure("timeout", f"no passing gate result within {timeout_seconds:g}s")
-        for gate in gates:
-            result = gate()
-            if result is not None:
-                logger(f"gate '{result.gate}' not yet satisfied: {result.reason}")
-                break
-        else:
-            return None
-        sleeper(poll_interval_seconds)
-
-
-# ---------------------------------------------------------------------------
-# The controller's transaction: preflight -> arm -> stop -> candidate ->
-# prove -> teardown -> restore -> release. Every phase after "arm" runs
-# under the external rollback owner's protection.
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TransactionOutcome:
-    phase_reached: str
-    passed: bool
-    failure: GateFailure | PreflightFailure | None
-    restored_exactly: bool
-
-
-class TransactionController:
-    def __init__(
-        self,
-        *,
-        transaction_id: str,
-        unit: str,
-        candidate_spec: CandidateSpec,
-        preflight: PreflightInspector,
-        receipt_store: ReceiptStore,
-        arm_rollback: Callable[[TransactionReceipt], bool],
-        release_rollback: Callable[[], None],
-        stop_known_good: Callable[[], bool],
-        known_good_cgroup_empty: Callable[[], bool],
-        start_candidate: Callable[[], bool],
-        gates: list[Gate],
-        stop_candidate: Callable[[], bool],
-        candidate_scope_empty: Callable[[], bool],
-        start_known_good: Callable[[], bool],
-        post_restore_snapshot: Callable[[], KnownGoodSnapshot | PreflightFailure],
-        logger: Callable[[str], None],
-        wall_clock: Callable[[], float],
-        sleeper: Callable[[float], None],
-        phase_timeout_seconds: float,
-        poll_interval_seconds: float,
-        rollback_deadline_seconds: float,
-        systemctl_bin: str,
-    ) -> None:
-        self.transaction_id = transaction_id
-        self.unit = unit
-        self.candidate_spec = candidate_spec
-        self.preflight = preflight
-        self.receipt_store = receipt_store
-        self.arm_rollback = arm_rollback
-        self.release_rollback = release_rollback
-        self.stop_known_good = stop_known_good
-        self.known_good_cgroup_empty = known_good_cgroup_empty
-        self.start_candidate = start_candidate
-        self.gates = gates
-        self.stop_candidate = stop_candidate
-        self.candidate_scope_empty = candidate_scope_empty
-        self.start_known_good = start_known_good
-        self.post_restore_snapshot = post_restore_snapshot
-        self.logger = logger
-        self.wall_clock = wall_clock
-        self.sleeper = sleeper
-        self.phase_timeout_seconds = phase_timeout_seconds
-        self.poll_interval_seconds = poll_interval_seconds
-        self.rollback_deadline_seconds = rollback_deadline_seconds
-        self.systemctl_bin = systemctl_bin
-
-    def run(self) -> TransactionOutcome:
-        snapshot = self.preflight.snapshot()
-        if isinstance(snapshot, PreflightFailure):
-            self.logger(f"preflight refused: {snapshot.reason}")
-            return TransactionOutcome("preflight", False, snapshot, restored_exactly=False)
-
-        receipt = TransactionReceipt(
-            transaction_id=self.transaction_id,
-            unit=self.unit,
-            snapshot=snapshot,
-            deadline_epoch_seconds=self.wall_clock() + self.rollback_deadline_seconds,
-            systemctl_bin=self.systemctl_bin,
-            rollback_timeout_seconds=self.phase_timeout_seconds,
-        )
-        if not self.arm_rollback(receipt):
-            self.logger("could not arm external rollback owner; refusing to stop known-good")
-            return TransactionOutcome("arm-rollback", False, GateFailure("arm-rollback", "rollback owner did not start"), restored_exactly=False)
-
-        try:
-            return self._run_armed(snapshot)
-        finally:
-            self.release_rollback()
-
-    def _run_armed(self, snapshot: KnownGoodSnapshot) -> TransactionOutcome:
-        if not self.stop_known_good():
-            return TransactionOutcome("stop-known-good", False, GateFailure("stop-known-good", "systemctl stop failed"), restored_exactly=False)
-
-        if not self._poll_until(self.known_good_cgroup_empty, "known-good cgroup did not empty (GPU1 not released)"):
-            return TransactionOutcome("stop-known-good", False, GateFailure("stop-known-good", "cgroup did not empty within timeout"), restored_exactly=False)
-
-        if not self.start_candidate():
-            self._restore_and_verify(snapshot)
-            return TransactionOutcome("candidate-scope", False, GateFailure("candidate-scope", "candidate scope failed to start"), restored_exactly=False)
-
-        failure = evaluate_gates_until_pass_or_timeout(
-            self.gates, self.phase_timeout_seconds, self.poll_interval_seconds, self.wall_clock, self.sleeper, self.logger
-        )
-
-        self.stop_candidate()
-        self._poll_until(self.candidate_scope_empty, "candidate scope did not empty")
-
-        restored_exactly = self._restore_and_verify(snapshot)
-
-        if failure is not None:
-            return TransactionOutcome("prove-capability", False, failure, restored_exactly=restored_exactly)
-        if not restored_exactly:
-            return TransactionOutcome("exact-restore", False, GateFailure("exact-restore", "restored snapshot did not match preflight identity"), restored_exactly=False)
-        return TransactionOutcome("complete", True, None, restored_exactly=True)
-
-    def _restore_and_verify(self, snapshot: KnownGoodSnapshot) -> bool:
-        self.start_known_good()
-        restored = self.post_restore_snapshot()
-        if isinstance(restored, PreflightFailure):
-            self.logger(f"post-restore snapshot failed: {restored.reason}")
-            return False
-        if restored.identity_key() != snapshot.identity_key():
-            self.logger("post-restore identity does not match preflight identity")
-            return False
-        return True
-
-    def _poll_until(self, predicate: Callable[[], bool], timeout_message: str) -> bool:
-        deadline = self.wall_clock() + self.phase_timeout_seconds
-        while self.wall_clock() < deadline:
-            if predicate():
-                return True
-            self.sleeper(self.poll_interval_seconds)
-        self.logger(timeout_message)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# CLI wiring.
-# ---------------------------------------------------------------------------
-
-
-def make_health_checker(runner_http_get: Callable[[str, float], dict | list | None], timeout: float) -> Callable[[int], bool]:
-    def check(port: int) -> bool:
-        body = runner_http_get(f"http://127.0.0.1:{port}/health", timeout)
-        return isinstance(body, dict) and body.get("status") == "ok"
-
-    return check
-
-
-def make_transaction_id(wall_clock: Callable[[], float]) -> str:
-    digest = hashlib.sha256(f"{wall_clock()}-{os.getpid()}".encode()).hexdigest()[:12]
-    return f"{int(wall_clock())}-{digest}"
+        parser.error(f"{label} must be a number, got {value!r}")
+    if number <= 0:
+        parser.error(f"{label} must be positive")
+    return number
 
 
 def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--apply", action="store_true", help="actually run the transaction; default is plan/dry-run only")
-    parser.add_argument("--unit", default=os.environ.get("BEE_CAPACITY_TEST_UNIT", DEFAULT_UNIT))
-    parser.add_argument("--start-script", default=os.environ.get("BEE_CAPACITY_TEST_START_SCRIPT", DEFAULT_START_SCRIPT))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_PORT", DEFAULT_PORT)))
-    parser.add_argument("--parallel", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_PARALLEL", DEFAULT_PARALLEL)))
-    parser.add_argument("--ctx-size", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_CTX", DEFAULT_CTX)))
-    parser.add_argument("--gpu-index", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_GPU_INDEX", DEFAULT_GPU_INDEX)))
-    parser.add_argument("--no-kv-unified", action="store_true", help="omit --kv-unified from the candidate (default: included)")
-    parser.add_argument("--props-fixture", default=os.environ.get("BEE_CAPACITY_TEST_PROPS_FIXTURE"), help="path to a frozen, real /props JSON capture; required for --apply")
-    parser.add_argument("--phase-timeout-seconds", type=float, default=float(os.environ.get("BEE_CAPACITY_TEST_PHASE_TIMEOUT_SECONDS", DEFAULT_PHASE_TIMEOUT_SECONDS)))
-    parser.add_argument("--poll-interval-seconds", type=float, default=float(os.environ.get("BEE_CAPACITY_TEST_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)))
-    parser.add_argument("--vram-floor-mib", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_VRAM_FLOOR_MIB", DEFAULT_VRAM_FLOOR_MIB)))
-    parser.add_argument("--rollback-deadline-seconds", type=float, default=float(os.environ.get("BEE_CAPACITY_TEST_ROLLBACK_DEADLINE_SECONDS", DEFAULT_ROLLBACK_DEADLINE_SECONDS)))
-    parser.add_argument("--systemctl-bin", default=os.environ.get("BEE_CAPACITY_TEST_SYSTEMCTL_BIN", "systemctl"))
-    parser.add_argument("--systemd-run-bin", default=os.environ.get("BEE_CAPACITY_TEST_SYSTEMD_RUN_BIN", "systemd-run"))
-    parser.add_argument("--nvidia-smi-bin", default=os.environ.get("BEE_CAPACITY_TEST_NVIDIA_SMI_BIN", "nvidia-smi"))
-    parser.add_argument("--state-dir", default=os.environ.get("BEE_CAPACITY_TEST_STATE_DIR", str(state_directory())))
-    parser.add_argument("--rollback-owner", metavar="RECEIPT_PATH", help=argparse.SUPPRESS)  # internal: detached rollback-owner entry point
-    arguments = parser.parse_args(argv)
-
-    if arguments.rollback_owner is not None:
-        return arguments
-
-    if arguments.parallel < 1:
-        parser.error(f"--parallel must be a positive integer, got {arguments.parallel}")
-    if arguments.ctx_size < 1:
-        parser.error(f"--ctx-size must be a positive integer, got {arguments.ctx_size}")
-    if arguments.phase_timeout_seconds <= 0:
-        parser.error(f"--phase-timeout-seconds must be positive, got {arguments.phase_timeout_seconds}")
-    if arguments.poll_interval_seconds <= 0:
-        parser.error(f"--poll-interval-seconds must be positive, got {arguments.poll_interval_seconds}")
-    if arguments.vram_floor_mib < 0:
-        parser.error(f"--vram-floor-mib must be non-negative, got {arguments.vram_floor_mib}")
-    if arguments.rollback_deadline_seconds <= arguments.phase_timeout_seconds:
-        parser.error("--rollback-deadline-seconds must exceed --phase-timeout-seconds so the external owner outlives a full transaction attempt")
-    if arguments.port < 1 or arguments.port > 65535:
-        parser.error(f"--port must be a valid TCP port, got {arguments.port}")
-    if arguments.gpu_index < 0:
-        parser.error(f"--gpu-index must be non-negative, got {arguments.gpu_index}")
-    if arguments.apply and not arguments.props_fixture:
-        parser.error("--apply requires --props-fixture <path>: a frozen, real /props capture. Take one read-only against the live "
-                     "known-good service first, e.g. `curl -s http://127.0.0.1:5051/props > props-fixture.json`, then pass it explicitly. "
-                     "This harness refuses to guess the response shape.")
-    if arguments.apply and arguments.props_fixture and not Path(arguments.props_fixture).is_file():
-        parser.error(f"--props-fixture {arguments.props_fixture!r} does not exist")
-
-    return arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--rollback-owner", type=Path)
+    parser.add_argument("--receipt-path", type=Path)
+    parser.add_argument("--props-fixture")
+    parser.add_argument("--approved-snapshot")
+    parser.add_argument("--state-dir", default=str(state_directory()))
+    parser.add_argument("--unit", default=DEFAULT_UNIT)
+    parser.add_argument("--start-script", default=DEFAULT_START_SCRIPT)
+    parser.add_argument("--port", default=str(DEFAULT_CANDIDATE_PORT))
+    parser.add_argument("--parallel", default=str(DEFAULT_PARALLEL))
+    parser.add_argument("--ctx-size", default=str(DEFAULT_CTX))
+    parser.add_argument("--gpu-index", default=str(DEFAULT_GPU_INDEX))
+    parser.add_argument("--phase-timeout-seconds", default=os.environ.get("BEE_CAPACITY_TEST_PHASE_TIMEOUT", str(DEFAULT_PHASE_TIMEOUT_SECONDS)))
+    parser.add_argument("--heartbeat-seconds", default=os.environ.get("BEE_CAPACITY_TEST_HEARTBEAT", str(DEFAULT_HEARTBEAT_SECONDS)))
+    parser.add_argument("--rollback-deadline-seconds", default=os.environ.get("BEE_CAPACITY_TEST_ROLLBACK_DEADLINE", str(DEFAULT_ROLLBACK_DEADLINE_SECONDS)))
+    parser.add_argument("--systemctl-bin", default="systemctl")
+    parser.add_argument("--systemd-run-bin", default="systemd-run")
+    args = parser.parse_args(argv)
+    for name in ("port", "parallel", "ctx_size", "gpu_index"):
+        try:
+            value = int(getattr(args, name))
+        except ValueError:
+            parser.error(f"--{name.replace('_', '-')} must be an integer")
+        if value <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be a positive integer")
+        setattr(args, name, value)
+    args.phase_timeout_seconds = safe_float(args.phase_timeout_seconds, "--phase-timeout-seconds", parser)
+    args.heartbeat_seconds = safe_float(args.heartbeat_seconds, "--heartbeat-seconds", parser)
+    args.rollback_deadline_seconds = safe_float(args.rollback_deadline_seconds, "--rollback-deadline-seconds", parser)
+    minimum = args.phase_timeout_seconds * 5 + args.heartbeat_seconds * 2
+    if args.rollback_deadline_seconds < minimum:
+        parser.error(f"--rollback-deadline-seconds must cover five phase budgets plus heartbeat grace ({minimum:g}s minimum)")
+    return args
 
 
-def render_plan(arguments: argparse.Namespace, candidate_spec: CandidateSpec) -> str:
-    lines = [
-        "bee-capacity-test plan (read-only; no unit stopped, no process started):",
-        f"  candidate command: {shlex.join(candidate_spec.start_argv())}",
-        f"  candidate env overrides: {json.dumps(candidate_spec.env_overrides())}",
-        f"  phase timeout: {arguments.phase_timeout_seconds:g}s, poll every {arguments.poll_interval_seconds:g}s",
-        f"  external rollback deadline: {arguments.rollback_deadline_seconds:g}s (independently supervised by systemd-run)",
-        f"  GPU: index {arguments.gpu_index} only (not min-across-GPUs)",
-        f"  vram floor: {arguments.vram_floor_mib} MiB free on GPU{arguments.gpu_index}, measured after concurrent-request proof",
-        f"  known-good unit: {arguments.unit} (stopped only after external rollback is armed; restored and identity-verified before release)",
-        "  phases: preflight -> arm-rollback -> stop-known-good -> candidate-scope -> "
-        "prove-capability -> teardown-scope -> exact-restore -> release-rollback",
-        f"  props fixture required for --apply: {arguments.props_fixture or '(none supplied — --apply will refuse)'}",
-        f"  concurrent completion requests proven: {CONCURRENT_REQUEST_COUNT}",
-        "Four slots share one KV cache sized by --ctx-size; total context is split across",
-        "concurrently scheduled slots, not per-slot. Pass --apply (with --props-fixture) to run it.",
-    ]
-    return "\n".join(lines)
+class TransactionController:
+    """Effectful controller with no restore/release authority."""
+    def __init__(self, receipt_path: Path, store: ReceiptStore, inspector: PreflightInspector, runner: CommandRunner,
+                 systemctl: str, systemd_run: str, candidate: CandidateSpec, props_fixture: dict,
+                 timeout: float, heartbeat: float, logger: Callable[[str], None], wall_clock: Callable[[], float],
+                 sleeper: Callable[[float], None]) -> None:
+        self.receipt_path, self.store, self.inspector, self.runner = receipt_path, store, inspector, runner
+        self.systemctl, self.systemd_run, self.candidate, self.props_fixture = systemctl, systemd_run, candidate, props_fixture
+        self.timeout, self.heartbeat, self.logger, self.wall_clock, self.sleeper = timeout, heartbeat, logger, wall_clock, sleeper
+
+    def report(self, phase: str) -> None:
+        self.store.update(self.receipt_path, lambda item: (setattr(item, "controller_phase", phase), setattr(item, "controller_heartbeat", self.wall_clock())))
+
+    def wait_for_ack(self) -> bool:
+        end = self.wall_clock() + self.timeout
+        while self.wall_clock() < end:
+            if self.store.read(self.receipt_path).restore_ack:
+                return True
+            self.sleeper(min(self.heartbeat, end - self.wall_clock()))
+        return self.store.read(self.receipt_path).restore_ack
+
+    def run(self) -> bool:
+        receipt = self.store.read(self.receipt_path)
+        # A stale heartbeat means "no phase completion within one whole phase
+        # budget plus grace", not merely "a blocking systemctl call is still
+        # running".  This prevents the owner racing a healthy stop/start.
+        io_timeout = min(self.timeout, max(1.0, self.heartbeat / 2))
+        self.report("stopping-known-good")
+        if not stop_known_good_and_prove_empty(self.runner, self.systemctl, receipt.unit, self.timeout):
+            return False  # owner remains armed; stale heartbeat triggers its safe recovery
+        self.report("starting-candidate")
+        argv = self.candidate.argv(receipt.snapshot.environment)
+        if not start_transient_service(self.runner, self.systemd_run, receipt.candidate_unit, argv, io_timeout):
+            return False
+        if not unit_is_running(self.runner, self.systemctl, receipt.candidate_unit, io_timeout):
+            return False
+        self.report("proving-candidate")
+        base_url = f"http://127.0.0.1:{self.candidate.port}"
+        gates = [lambda: None if http_get_json(base_url + "/health", io_timeout) == {"status": "ok"} else GateFailure("health", "candidate health failed"),
+                 make_props_gate(base_url, self.props_fixture, self.candidate.parallel, self.candidate.ctx_size, io_timeout),
+                 lambda: run_overlap_probe(base_url, io_timeout)]
+        for gate in gates:
+            failure = gate()
+            if failure:
+                self.logger(f"candidate proof failed: {failure.gate}: {failure.reason}")
+                self.report("cleanup-requested")
+                return False
+            self.report("proving-candidate")
+        # Only the owner stops the candidate, restores known-good, and writes ack.
+        self.report("cleanup-requested")
+        return self.wait_for_ack()
 
 
-def run_rollback_owner_entrypoint(receipt_path: str) -> int:
-    receipt_store = ReceiptStore(state_directory())
-    receipt = receipt_store.read_receipt(Path(receipt_path))
-    runner = default_runner
-    logger: Callable[[str], None] = lambda message: print(f"[bee-capacity-rollback:{receipt.transaction_id}] {message}", file=sys.stderr, flush=True)
-    owner = RollbackOwner(receipt, receipt_store, runner, logger, time.time, time.sleep)
-    restored = owner.wait_and_restore_if_unreleased()
-    return 0 if restored else 2
+def load_json(path: str, label: str) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} is unreadable or invalid JSON: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return data
+
+
+def render_plan() -> str:
+    return ("bee capacity test: read-only plan (no effects)\n"
+            "preflight approved snapshot -> arm owner -> stop known-good -> async transient service -> proof -> owner cleanup/restore ack\n"
+            "candidate: GPU index 1, port 5151, parallel 4, context 131072; wrapper default remains parallel 1\n"
+            "apply requires --approved-snapshot and --props-fixture; overlap fails closed without correlated /slots evidence")
+
+
+def run_owner_entrypoint(receipt_path: Path, arguments: argparse.Namespace) -> int:
+    store = ReceiptStore.from_receipt_path(receipt_path)
+    receipt = store.read(receipt_path)
+    approved = ApprovedSnapshot(receipt.snapshot.fragment_hash, receipt.snapshot.drop_in_hashes, receipt.snapshot.exec_start, receipt.snapshot.environment)
+    inspector = PreflightInspector(default_runner, arguments.systemctl_bin, receipt.unit, approved, make_health_checker(arguments.phase_timeout_seconds),
+                                   lambda path: Path(path).read_text(encoding="utf-8"), arguments.phase_timeout_seconds, receipt.snapshot.gpu_index)
+    owner = RollbackOwner(receipt_path, default_runner, inspector, lambda message: print(message, file=sys.stderr, flush=True), time.time, time.sleep)
+    return 0 if owner.run(arguments.systemctl_bin, arguments.phase_timeout_seconds) else 2
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     arguments = parse_arguments(argv)
-
-    if arguments.rollback_owner is not None:
-        return run_rollback_owner_entrypoint(arguments.rollback_owner)
-
-    candidate_spec = CandidateSpec(
-        start_script=arguments.start_script,
-        port=arguments.port,
-        parallel=arguments.parallel,
-        ctx_size=arguments.ctx_size,
-        kv_unified=not arguments.no_kv_unified,
-        gpu_index=arguments.gpu_index,
-    )
-
+    if arguments.rollback_owner:
+        return run_owner_entrypoint(arguments.rollback_owner, arguments)
     if not arguments.apply:
-        print(render_plan(arguments, candidate_spec))
+        print(render_plan())
         return 0
-
-    runner = default_runner
-    logger: Callable[[str], None] = lambda message: print(f"[bee-capacity-test] {message}", file=sys.stderr, flush=True)
-    receipt_store = ReceiptStore(Path(arguments.state_dir))
-    transaction_id = make_transaction_id(time.time)
-
-    health_checker = make_health_checker(http_get_json, arguments.poll_interval_seconds)
-    preflight = PreflightInspector(
-        runner, arguments.systemctl_bin, arguments.unit, arguments.gpu_index, arguments.port, health_checker, arguments.poll_interval_seconds
-    )
-
-    def arm_rollback(receipt: TransactionReceipt) -> bool:
-        receipt_path = receipt_store.write_receipt(receipt)
-        return spawn_detached_rollback_owner(
-            runner, arguments.systemd_run_bin, sys.executable, str(Path(__file__).resolve()), receipt_path, transaction_id, arguments.phase_timeout_seconds
-        )
-
-    def release_rollback() -> None:
-        release_rollback_owner(runner, arguments.systemctl_bin, transaction_id, receipt_store, arguments.phase_timeout_seconds)
-
-    base_url = f"http://127.0.0.1:{arguments.port}"
-    props_fixture = load_props_fixture(arguments.props_fixture)
-    gates: list[Gate] = [
-        make_health_gate(base_url, arguments.poll_interval_seconds),
-        make_props_gate(base_url, arguments.poll_interval_seconds, arguments.parallel, arguments.ctx_size, props_fixture),
-        make_slots_gate(base_url, arguments.poll_interval_seconds, arguments.parallel),
-        make_concurrent_completion_gate(base_url, CONCURRENT_REQUEST_COUNT, arguments.phase_timeout_seconds),
-        make_gpu1_vram_gate(runner, arguments.nvidia_smi_bin, arguments.gpu_index, arguments.vram_floor_mib, arguments.poll_interval_seconds),
-    ]
-
-    controller = TransactionController(
-        transaction_id=transaction_id,
-        unit=arguments.unit,
-        candidate_spec=candidate_spec,
-        preflight=preflight,
-        receipt_store=receipt_store,
-        arm_rollback=arm_rollback,
-        release_rollback=release_rollback,
-        stop_known_good=lambda: runner([arguments.systemctl_bin, "--user", "stop", arguments.unit], arguments.phase_timeout_seconds).returncode == 0,
-        known_good_cgroup_empty=lambda: known_good_cgroup_is_empty(runner, arguments.systemctl_bin, arguments.unit, arguments.poll_interval_seconds),
-        start_candidate=lambda: start_candidate_scope(runner, arguments.systemd_run_bin, candidate_spec, transaction_id, arguments.phase_timeout_seconds).returncode == 0,
-        gates=gates,
-        stop_candidate=lambda: stop_candidate_scope(runner, arguments.systemctl_bin, transaction_id, arguments.phase_timeout_seconds),
-        candidate_scope_empty=lambda: candidate_scope_is_empty(runner, arguments.systemctl_bin, transaction_id, arguments.poll_interval_seconds),
-        start_known_good=lambda: restore_known_good(runner, arguments.systemctl_bin, arguments.unit, arguments.phase_timeout_seconds, logger),
-        post_restore_snapshot=preflight.snapshot,
-        logger=logger,
-        wall_clock=time.time,
-        sleeper=time.sleep,
-        phase_timeout_seconds=arguments.phase_timeout_seconds,
-        poll_interval_seconds=arguments.poll_interval_seconds,
-        rollback_deadline_seconds=arguments.rollback_deadline_seconds,
-        systemctl_bin=arguments.systemctl_bin,
-    )
-
-    logger(f"transaction {transaction_id}: applying candidate parallel={arguments.parallel} ctx={arguments.ctx_size} gpu={arguments.gpu_index}")
-    outcome = controller.run()
-
-    if outcome.passed:
-        logger("transaction complete: candidate proved capability and known-good was restored and verified exactly")
-        return 0
-
-    logger(f"transaction FAILED at phase '{outcome.phase_reached}': {outcome.failure}")
-    if not outcome.restored_exactly:
-        logger(f"CRITICAL: known-good unit {arguments.unit} restoration was not verified exactly; external rollback owner remains armed until its deadline")
+    if not arguments.props_fixture or not arguments.approved_snapshot:
+        print("--apply requires --props-fixture and --approved-snapshot; no effects were performed", file=sys.stderr)
         return 2
-    return 1
+    try:
+        fixture = load_json(arguments.props_fixture, "props fixture")
+        approved = ApprovedSnapshot.from_json(load_json(arguments.approved_snapshot, "approved snapshot"))
+    except (KeyError, TypeError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    runner, clock = default_runner, time.time
+    inspector = PreflightInspector(runner, arguments.systemctl_bin, arguments.unit, approved, make_health_checker(arguments.phase_timeout_seconds),
+                                   lambda path: Path(path).read_text(encoding="utf-8"), arguments.phase_timeout_seconds, arguments.gpu_index)
+    snapshot = inspector.snapshot()
+    if isinstance(snapshot, PreflightFailure):
+        print(f"preflight refused: {snapshot.reason}", file=sys.stderr)
+        return 2
+    transaction_id = uuid.uuid4().hex
+    store = ReceiptStore(Path(arguments.state_dir))
+    heartbeat_grace = arguments.phase_timeout_seconds + arguments.heartbeat_seconds
+    receipt = TransactionReceipt(transaction_id, arguments.unit, candidate_unit_name(transaction_id), snapshot,
+                                 clock() + arguments.rollback_deadline_seconds, heartbeat_grace, clock())
+    receipt_path = store.write(receipt)
+    owner_argv = [sys.executable, str(Path(__file__).resolve()), "--rollback-owner", str(receipt_path),
+                  "--systemctl-bin", arguments.systemctl_bin, "--phase-timeout-seconds", str(arguments.phase_timeout_seconds)]
+    if not start_transient_service(runner, arguments.systemd_run_bin, owner_unit_name(transaction_id), owner_argv, arguments.phase_timeout_seconds):
+        print("could not arm rollback owner; known-good was not stopped", file=sys.stderr)
+        return 2
+    if not unit_is_running(runner, arguments.systemctl_bin, owner_unit_name(transaction_id), arguments.phase_timeout_seconds):
+        print("rollback owner did not become active; known-good was not stopped", file=sys.stderr)
+        return 2
+    controller = TransactionController(receipt_path, store, inspector, runner, arguments.systemctl_bin, arguments.systemd_run_bin,
+                                       CandidateSpec(arguments.start_script, arguments.port, arguments.parallel, arguments.ctx_size, arguments.gpu_index),
+                                       fixture, arguments.phase_timeout_seconds, arguments.heartbeat_seconds,
+                                       lambda message: print(message, file=sys.stderr), clock, time.sleep)
+    return 0 if controller.run() else 1
 
 
 if __name__ == "__main__":
