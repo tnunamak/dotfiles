@@ -72,6 +72,7 @@ rule is in `ai/AGENTS.md`). Add a line here whenever you create an entry.
 
 ## knowledge-management
 - [Separate facts from interpretation via sections, not files](knowledge-management/separate-facts-from-interpretation-via-sections-not-files.md) — 2026-06-25 — claim/evidence separation (Toulmin, nanopublications, zettelkasten); the design basis for this corpus's own format.
+- [CORPUS-LOG: the 2026-07-15 bulk commit (acdbd83) captured 138 agent-written entries that were never staged](knowledge-management/2026-07-15-bulk-commit-of-agent-captured-research-that-was-never-staged.md) — 2026-07-15 — provenance note so a future reader doesn't mistake the 12,914-line commit for a dump; capture succeeded, `git add` never ran; matches the "capture-as-instruction is unreliable" finding.
 
 ## session-ux
 - [Recovery systems use explicit bounded leases and separate liveness from a hard execution timeout](session-ux/recovery-systems-use-explicit-bounded-leases-and-separate-liveness-from-a-hard-execution-timeout.md) — 2026-07-13 — AWS Step Functions: task token + heartbeat prove present liveness, while timeout remains an independent upper bound; applied here as explicit resume lease + expiry rather than inferred resurrect intent.
