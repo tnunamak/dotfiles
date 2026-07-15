@@ -53,6 +53,7 @@ DEFAULT_POLL_SECONDS = 2.0
 DEFAULT_VRAM_FLOOR_MIB = 2048
 DEFAULT_START_SCRIPT = str(Path.home() / ".local/bin/llama-bee-start")
 REQUEST_COUNT = 4
+CANDIDATE_SLICE = "app-beecapacity.slice"
 
 # This is the complete interface the wrapper currently consumes.  It is an
 # allowlist, not a prefix match: an unknown manager variable can never hitch a
@@ -296,45 +297,210 @@ def owner_unit_name(transaction_id: str) -> str:
     return f"bee-capacity-rollback-{transaction_id}.service"
 
 
-def start_transient_service(runner: CommandRunner, systemd_run: str, unit: str, argv: list[str], timeout: float) -> bool:
+def start_transient_service(runner: CommandRunner, systemd_run: str, unit: str, argv: list[str], timeout: float,
+                            slice_name: str | None = None) -> bool:
     command = [systemd_run, "--user", "--no-block", "--unit=" + unit,
                # Do not use --collect/CollectMode=inactive-or-failed here:
                # teardown must successfully show NTasks=0 before restoration.
-               "--property=Type=exec", "--", *argv]
+               "--property=Type=exec"]
+    if slice_name:
+        command.append("--slice=" + slice_name)
+    command += ["--", *argv]
     try:
         return runner(command, timeout).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def unit_is_running(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
+@dataclass(frozen=True)
+class CandidateIdentity:
+    unit: str
+    slice_name: str
+    control_group: str
+    main_pid: int | None
+
+    def to_json(self) -> dict:
+        return {"unit": self.unit, "slice_name": self.slice_name, "control_group": self.control_group, "main_pid": self.main_pid}
+
+    @staticmethod
+    def from_json(data: dict) -> "CandidateIdentity":
+        main_pid = data.get("main_pid")
+        return CandidateIdentity(data["unit"], data["slice_name"], data["control_group"], int(main_pid) if main_pid is not None else None)
+
+
+def expected_candidate_identity(unit: str, uid: int | None = None) -> CandidateIdentity:
+    """Derive the unique service cgroup under the controlled user slice.
+
+    systemd.slice(5) defines ``app-beecapacity.slice`` as a child of
+    ``app.slice``. systemd.special(7) places user services below app.slice;
+    the user manager cgroup prefix is keyed by the caller's UID.
+    """
+    if not unit.endswith(".service") or "/" in unit:
+        raise ValueError(f"unsafe transient candidate unit {unit!r}")
+    actual_uid = os.getuid() if uid is None else uid
+    parent = f"/user.slice/user-{actual_uid}.slice/user@{actual_uid}.service/app.slice/{CANDIDATE_SLICE}"
+    return CandidateIdentity(unit, CANDIDATE_SLICE, parent + "/" + unit, None)
+
+
+def has_expected_candidate_location(identity: CandidateIdentity | None, unit: str) -> bool:
+    """Accept only the derived location; MainPID is bound separately."""
     try:
-        result = runner([systemctl, "--user", "show", unit, "--property=ActiveState,MainPID,ControlGroup,NTasks"], timeout)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode:
-        return False
-    fields = parse_systemctl_show(result.stdout.decode(errors="replace"))
-    try:
-        return fields.get("ActiveState") == "active" and int(fields.get("MainPID", "0")) > 0 and int(fields.get("NTasks", "0")) > 0 and bool(fields.get("ControlGroup"))
+        expected = expected_candidate_identity(unit)
     except ValueError:
         return False
+    return bool(identity and (identity.unit, identity.slice_name, identity.control_group) ==
+                (expected.unit, expected.slice_name, expected.control_group))
 
 
-def stop_and_prove_empty(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
-    """Missing/failed show is unsafe, never interpreted as an empty cgroup."""
+@dataclass(frozen=True)
+class CandidateUnitState:
+    load_state: str
+    slice_name: str
+    active_state: str
+    main_pid: int
+    control_group: str
+    n_tasks: int
+
+    @property
+    def definitively_not_loaded(self) -> bool:
+        return self.load_state == "not-found"
+
+    def observed_main_pid(self) -> int | None:
+        if self.load_state == "loaded" and self.active_state == "active" and self.main_pid > 0 and self.n_tasks > 0 and self.control_group:
+            return self.main_pid
+        return None
+
+
+def read_candidate_unit_state(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> CandidateUnitState | None:
+    try:
+        result = runner([systemctl, "--user", "show", unit, "--property=LoadState,Slice,ActiveState,MainPID,ControlGroup,NTasks"], timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    fields = parse_systemctl_show(result.stdout.decode(errors="replace"))
+    try:
+        return CandidateUnitState(fields.get("LoadState", ""), fields.get("Slice", ""), fields.get("ActiveState", ""), int(fields.get("MainPID", "0")), fields.get("ControlGroup", ""), int(fields.get("NTasks", "-1")))
+    except ValueError:
+        return None
+
+
+def bind_running_candidate(runner: CommandRunner, systemctl: str, expected: CandidateIdentity, timeout: float) -> CandidateIdentity | None:
+    state = read_candidate_unit_state(runner, systemctl, expected.unit, timeout)
+    if state is None:
+        return None
+    pid = state.observed_main_pid()
+    if pid is None or state.slice_name != expected.slice_name or state.control_group != expected.control_group:
+        return None
+    return CandidateIdentity(expected.unit, expected.slice_name, expected.control_group, pid)
+
+
+def unit_is_running(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
+    """Check a transient owner service without assigning candidate identity."""
+    state = read_candidate_unit_state(runner, systemctl, unit, timeout)
+    return bool(state and state.load_state == "loaded" and state.active_state == "active" and state.main_pid > 0 and state.n_tasks > 0 and state.control_group)
+
+
+def default_cgroup_members(control_group: str) -> tuple[bool, tuple[int, ...], tuple[int, ...]]:
+    """Return existence, processes, and threads for an exact systemd cgroup."""
+    root = Path("/sys/fs/cgroup").resolve()
+    relative = Path(control_group.lstrip("/"))
+    target = (root / relative).resolve()
+    if root not in (target, *target.parents):
+        raise OSError("unsafe cgroup path")
+    if not target.exists():
+        return False, (), ()
+    def members(name: str) -> tuple[int, ...]:
+        content = (target / name).read_text(encoding="utf-8")
+        return tuple(int(value) for value in content.split() if value)
+    return True, members("cgroup.procs"), members("cgroup.threads")
+
+
+def default_pid_cgroup(pid: int) -> str | None:
+    try:
+        for line in (Path("/proc") / str(pid) / "cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                return line.split("::", 1)[1]
+    except FileNotFoundError:
+        return None
+    raise OSError(f"cannot inspect cgroup for PID {pid}")
+
+
+def candidate_cgroup_is_proven_empty(identity: CandidateIdentity,
+                                     cgroup_members: Callable[[str], tuple[bool, tuple[int, ...], tuple[int, ...]]],
+                                     pid_cgroup: Callable[[int], str | None]) -> bool:
+    """A missing cgroup is safe only with a recorded/derived identity.
+
+    A reused PID is not assumed dead: it is accepted only when its currently
+    inspected cgroup differs from the recorded candidate cgroup.
+    """
+    try:
+        exists, processes, threads = cgroup_members(identity.control_group)
+        observed_pid_cgroup = pid_cgroup(identity.main_pid) if identity.main_pid is not None else None
+    except (OSError, ValueError):
+        return False
+    if processes or threads:
+        return False
+    if observed_pid_cgroup == identity.control_group:
+        return False
+    return True
+
+
+def stop_and_prove_candidate_absent(
+    runner: CommandRunner,
+    systemctl: str,
+    unit: str,
+    identity: CandidateIdentity | None,
+    timeout: float,
+    cgroup_members: Callable[[str], tuple[bool, tuple[int, ...], tuple[int, ...]]],
+    pid_cgroup: Callable[[int], str | None],
+    bind_identity: Callable[[CandidateIdentity], None] | None = None,
+) -> tuple[bool, CandidateIdentity | None]:
+    """Stop a live candidate or prove a recorded/derived dead one is gone.
+
+    A generic stop/show error is never accepted.  The sole positive absence
+    path is a successful ``show`` reporting ``LoadState=not-found`` together
+    with exact cgroup/PID evidence from a recorded or currently derived ID.
+    """
+    before = read_candidate_unit_state(runner, systemctl, unit, timeout)
+    if before is None:
+        return False, identity
+    if identity is None or identity.unit != unit:
+        return False, None
+    if before.definitively_not_loaded:
+        return candidate_cgroup_is_proven_empty(identity, cgroup_members, pid_cgroup), identity
+    # Loaded candidates must prove both the controlled Slice= and the complete
+    # deterministic ControlGroup= before we bind or stop anything.
+    if before.slice_name != identity.slice_name or before.control_group != identity.control_group:
+        return False, identity
+    observed_pid = before.observed_main_pid()
+    if observed_pid is not None:
+        if identity.main_pid is not None and identity.main_pid != observed_pid:
+            return False, identity
+        bound_identity = CandidateIdentity(identity.unit, identity.slice_name, identity.control_group, observed_pid)
+        if bound_identity != identity and bind_identity is not None:
+            # If the owner itself disappears after this point, the receipt
+            # already identifies the exact process it was about to stop.
+            bind_identity(bound_identity)
+        identity = bound_identity
     try:
         stopped = runner([systemctl, "--user", "stop", unit], timeout)
-        shown = runner([systemctl, "--user", "show", unit, "--property=NTasks,ActiveState"], timeout)
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    if stopped.returncode or shown.returncode:
-        return False
-    fields = parse_systemctl_show(shown.stdout.decode(errors="replace"))
-    try:
-        return fields.get("ActiveState") in {"inactive", "failed"} and int(fields["NTasks"]) == 0
-    except (KeyError, ValueError):
-        return False
+        return False, identity
+    after = read_candidate_unit_state(runner, systemctl, unit, timeout)
+    if after is None:
+        return False, identity
+    if stopped.returncode and not after.definitively_not_loaded:
+        return False, identity
+    if after.definitively_not_loaded:
+        return candidate_cgroup_is_proven_empty(identity, cgroup_members, pid_cgroup), identity
+    if after.slice_name != identity.slice_name or after.control_group != identity.control_group:
+        return False, identity
+    if identity.main_pid is not None and after.main_pid > 0 and after.main_pid != identity.main_pid:
+        return False, identity
+    if after.n_tasks != 0:
+        return False, identity
+    return candidate_cgroup_is_proven_empty(identity, cgroup_members, pid_cgroup), identity
 
 
 def stop_known_good_and_prove_empty(runner: CommandRunner, systemctl: str, unit: str, timeout: float) -> bool:
@@ -362,18 +528,22 @@ class TransactionReceipt:
     deadline: float
     heartbeat_seconds: float
     controller_heartbeat: float
+    candidate_identity: CandidateIdentity | None = None
     controller_phase: str = "armed"
     owner_phase: str = "armed"
     restore_attempts: int = 0
     restore_ack: bool = False
 
     def to_json(self) -> dict:
-        return {**self.__dict__, "snapshot": self.snapshot.to_json()}
+        return {**self.__dict__, "snapshot": self.snapshot.to_json(),
+                "candidate_identity": self.candidate_identity.to_json() if self.candidate_identity else None}
 
     @staticmethod
     def from_json(data: dict) -> "TransactionReceipt":
         copy = dict(data)
         copy["snapshot"] = KnownGoodSnapshot.from_json(copy["snapshot"])
+        if copy.get("candidate_identity") is not None:
+            copy["candidate_identity"] = CandidateIdentity.from_json(copy["candidate_identity"])
         return TransactionReceipt(**copy)
 
 
@@ -430,9 +600,12 @@ class RollbackOwner:
     """The sole cleanup/restore authority; instantiated from receipt path only."""
     def __init__(self, receipt_path: Path, runner: CommandRunner, inspector: PreflightInspector,
                  logger: Callable[[str], None], wall_clock: Callable[[], float], sleeper: Callable[[float], None],
-                 poll_seconds: float = DEFAULT_POLL_SECONDS) -> None:
+                 poll_seconds: float = DEFAULT_POLL_SECONDS,
+                 cgroup_members: Callable[[str], tuple[bool, tuple[int, ...], tuple[int, ...]]] = default_cgroup_members,
+                 pid_cgroup: Callable[[int], str | None] = default_pid_cgroup) -> None:
         self.receipt_path, self.store = receipt_path, ReceiptStore.from_receipt_path(receipt_path)
         self.runner, self.inspector, self.logger, self.wall_clock, self.sleeper, self.poll_seconds = runner, inspector, logger, wall_clock, sleeper, poll_seconds
+        self.cgroup_members, self.pid_cgroup = cgroup_members, pid_cgroup
 
     def _update(self, mutate: Callable[[TransactionReceipt], None]) -> TransactionReceipt:
         return self.store.update(self.receipt_path, mutate)
@@ -441,8 +614,18 @@ class RollbackOwner:
         receipt = self.store.read(self.receipt_path)
         if receipt.restore_ack:
             return True
+        if not has_expected_candidate_location(receipt.candidate_identity, receipt.candidate_unit):
+            self._update(lambda item: setattr(item, "owner_phase", "candidate-identity-invalid"))
+            return False
         self._update(lambda item: setattr(item, "owner_phase", "stopping-candidate"))
-        if not stop_and_prove_empty(self.runner, systemctl, receipt.candidate_unit, timeout):
+        stopped, identity = stop_and_prove_candidate_absent(
+            self.runner, systemctl, receipt.candidate_unit, receipt.candidate_identity, timeout,
+            self.cgroup_members, self.pid_cgroup,
+            lambda bound: self._update(lambda item: setattr(item, "candidate_identity", bound)),
+        )
+        if identity and identity != receipt.candidate_identity:
+            self._update(lambda item: setattr(item, "candidate_identity", identity))
+        if not stopped:
             self._update(lambda item: setattr(item, "owner_phase", "candidate-not-empty"))
             return False
         self._update(lambda item: setattr(item, "owner_phase", "restoring-known-good"))
@@ -650,6 +833,17 @@ class TransactionController:
 
     def run(self) -> bool:
         receipt = self.store.read(self.receipt_path)
+        try:
+            expected_identity = expected_candidate_identity(receipt.candidate_unit)
+        except ValueError as error:
+            self.logger(f"candidate receipt identity is invalid: {error}")
+            return False
+        # No launch is allowed unless the durable receipt already carries the
+        # exact cgroup identity. A malformed/partial receipt must not turn a
+        # controller crash into an unprovable candidate lifetime.
+        if receipt.candidate_identity != expected_identity:
+            self.logger("candidate receipt lacks the exact pre-recorded identity")
+            return False
         # A stale heartbeat means "no phase completion within one whole phase
         # budget plus grace", not merely "a blocking systemctl call is still
         # running".  This prevents the owner racing a healthy stop/start.
@@ -659,10 +853,14 @@ class TransactionController:
             return False  # owner remains armed; stale heartbeat triggers its safe recovery
         self.report("starting-candidate")
         argv = self.candidate.argv(receipt.snapshot.environment)
-        if not start_transient_service(self.runner, self.systemd_run, receipt.candidate_unit, argv, io_timeout):
+        if not start_transient_service(self.runner, self.systemd_run, receipt.candidate_unit, argv, io_timeout, CANDIDATE_SLICE):
             return False
-        if not unit_is_running(self.runner, self.systemctl, receipt.candidate_unit, io_timeout):
+        identity = bind_running_candidate(self.runner, self.systemctl, expected_identity, io_timeout)
+        if identity is None:
             return False
+        # This durable write is the boundary after which owner may accept an
+        # already-unloaded candidate as positively absent.
+        self.store.update(self.receipt_path, lambda item: setattr(item, "candidate_identity", identity))
         self.report("proving-candidate")
         base_url = f"http://127.0.0.1:{self.candidate.port}"
         gates = [lambda: None if http_get_json(base_url + "/health", io_timeout) == {"status": "ok"} else GateFailure("health", "candidate health failed"),
@@ -733,8 +931,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     transaction_id = uuid.uuid4().hex
     store = ReceiptStore(Path(arguments.state_dir))
     heartbeat_grace = arguments.phase_timeout_seconds + arguments.heartbeat_seconds
-    receipt = TransactionReceipt(transaction_id, arguments.unit, candidate_unit_name(transaction_id), snapshot,
-                                 clock() + arguments.rollback_deadline_seconds, heartbeat_grace, clock())
+    candidate_unit = candidate_unit_name(transaction_id)
+    receipt = TransactionReceipt(transaction_id, arguments.unit, candidate_unit, snapshot,
+                                 clock() + arguments.rollback_deadline_seconds, heartbeat_grace, clock(),
+                                 candidate_identity=expected_candidate_identity(candidate_unit))
     receipt_path = store.write(receipt)
     owner_argv = [sys.executable, str(Path(__file__).resolve()), "--rollback-owner", str(receipt_path),
                   "--systemctl-bin", arguments.systemctl_bin, "--phase-timeout-seconds", str(arguments.phase_timeout_seconds)]
