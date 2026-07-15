@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""Transactionally test a BeeLlama capacity candidate without touching the live service.
+
+Plan/apply, not "run": this launches a *candidate* llama-server on an alternate
+port with the requested capacity settings (default --parallel 4 --kv-unified
+--ctx-size 131072), gates it on health/props/slot/VRAM checks under an external
+timeout, and always ends by restoring (or never disturbing) the known-good
+`llama-bee.service` user unit. It never restarts, reloads, or reconfigures that
+unit; it never edits systemd files; it never touches tmux/ssh; it never persists
+candidate settings anywhere. It defaults to --dry-run/plan and requires an
+explicit --apply to launch the candidate process at all.
+
+Four slots (-np 4) share one KV cache sized by --ctx-size: 131072 total context
+is divided across the slots the server schedules concurrently, not 131072 per
+slot. Operators sizing per-conversation context must divide accordingly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Iterable, Protocol
+
+
+DEFAULT_UNIT = "llama-bee.service"
+DEFAULT_PORT = 5151
+DEFAULT_PARALLEL = 4
+DEFAULT_CTX = 131072
+DEFAULT_TIMEOUT_SECONDS = 180.0
+DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+DEFAULT_VRAM_FLOOR_MIB = 2048
+DEFAULT_START_SCRIPT = str(Path.home() / ".local/bin/llama-bee-start")
+
+
+class CommandRunner(Protocol):
+    def __call__(self, command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]: ...
+
+
+def default_runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(command, capture_output=True, timeout=timeout)
+
+
+@dataclass(frozen=True)
+class CandidateConfig:
+    unit: str
+    start_script: str
+    port: int
+    parallel: int
+    ctx_size: int
+    kv_unified: bool
+    timeout_seconds: float
+    poll_interval_seconds: float
+    vram_floor_mib: int
+    systemctl_bin: str
+    nvidia_smi_bin: str
+    extra_env: dict[str, str] = field(default_factory=dict)
+    extra_args: tuple[str, ...] = ()
+
+    def candidate_env(self, base_env: dict[str, str]) -> dict[str, str]:
+        env = dict(base_env)
+        env["LLAMA_BEE_PORT"] = str(self.port)
+        env["LLAMA_BEE_PARALLEL"] = str(self.parallel)
+        env["LLAMA_BEE_CTX"] = str(self.ctx_size)
+        env.update(self.extra_env)
+        return env
+
+    def candidate_argv(self) -> list[str]:
+        argv = [self.start_script]
+        if self.kv_unified:
+            argv += ["--kv-unified"]
+        argv += list(self.extra_args)
+        return argv
+
+
+@dataclass(frozen=True)
+class GateFailure:
+    gate: str
+    reason: str
+
+
+class Gate(Protocol):
+    def __call__(self) -> GateFailure | None: ...
+
+
+def render_plan(config: CandidateConfig, base_env: dict[str, str]) -> str:
+    env = config.candidate_env(base_env)
+    overrides = {name: env[name] for name in ("LLAMA_BEE_PORT", "LLAMA_BEE_PARALLEL", "LLAMA_BEE_CTX")}
+    lines = [
+        "bee-capacity-test plan (no process started, no service touched):",
+        f"  candidate command: {shlex.join(config.candidate_argv())}",
+        f"  candidate env overrides: {json.dumps(overrides)}",
+        f"  timeout: {config.timeout_seconds:g}s, poll every {config.poll_interval_seconds:g}s",
+        f"  vram floor: {config.vram_floor_mib} MiB free required after candidate is healthy",
+        f"  known-good unit preserved/restored: {config.unit}",
+        "  gates: process-alive, health, props(total_slots/context), slots, vram-floor",
+        "Four slots share one KV cache sized by --ctx-size; total context is split across",
+        "concurrently scheduled slots, not per-slot. Pass --apply to actually launch it.",
+    ]
+    return "\n".join(lines)
+
+
+def http_get_json(url: str, timeout: float) -> dict | list | None:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 (local-only fixed host)
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+        return None
+
+
+def make_health_gate(base_url: str, timeout: float) -> Gate:
+    def gate() -> GateFailure | None:
+        body = http_get_json(f"{base_url}/health", timeout)
+        if not isinstance(body, dict) or body.get("status") != "ok":
+            return GateFailure("health", f"unhealthy or unreachable: {body!r}")
+        return None
+
+    return gate
+
+
+def make_props_gate(base_url: str, timeout: float, parallel: int, ctx_size: int) -> Gate:
+    def gate() -> GateFailure | None:
+        body = http_get_json(f"{base_url}/props", timeout)
+        if not isinstance(body, dict):
+            return GateFailure("props", "unreachable or non-JSON response")
+        total_slots = body.get("total_slots")
+        if total_slots != parallel:
+            return GateFailure("props", f"total_slots={total_slots!r}, expected {parallel}")
+        context = body.get("default_generation_settings", {}).get("n_ctx") if isinstance(body.get("default_generation_settings"), dict) else None
+        if context is None:
+            context = body.get("n_ctx")
+        if context != ctx_size:
+            return GateFailure("props", f"context={context!r}, expected {ctx_size}")
+        return None
+
+    return gate
+
+
+def make_slots_gate(base_url: str, timeout: float, parallel: int) -> Gate:
+    def gate() -> GateFailure | None:
+        body = http_get_json(f"{base_url}/slots", timeout)
+        if not isinstance(body, list):
+            return GateFailure("slots", "unreachable, disabled, or non-JSON response")
+        if len(body) != parallel:
+            return GateFailure("slots", f"reported {len(body)} slots, expected {parallel}")
+        return None
+
+    return gate
+
+
+def parse_vram_free_mib(nvidia_smi_output: bytes) -> int | None:
+    text = nvidia_smi_output.decode("utf-8", errors="replace").strip()
+    values = [line.strip() for line in text.splitlines() if line.strip()]
+    if not values:
+        return None
+    try:
+        return min(int(value) for value in values)
+    except ValueError:
+        return None
+
+
+def make_vram_gate(runner: CommandRunner, nvidia_smi_bin: str, floor_mib: int, timeout: float) -> Gate:
+    def gate() -> GateFailure | None:
+        try:
+            result = runner(
+                [nvidia_smi_bin, "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                timeout,
+            )
+        except (subprocess.TimeoutExpired, OSError) as error:
+            return GateFailure("vram", f"nvidia-smi failed: {error}")
+        if result.returncode != 0:
+            return GateFailure("vram", f"nvidia-smi exit {result.returncode}: {result.stderr!r}")
+        free_mib = parse_vram_free_mib(result.stdout)
+        if free_mib is None:
+            return GateFailure("vram", f"could not parse nvidia-smi output: {result.stdout!r}")
+        if free_mib < floor_mib:
+            return GateFailure("vram", f"{free_mib} MiB free < {floor_mib} MiB floor")
+        return None
+
+    return gate
+
+
+@dataclass
+class CandidateResult:
+    passed: bool
+    failure: GateFailure | None
+    restored: bool
+
+
+class CandidateTrial:
+    """Owns exactly one candidate process's lifecycle and the rollback trap.
+
+    `run` never lets a candidate outlive this call: every exit path (gate
+    failure, timeout, exception, or success) reaches the `finally` block, which
+    is the single place a candidate is terminated and the known-good unit's
+    presence is verified. Restoration is unconditional so a crash mid-trial
+    cannot leave both the candidate and the real service down.
+    """
+
+    def __init__(
+        self,
+        config: CandidateConfig,
+        gates: list[Gate],
+        spawn: Callable[[list[str], dict[str, str]], subprocess.Popen],
+        ensure_known_good_running: Callable[[], bool],
+        logger: Callable[[str], None],
+        wall_clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.config = config
+        self.gates = gates
+        self.spawn = spawn
+        self.ensure_known_good_running = ensure_known_good_running
+        self.logger = logger
+        self.wall_clock = wall_clock
+        self.sleeper = sleeper
+
+    def run(self, base_env: dict[str, str]) -> CandidateResult:
+        process: subprocess.Popen | None = None
+        failure: GateFailure | None = None
+        try:
+            process = self.spawn(self.config.candidate_argv(), self.config.candidate_env(base_env))
+            failure = self._wait_for_gates(process)
+        except Exception as error:  # noqa: BLE001 - any exception must still trigger rollback
+            failure = GateFailure("exception", str(error))
+        finally:
+            self._terminate(process)
+            restored = self.ensure_known_good_running()
+        return CandidateResult(
+            passed=failure is None,
+            failure=failure,
+            restored=restored,
+        )
+
+    def _wait_for_gates(self, process: subprocess.Popen) -> GateFailure | None:
+        deadline = self.wall_clock() + self.config.timeout_seconds
+        while True:
+            exit_code = process.poll()
+            if exit_code is not None:
+                return GateFailure("process", f"candidate exited early with code {exit_code}")
+            if self.wall_clock() >= deadline:
+                return GateFailure("timeout", f"no passing gate result within {self.config.timeout_seconds:g}s")
+            all_passed = True
+            for gate in self.gates:
+                result = gate()
+                if result is not None:
+                    all_passed = False
+                    self.logger(f"gate '{result.gate}' not yet satisfied: {result.reason}")
+                    break
+            if all_passed:
+                return None
+            self.sleeper(self.config.poll_interval_seconds)
+
+    def _terminate(self, process: subprocess.Popen | None) -> None:
+        if process is None or process.poll() is not None:
+            return
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def systemd_unit_is_active(runner: CommandRunner, systemctl_bin: str, unit: str, timeout: float) -> bool:
+    try:
+        result = runner([systemctl_bin, "--user", "is-active", unit], timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.stdout.decode("utf-8", errors="replace").strip() == "active"
+
+
+def make_ensure_known_good_running(
+    runner: CommandRunner, systemctl_bin: str, unit: str, timeout: float, logger: Callable[[str], None]
+) -> Callable[[], bool]:
+    def ensure() -> bool:
+        if systemd_unit_is_active(runner, systemctl_bin, unit, timeout):
+            return True
+        logger(f"known-good unit {unit} not active after candidate trial; restarting it")
+        try:
+            result = runner([systemctl_bin, "--user", "restart", unit], timeout)
+        except (subprocess.TimeoutExpired, OSError) as error:
+            logger(f"restart of {unit} failed: {error}")
+            return False
+        if result.returncode != 0:
+            logger(f"restart of {unit} exited {result.returncode}: {result.stderr!r}")
+            return False
+        return systemd_unit_is_active(runner, systemctl_bin, unit, timeout)
+
+    return ensure
+
+
+def build_gates(config: CandidateConfig, runner: CommandRunner) -> list[Gate]:
+    base_url = f"http://127.0.0.1:{config.port}"
+    return [
+        make_health_gate(base_url, config.poll_interval_seconds),
+        make_props_gate(base_url, config.poll_interval_seconds, config.parallel, config.ctx_size),
+        make_slots_gate(base_url, config.poll_interval_seconds, config.parallel),
+        make_vram_gate(runner, config.nvidia_smi_bin, config.vram_floor_mib, config.poll_interval_seconds),
+    ]
+
+
+def make_config(arguments: argparse.Namespace) -> CandidateConfig:
+    if arguments.parallel < 1:
+        raise ValueError(f"--parallel must be a positive integer, got {arguments.parallel}")
+    if arguments.ctx_size < 1:
+        raise ValueError(f"--ctx-size must be a positive integer, got {arguments.ctx_size}")
+    if arguments.timeout_seconds <= 0:
+        raise ValueError(f"--timeout-seconds must be positive, got {arguments.timeout_seconds}")
+    if arguments.poll_interval_seconds <= 0:
+        raise ValueError(f"--poll-interval-seconds must be positive, got {arguments.poll_interval_seconds}")
+    if arguments.vram_floor_mib < 0:
+        raise ValueError(f"--vram-floor-mib must be non-negative, got {arguments.vram_floor_mib}")
+    if arguments.port < 1 or arguments.port > 65535:
+        raise ValueError(f"--port must be a valid TCP port, got {arguments.port}")
+    return CandidateConfig(
+        unit=arguments.unit,
+        start_script=arguments.start_script,
+        port=arguments.port,
+        parallel=arguments.parallel,
+        ctx_size=arguments.ctx_size,
+        kv_unified=not arguments.no_kv_unified,
+        timeout_seconds=arguments.timeout_seconds,
+        poll_interval_seconds=arguments.poll_interval_seconds,
+        vram_floor_mib=arguments.vram_floor_mib,
+        systemctl_bin=arguments.systemctl_bin,
+        nvidia_smi_bin=arguments.nvidia_smi_bin,
+    )
+
+
+def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--apply", action="store_true", help="actually launch the candidate; default is plan/dry-run only")
+    parser.add_argument("--unit", default=os.environ.get("BEE_CAPACITY_TEST_UNIT", DEFAULT_UNIT))
+    parser.add_argument("--start-script", default=os.environ.get("BEE_CAPACITY_TEST_START_SCRIPT", DEFAULT_START_SCRIPT))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_PORT", DEFAULT_PORT)))
+    parser.add_argument("--parallel", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_PARALLEL", DEFAULT_PARALLEL)))
+    parser.add_argument("--ctx-size", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_CTX", DEFAULT_CTX)))
+    parser.add_argument("--no-kv-unified", action="store_true", help="omit --kv-unified from the candidate (default: included)")
+    parser.add_argument("--timeout-seconds", type=float, default=float(os.environ.get("BEE_CAPACITY_TEST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)))
+    parser.add_argument("--poll-interval-seconds", type=float, default=float(os.environ.get("BEE_CAPACITY_TEST_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)))
+    parser.add_argument("--vram-floor-mib", type=int, default=int(os.environ.get("BEE_CAPACITY_TEST_VRAM_FLOOR_MIB", DEFAULT_VRAM_FLOOR_MIB)))
+    parser.add_argument("--systemctl-bin", default=os.environ.get("BEE_CAPACITY_TEST_SYSTEMCTL_BIN", "systemctl"))
+    parser.add_argument("--nvidia-smi-bin", default=os.environ.get("BEE_CAPACITY_TEST_NVIDIA_SMI_BIN", "nvidia-smi"))
+    return parser.parse_args(argv)
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    arguments = parse_arguments(argv)
+    try:
+        config = make_config(arguments)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    base_env = os.environ.copy()
+
+    if not arguments.apply:
+        print(render_plan(config, base_env))
+        return 0
+
+    runner = default_runner
+    logger: Callable[[str], None] = lambda message: print(f"[bee-capacity-test] {message}", file=sys.stderr, flush=True)
+    gates = build_gates(config, runner)
+    ensure_known_good_running = make_ensure_known_good_running(
+        runner, config.systemctl_bin, config.unit, config.poll_interval_seconds, logger
+    )
+
+    def spawn(argv_list: list[str], env: dict[str, str]) -> subprocess.Popen:
+        return subprocess.Popen(argv_list, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    trial = CandidateTrial(config, gates, spawn, ensure_known_good_running, logger)
+    logger(f"applying candidate trial on port {config.port}: parallel={config.parallel} ctx={config.ctx_size}")
+    result = trial.run(base_env)
+
+    if result.passed:
+        logger("candidate passed all gates; candidate terminated and known-good service confirmed running")
+    else:
+        assert result.failure is not None
+        logger(f"candidate FAILED gate '{result.failure.gate}': {result.failure.reason}")
+
+    if not result.restored:
+        logger(f"CRITICAL: known-good unit {config.unit} could not be confirmed running after rollback")
+        return 2
+
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
