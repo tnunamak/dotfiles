@@ -41,6 +41,26 @@ new_session_window_count() {
   tmux list-windows -t "=$NEW_SESSION" -F '#{window_index}' 2>/dev/null | wc -l
 }
 
+# Render the exact production status-left format. Do not strip style directives:
+# tmux must parse the complete configured format before it can render a status
+# line, so stripping would hide parser regressions in the production value.
+new_session_status_left() {
+  local format
+  format=$(tmux show-options -gv status-left 2>/dev/null)
+  tmux display-message -p -t "$NEW_SESSION" "$format" 2>/dev/null
+}
+
+assert_grouped_status_label() {
+  local group status
+  group=$(new_session_group)
+  status=$(new_session_status_left)
+  if [[ "$status" == "#[fg=#7aa2f7]#[bold][${group} group · view ${NEW_SESSION}] " ]]; then
+    pass "status labels shared group '$group' and view '$NEW_SESSION'"
+  else
+    fail "status does not label group/view identity (status=${status@Q}, group=${group@Q}, view=${NEW_SESSION@Q})"
+  fi
+}
+
 # Returns the set of window indices viewed by sessions in the new session's
 # group OTHER than the new session itself, that are attached.
 other_attached_windows() {
@@ -86,6 +106,7 @@ case "$SCENARIO" in
     assert_new_session_exists || exit 1
     grp=$(new_session_group)
     if [[ "$grp" == "main" ]]; then pass "joined group 'main'"; else fail "joined group '$grp', expected 'main'"; fi
+    assert_grouped_status_label
     assert_new_session_in_populated_group 5
     assert_new_session_views_unviewed_window
     ;;
@@ -96,6 +117,7 @@ case "$SCENARIO" in
     # Group name should still be `main` (it was named at group creation, no
     # rename of the group itself).
     if [[ "$grp" == "main" ]]; then pass "joined group 'main' (despite no session literally named 'main')"; else fail "joined group '$grp', expected 'main'"; fi
+    assert_grouped_status_label
     assert_new_session_in_populated_group 5
     assert_new_session_views_unviewed_window
     ;;
@@ -104,6 +126,7 @@ case "$SCENARIO" in
     assert_new_session_exists || exit 1
     grp=$(new_session_group)
     if [[ "$grp" == "main-10" ]]; then pass "joined drifted group 'main-10'"; else fail "joined group '$grp', expected 'main-10'"; fi
+    assert_grouped_status_label
     assert_new_session_in_populated_group 5
     assert_new_session_views_unviewed_window
     ;;
@@ -112,6 +135,7 @@ case "$SCENARIO" in
     assert_new_session_exists || exit 1
     grp=$(new_session_group)
     if [[ "$grp" == "main-10" ]]; then pass "joined populated group 'main-10' (not the empty 'main' group)"; else fail "joined group '$grp', expected 'main-10' (populated)"; fi
+    assert_grouped_status_label
     assert_new_session_in_populated_group 11
     assert_new_session_views_unviewed_window
     ;;
@@ -120,6 +144,7 @@ case "$SCENARIO" in
     assert_new_session_exists || exit 1
     grp=$(new_session_group)
     if [[ "$grp" == "main" ]]; then pass "joined group 'main'"; else fail "joined group '$grp', expected 'main'"; fi
+    assert_grouped_status_label
     # 3 windows pre, expect 4 post
     assert_new_session_created_new_window 3
     assert_new_session_views_unviewed_window
