@@ -25,9 +25,11 @@ import argparse
 import concurrent.futures
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -57,6 +59,8 @@ DEFAULT_BATCH_SIZE = 2048
 DEFAULT_UBATCH_SIZE = 512
 MAX_N_GPU_LAYERS = 999
 MAX_BATCH_SIZE = 2048
+MEBIBYTE = 1024 * 1024
+MAX_CACHE_RAM_BYTES = 32 * 1024 * 1024 * 1024
 REQUEST_COUNT = 4
 CANDIDATE_SLICE = "app-beecapacity.slice"
 
@@ -78,6 +82,8 @@ SAFE_RUNTIME_ENV = {"PATH": "/usr/bin:/bin"}
 CANDIDATE_OVERRIDE_ENV = frozenset({
     "LLAMA_BEE_CANDIDATE_OVERRIDES", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS",
     "LLAMA_BEE_CANDIDATE_BATCH_SIZE", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE",
+    "LLAMA_BEE_CANDIDATE_SERVER_PATH", "LLAMA_BEE_CANDIDATE_SERVER_SHA256",
+    "LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP", "LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB",
 })
 
 
@@ -85,9 +91,10 @@ CANDIDATE_OVERRIDE_ENV = frozenset({
 class CandidateSpec:
     """The complete, bounded candidate-only command surface.
 
-    The three tuning values are serialized into both the operator approval and
-    the durable receipt.  They are never accepted as free-form argv or as
-    inherited environment.
+    Every supplied value is serialized into both the operator approval and the
+    durable receipt.  They are never accepted as free-form argv or inherited
+    environment.  Optional controls remain absent unless an operator supplies
+    them, preserving the known-good wrapper's current behavior by default.
     """
     start_script: str
     port: int = DEFAULT_CANDIDATE_PORT
@@ -97,6 +104,10 @@ class CandidateSpec:
     n_gpu_layers: int = DEFAULT_N_GPU_LAYERS
     batch_size: int = DEFAULT_BATCH_SIZE
     ubatch_size: int = DEFAULT_UBATCH_SIZE
+    server_path: str | None = None
+    server_sha256: str | None = None
+    checkpoint_min_step: int | None = None
+    cache_ram_bytes: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("port", "parallel", "ctx_size", "gpu_index", "n_gpu_layers", "batch_size", "ubatch_size"):
@@ -112,21 +123,68 @@ class CandidateSpec:
             raise ValueError(f"batch_size must be in 1..{MAX_BATCH_SIZE}")
         if not 1 <= self.ubatch_size <= self.batch_size:
             raise ValueError("ubatch_size must be in 1..batch_size")
+        if (self.server_path is None) != (self.server_sha256 is None):
+            raise ValueError("server_path and server_sha256 must be supplied together")
+        if self.server_path is not None:
+            if type(self.server_path) is not str or not self.server_path:
+                raise ValueError("server_path must be a non-empty string")
+            path = Path(self.server_path)
+            if not path.is_absolute() or ".." in path.parts or path.name != "llama-server":
+                raise ValueError("server_path must be an absolute, normalized llama-server path")
+            if type(self.server_sha256) is not str or len(self.server_sha256) != 64 or any(character not in "0123456789abcdef" for character in self.server_sha256):
+                raise ValueError("server_sha256 must be a lowercase SHA-256 hex digest")
+        if self.checkpoint_min_step is not None:
+            if type(self.checkpoint_min_step) is not int or not 0 <= self.checkpoint_min_step <= self.ctx_size:
+                raise ValueError("checkpoint_min_step must be in 0..ctx_size")
+        if self.cache_ram_bytes is not None:
+            if type(self.cache_ram_bytes) is not int or not 0 <= self.cache_ram_bytes <= MAX_CACHE_RAM_BYTES:
+                raise ValueError(f"cache_ram_bytes must be in 0..{MAX_CACHE_RAM_BYTES}")
+            if self.cache_ram_bytes % MEBIBYTE:
+                raise ValueError("cache_ram_bytes must be an exact multiple of 1048576")
 
     def to_json(self) -> dict:
-        return {
+        result = {
             "start_script": self.start_script, "port": self.port, "parallel": self.parallel,
             "ctx_size": self.ctx_size, "gpu_index": self.gpu_index,
             "n_gpu_layers": self.n_gpu_layers, "batch_size": self.batch_size,
             "ubatch_size": self.ubatch_size,
         }
+        for name in ("server_path", "server_sha256", "checkpoint_min_step", "cache_ram_bytes"):
+            value = getattr(self, name)
+            if value is not None:
+                result[name] = value
+        return result
 
     @staticmethod
     def from_json(data: dict) -> "CandidateSpec":
-        fields = {"start_script", "port", "parallel", "ctx_size", "gpu_index", "n_gpu_layers", "batch_size", "ubatch_size"}
-        if set(data) != fields:
-            raise ValueError("candidate_spec must contain exactly the approved candidate fields")
+        required = {"start_script", "port", "parallel", "ctx_size", "gpu_index", "n_gpu_layers", "batch_size", "ubatch_size"}
+        optional = {"server_path", "server_sha256", "checkpoint_min_step", "cache_ram_bytes"}
+        if not required <= set(data) or set(data) - required - optional:
+            raise ValueError("candidate_spec contains unexpected or missing approved candidate fields")
         return CandidateSpec(**data)
+
+    def verify_server_identity(self, allowed_root: Path | None = None) -> None:
+        """Prove an explicitly selected candidate binary is policy-bound and unchanged."""
+        if self.server_path is None:
+            return
+        path = Path(self.server_path)
+        try:
+            root = (allowed_root or Path.home() / "applications").resolve(strict=True)
+            resolved = path.resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f"candidate server policy path cannot be resolved: {error}") from error
+        if resolved != path or root not in resolved.parents or not stat.S_ISREG(resolved.stat().st_mode) or not os.access(resolved, os.X_OK):
+            raise ValueError("server_path must be an executable non-symlink below ~/applications")
+        before = resolved.stat()
+        digest = hashlib.sha256()
+        with resolved.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        after = resolved.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError("server binary changed while its identity was verified")
+        if not hmac.compare_digest(digest.hexdigest(), self.server_sha256):
+            raise ValueError("server binary SHA-256 does not match server_sha256")
 
     def environment(self, loaded: dict[str, str]) -> dict[str, str]:
         """Replay only approved managed state plus this typed candidate spec."""
@@ -144,6 +202,16 @@ class CandidateSpec:
             "LLAMA_BEE_CANDIDATE_BATCH_SIZE": str(self.batch_size),
             "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": str(self.ubatch_size),
         })
+        if self.server_path is not None:
+            env.pop("LLAMA_BEE_SERVER", None)
+            env.update({"LLAMA_BEE_CANDIDATE_SERVER_PATH": self.server_path,
+                        "LLAMA_BEE_CANDIDATE_SERVER_SHA256": self.server_sha256})
+        if self.checkpoint_min_step is not None:
+            env.pop("LLAMA_BEE_CHECKPOINT_MIN_STEP", None)
+            env["LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP"] = str(self.checkpoint_min_step)
+        if self.cache_ram_bytes is not None:
+            env.pop("LLAMA_BEE_CACHE_RAM", None)
+            env["LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB"] = str(self.cache_ram_bytes // MEBIBYTE)
         return env
 
     def argv(self, loaded: dict[str, str]) -> list[str]:
@@ -856,6 +924,10 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n-gpu-layers", default=str(DEFAULT_N_GPU_LAYERS))
     parser.add_argument("--batch-size", default=str(DEFAULT_BATCH_SIZE))
     parser.add_argument("--ubatch-size", default=str(DEFAULT_UBATCH_SIZE))
+    parser.add_argument("--server-path", help="absolute ~/applications/.../llama-server path; requires --server-sha256")
+    parser.add_argument("--server-sha256", help="lowercase SHA-256 for --server-path")
+    parser.add_argument("--checkpoint-min-step", help="candidate checkpoint spacing in tokens (0..ctx-size)")
+    parser.add_argument("--cache-ram-bytes", help="candidate prompt-cache limit in bytes, a whole MiB (0..32 GiB)")
     parser.add_argument("--phase-timeout-seconds", default=os.environ.get("BEE_CAPACITY_TEST_PHASE_TIMEOUT", str(DEFAULT_PHASE_TIMEOUT_SECONDS)))
     parser.add_argument("--heartbeat-seconds", default=os.environ.get("BEE_CAPACITY_TEST_HEARTBEAT", str(DEFAULT_HEARTBEAT_SECONDS)))
     parser.add_argument("--rollback-deadline-seconds", default=os.environ.get("BEE_CAPACITY_TEST_ROLLBACK_DEADLINE", str(DEFAULT_ROLLBACK_DEADLINE_SECONDS)))
@@ -872,9 +944,16 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
         setattr(args, name, value)
     try:
         CandidateSpec(args.start_script, args.port, args.parallel, args.ctx_size, args.gpu_index,
-                      args.n_gpu_layers, args.batch_size, args.ubatch_size)
+                      args.n_gpu_layers, args.batch_size, args.ubatch_size,
+                      args.server_path, args.server_sha256,
+                      int(args.checkpoint_min_step) if args.checkpoint_min_step is not None else None,
+                      int(args.cache_ram_bytes) if args.cache_ram_bytes is not None else None)
     except ValueError as error:
         parser.error(str(error))
+    except TypeError:
+        parser.error("--checkpoint-min-step and --cache-ram-bytes must be integers")
+    args.checkpoint_min_step = int(args.checkpoint_min_step) if args.checkpoint_min_step is not None else None
+    args.cache_ram_bytes = int(args.cache_ram_bytes) if args.cache_ram_bytes is not None else None
     args.phase_timeout_seconds = safe_float(args.phase_timeout_seconds, "--phase-timeout-seconds", parser)
     args.heartbeat_seconds = safe_float(args.heartbeat_seconds, "--heartbeat-seconds", parser)
     args.rollback_deadline_seconds = safe_float(args.rollback_deadline_seconds, "--rollback-deadline-seconds", parser)
@@ -969,11 +1048,19 @@ def load_json(path: str, label: str) -> dict:
 
 
 def render_plan(candidate: CandidateSpec) -> str:
+    optional = []
+    if candidate.server_path is not None:
+        optional.append(f"server {candidate.server_path} sha256 {candidate.server_sha256}")
+    if candidate.checkpoint_min_step is not None:
+        optional.append(f"checkpoint_min_step {candidate.checkpoint_min_step}")
+    if candidate.cache_ram_bytes is not None:
+        optional.append(f"cache_ram_bytes {candidate.cache_ram_bytes}")
+    requested = "; " + ", ".join(optional) if optional else "; server/checkpoint/cache continue from known-good wrapper values"
     return ("bee capacity test: read-only plan (no effects)\n"
             "preflight approved snapshot -> arm owner -> stop known-good -> async transient service -> proof -> owner cleanup/restore ack\n"
             f"candidate: GPU index {candidate.gpu_index}, port {candidate.port}, parallel {candidate.parallel}, context {candidate.ctx_size}, "
             f"n_gpu_layers {candidate.n_gpu_layers}, batch_size {candidate.batch_size}, ubatch_size {candidate.ubatch_size}; "
-            "wrapper defaults remain n_gpu_layers 999, batch_size 2048, ubatch_size 512, parallel 1\n"
+            f"wrapper defaults remain n_gpu_layers 999, batch_size 2048, ubatch_size 512, parallel 1{requested}\n"
             "apply requires --approved-snapshot and --props-fixture; overlap fails closed without correlated /slots evidence")
 
 
@@ -991,7 +1078,14 @@ def run_owner_entrypoint(receipt_path: Path, arguments: argparse.Namespace) -> i
 def main(argv: Iterable[str] | None = None) -> int:
     arguments = parse_arguments(argv)
     candidate = CandidateSpec(arguments.start_script, arguments.port, arguments.parallel, arguments.ctx_size, arguments.gpu_index,
-                              arguments.n_gpu_layers, arguments.batch_size, arguments.ubatch_size)
+                              arguments.n_gpu_layers, arguments.batch_size, arguments.ubatch_size,
+                              arguments.server_path, arguments.server_sha256,
+                              arguments.checkpoint_min_step, arguments.cache_ram_bytes)
+    try:
+        candidate.verify_server_identity()
+    except ValueError as error:
+        print(str(error) + "; no effects were performed", file=sys.stderr)
+        return 2
     if arguments.rollback_owner:
         return run_owner_entrypoint(arguments.rollback_owner, arguments)
     if not arguments.apply:

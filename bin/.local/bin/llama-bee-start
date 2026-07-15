@@ -60,11 +60,22 @@ candidate_override_names=(
   LLAMA_BEE_CANDIDATE_BATCH_SIZE
   LLAMA_BEE_CANDIDATE_UBATCH_SIZE
 )
+candidate_optional_override_names=(
+  LLAMA_BEE_CANDIDATE_SERVER_PATH
+  LLAMA_BEE_CANDIDATE_SERVER_SHA256
+  LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP
+  LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB
+)
 candidate_override_seen=false
 if [[ ${LLAMA_BEE_CANDIDATE_OVERRIDES+x} ]]; then
   candidate_override_seen=true
 fi
 for name in "${candidate_override_names[@]}"; do
+  if [[ ${!name+x} ]]; then
+    candidate_override_seen=true
+  fi
+done
+for name in "${candidate_optional_override_names[@]}"; do
   if [[ ${!name+x} ]]; then
     candidate_override_seen=true
   fi
@@ -94,6 +105,51 @@ if "$candidate_override_seen"; then
   if (( 10#$n_gpu_layers > 999 || 10#$batch_size < 1 || 10#$batch_size > 2048 || 10#$ubatch_size < 1 || 10#$ubatch_size > 10#$batch_size )); then
     echo "ERROR: candidate values require n_gpu_layers in 0..999 and 1 <= ubatch_size <= batch_size <= 2048" >&2
     exit 1
+  fi
+  server_path_seen=false
+  for name in LLAMA_BEE_CANDIDATE_SERVER_PATH LLAMA_BEE_CANDIDATE_SERVER_SHA256; do
+    if [[ ${!name+x} ]]; then
+      server_path_seen=true
+    fi
+  done
+  if "$server_path_seen"; then
+    if [[ ! ${LLAMA_BEE_CANDIDATE_SERVER_PATH+x} || ! ${LLAMA_BEE_CANDIDATE_SERVER_SHA256+x} ]]; then
+      echo "ERROR: candidate server selection requires path and SHA-256" >&2
+      exit 1
+    fi
+    candidate_server_path="$LLAMA_BEE_CANDIDATE_SERVER_PATH"
+    candidate_server_sha256="$LLAMA_BEE_CANDIDATE_SERVER_SHA256"
+    if ! canonical_applications_path="$(/usr/bin/realpath -e -- "$HOME/applications")" || ! canonical_server_path="$(/usr/bin/realpath -e -- "$candidate_server_path")"; then
+      echo "ERROR: candidate server path cannot be canonicalized" >&2
+      exit 1
+    fi
+    # The approved typed path is itself the identity.  Reject every lexical
+    # rewrite, including ../ and ancestor links, before hashing or execing.
+    if [[ "$candidate_server_path" != "$canonical_server_path" || "$canonical_server_path" != "$canonical_applications_path"/* || "${canonical_server_path##*/}" != llama-server || -L "$candidate_server_path" || ! -f "$canonical_server_path" || ! -x "$canonical_server_path" || ! "$candidate_server_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "ERROR: candidate server must be an executable ~/applications/.../llama-server with lowercase SHA-256" >&2
+      exit 1
+    fi
+    actual_server_sha256="$(/usr/bin/sha256sum -- "$canonical_server_path")"
+    actual_server_sha256="${actual_server_sha256%% *}"
+    if [[ "$actual_server_sha256" != "$candidate_server_sha256" ]]; then
+      echo "ERROR: candidate server SHA-256 does not match" >&2
+      exit 1
+    fi
+    llama_server="$canonical_server_path"
+  fi
+  if [[ ${LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP+x} ]]; then
+    checkpoint_min_step="$LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP"
+    if ! [[ "$checkpoint_min_step" =~ ^[0-9]+$ && "$ctx_size" =~ ^[0-9]+$ ]] || [[ ${#checkpoint_min_step} -gt 6 || ${#ctx_size} -gt 6 ]] || (( 10#$checkpoint_min_step > 10#$ctx_size )); then
+      echo "ERROR: candidate checkpoint_min_step must be in 0..ctx_size" >&2
+      exit 1
+    fi
+  fi
+  if [[ ${LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB+x} ]]; then
+    cache_ram="$LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB"
+    if ! [[ "$cache_ram" =~ ^[0-9]+$ ]] || (( 10#$cache_ram > 32768 )); then
+      echo "ERROR: candidate cache_ram must be in 0..32768 MiB" >&2
+      exit 1
+    fi
   fi
 fi
 

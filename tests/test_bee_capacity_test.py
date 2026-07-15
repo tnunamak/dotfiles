@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -72,10 +74,13 @@ class PreflightTests(unittest.TestCase):
 
 class CandidateServiceTests(unittest.TestCase):
     def test_candidate_spec_accepts_requested_bounded_values_and_serializes_them(self):
-        spec = candidate(n_gpu_layers=61, batch_size=1024, ubatch_size=256)
+        spec = candidate(n_gpu_layers=61, batch_size=1024, ubatch_size=256,
+                         checkpoint_min_step=128, cache_ram_bytes=4 * m.MEBIBYTE)
         self.assertEqual(spec.to_json()["n_gpu_layers"], 61)
         self.assertEqual(spec.to_json()["batch_size"], 1024)
         self.assertEqual(spec.to_json()["ubatch_size"], 256)
+        self.assertEqual(spec.to_json()["checkpoint_min_step"], 128)
+        self.assertEqual(spec.to_json()["cache_ram_bytes"], 4 * m.MEBIBYTE)
         self.assertEqual(m.CandidateSpec.from_json(spec.to_json()), spec)
 
     def test_approved_snapshot_hash_commits_to_exact_candidate_values(self):
@@ -96,18 +101,46 @@ class CandidateServiceTests(unittest.TestCase):
     def test_candidate_spec_defaults_preserve_known_good_rendering_values(self):
         spec = candidate()
         self.assertEqual((spec.n_gpu_layers, spec.batch_size, spec.ubatch_size), (999, 2048, 512))
+        self.assertNotIn("server_path", spec.to_json())
+        self.assertNotIn("checkpoint_min_step", spec.to_json())
+        self.assertNotIn("cache_ram_bytes", spec.to_json())
+        legacy = spec.to_json()
+        self.assertEqual(m.CandidateSpec.from_json(legacy).to_json(), legacy)
 
     def test_candidate_spec_rejects_invalid_or_conflicting_override_state(self):
         for values in (
             {"n_gpu_layers": -1}, {"n_gpu_layers": 1000}, {"batch_size": 0},
             {"batch_size": 2049}, {"batch_size": 256, "ubatch_size": 512},
-            {"n_gpu_layers": True},
+            {"n_gpu_layers": True}, {"server_path": "/applications/beellama/build/bin/llama-server"},
+            {"server_path": "relative/llama-server", "server_sha256": "a" * 64},
+            {"server_path": "/applications/beellama/build/bin/not-server", "server_sha256": "a" * 64},
+            {"server_path": "/applications/beellama/build/bin/llama-server", "server_sha256": "A" * 64},
+            {"checkpoint_min_step": -1}, {"checkpoint_min_step": 131073},
+            {"cache_ram_bytes": m.MEBIBYTE - 1}, {"cache_ram_bytes": m.MAX_CACHE_RAM_BYTES + m.MEBIBYTE},
         ):
             with self.subTest(values=values):
                 with self.assertRaises(ValueError):
                     candidate(**values)
         with self.assertRaises(ValueError):
             candidate().environment({**ENV, "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "$(touch /tmp/pwned)"})
+
+    def test_explicit_server_binary_must_be_policy_bound_and_match_its_sha256(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "applications"
+            binary = root / "beellama-candidate/build/bin/llama-server"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"candidate-binary")
+            binary.chmod(0o755)
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            spec = candidate(server_path=str(binary), server_sha256=digest)
+            spec.verify_server_identity(root)
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                candidate(server_path=str(binary), server_sha256="0" * 64).verify_server_identity(root)
+            outside = Path(directory) / "llama-server"
+            outside.write_bytes(b"candidate-binary")
+            outside.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "~/applications"):
+                candidate(server_path=str(outside), server_sha256=digest).verify_server_identity(root)
 
     def test_command_is_nonblocking_transient_service_never_scope(self):
         calls = []
@@ -152,6 +185,18 @@ class CandidateServiceTests(unittest.TestCase):
         self.assertEqual(values["LLAMA_BEE_CANDIDATE_UBATCH_SIZE"], "256")
         self.assertEqual(values["PATH"], "/usr/bin:/bin")
         self.assertNotIn("HOME=/surprise", argv)
+
+    def test_explicit_controls_replace_not_infer_their_managed_values(self):
+        spec = candidate(server_path="/home/x/applications/beellama/build/bin/llama-server", server_sha256="a" * 64,
+                         checkpoint_min_step=128, cache_ram_bytes=8 * m.MEBIBYTE)
+        values = spec.environment({**ENV, "LLAMA_BEE_SERVER": "/ambient/server", "LLAMA_BEE_CHECKPOINT_MIN_STEP": "256"})
+        self.assertNotIn("LLAMA_BEE_SERVER", values)
+        self.assertNotIn("LLAMA_BEE_CHECKPOINT_MIN_STEP", values)
+        self.assertNotIn("LLAMA_BEE_CACHE_RAM", values)
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_SERVER_PATH"], spec.server_path)
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_SERVER_SHA256"], "a" * 64)
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP"], "128")
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB"], "8")
 
     def test_default_wrapper_parallel_stays_one(self):
         result = subprocess.run([str(Path(__file__).parents[1] / "bin/.local/bin/llama-bee-start"), "--print-command"],
@@ -597,7 +642,8 @@ class CliTests(unittest.TestCase):
         original = m.default_runner
         m.default_runner = lambda command, timeout: self.fail(f"unexpected effect: {command}")
         try:
-            self.assertEqual(m.main(["--n-gpu-layers", "61", "--batch-size", "1024", "--ubatch-size", "256"]), 0)
+            self.assertEqual(m.main(["--n-gpu-layers", "61", "--batch-size", "1024", "--ubatch-size", "256",
+                                     "--checkpoint-min-step", "128", "--cache-ram-bytes", str(8 * m.MEBIBYTE)]), 0)
         finally:
             m.default_runner = original
 
@@ -631,10 +677,48 @@ class CliTests(unittest.TestCase):
         for arguments in (
             ["--n-gpu-layers", "1000"], ["--batch-size", "$(touch /tmp/pwned)"],
             ["--batch-size", "256", "--ubatch-size", "512"],
+            ["--server-path", "/applications/beellama/build/bin/llama-server"],
+            ["--server-path", "relative/llama-server", "--server-sha256", "a" * 64],
+            ["--checkpoint-min-step", "-1"], ["--cache-ram-bytes", str(m.MEBIBYTE - 1)],
         ):
             with self.subTest(arguments=arguments):
                 result = subprocess.run([sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
+
+    def test_dry_plan_rejects_out_of_policy_or_hash_mismatched_server_before_output(self):
+        invalid = subprocess.run([sys.executable, str(SCRIPT), "--server-path", "/tmp/llama-server",
+                                  "--server-sha256", "a" * 64], capture_output=True, text=True)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("no effects were performed", invalid.stderr)
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            binary = home / "applications/beellama-candidate/build/bin/llama-server"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"candidate-binary")
+            binary.chmod(0o755)
+            mismatched = subprocess.run([sys.executable, str(SCRIPT), "--server-path", str(binary),
+                                        "--server-sha256", "0" * 64], capture_output=True, text=True,
+                                       env={**os.environ, "HOME": str(home)})
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("SHA-256 does not match", mismatched.stderr)
+
+    def test_apply_refuses_server_identity_failure_before_any_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "props.json"; fixture.write_text("{}")
+            snapshot_path = Path(directory) / "approved.json"
+            spec = m.CandidateSpec(m.DEFAULT_START_SCRIPT, server_path="/home/x/applications/beellama/build/bin/llama-server", server_sha256="0" * 64)
+            snapshot_path.write_text(json.dumps({"fragment_hash": "x", "drop_in_hashes": {},
+                                                  "exec_start": [m.DEFAULT_START_SCRIPT], "environment": ENV,
+                                                  "candidate_spec": spec.to_json()}))
+            original = m.default_runner
+            m.default_runner = lambda command, timeout: self.fail(f"unexpected effect: {command}")
+            try:
+                with mock.patch.object(m.CandidateSpec, "verify_server_identity", side_effect=ValueError("server binary SHA-256 does not match server_sha256")):
+                    self.assertEqual(m.main(["--apply", "--props-fixture", str(fixture),
+                                             "--approved-snapshot", str(snapshot_path),
+                                             "--server-path", spec.server_path, "--server-sha256", spec.server_sha256]), 2)
+            finally:
+                m.default_runner = original
 
 
 if __name__ == "__main__":

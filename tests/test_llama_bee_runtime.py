@@ -1,5 +1,6 @@
 import os
 import shlex
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -112,12 +113,85 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
         self.assert_option(arguments, "-b", "1024")
         self.assert_option(arguments, "-ub", "256")
 
+    def test_candidate_typed_controls_render_the_explicit_binary_checkpoint_and_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            server = home / "applications/beellama-candidate/build/bin/llama-server"
+            server.parent.mkdir(parents=True)
+            server.write_bytes(b"candidate-binary")
+            server.chmod(0o755)
+            command = print_command({
+                "HOME": str(home),
+                "LLAMA_BEE_CANDIDATE_OVERRIDES": "1",
+                "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61",
+                "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024",
+                "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256",
+                "LLAMA_BEE_CANDIDATE_SERVER_PATH": str(server),
+                "LLAMA_BEE_CANDIDATE_SERVER_SHA256": hashlib.sha256(server.read_bytes()).hexdigest(),
+                "LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP": "128",
+                "LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB": "8",
+            })
+            rejected = subprocess.run([str(START_SCRIPT), "--print-command"], text=True, capture_output=True,
+                                      env=clean_environment({
+                                          "HOME": str(home),
+                                          "LLAMA_BEE_CANDIDATE_OVERRIDES": "1",
+                                          "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61",
+                                          "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024",
+                                          "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256",
+                                          "LLAMA_BEE_CANDIDATE_SERVER_PATH": str(server),
+                                          "LLAMA_BEE_CANDIDATE_SERVER_SHA256": "0" * 64,
+                                      }))
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("SHA-256 does not match", rejected.stderr)
+        self.assertEqual(command[:2], ["exec", str(server)])
+        arguments = command[2:]
+        self.assert_option(arguments, "--checkpoint-min-step", "128")
+        self.assert_option(arguments, "--cache-ram", "8")
+
+    def test_candidate_server_rejects_ancestor_symlink_and_lexical_resolution_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            applications = home / "applications"
+            applications.mkdir()
+            outside = home / "outside/build/bin/llama-server"
+            outside.parent.mkdir(parents=True)
+            outside.write_bytes(b"candidate-binary")
+            outside.chmod(0o755)
+            digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+            inside = applications / "actual/build/bin/llama-server"
+            inside.parent.mkdir(parents=True)
+            inside.write_bytes(b"candidate-binary")
+            inside.chmod(0o755)
+            linked_inside = applications / "linked-inside"
+            linked_inside.symlink_to(applications / "actual", target_is_directory=True)
+            linked_outside = applications / "linked-outside"
+            linked_outside.symlink_to(home / "outside", target_is_directory=True)
+            base = {
+                "HOME": str(home),
+                "LLAMA_BEE_CANDIDATE_OVERRIDES": "1",
+                "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61",
+                "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024",
+                "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256",
+                "LLAMA_BEE_CANDIDATE_SERVER_SHA256": digest,
+            }
+            for path in (str(linked_inside / "build/bin/llama-server"),
+                         str(linked_outside / "build/bin/llama-server"),
+                         f"{home}/applications/../outside/build/bin/llama-server"):
+                with self.subTest(path=path):
+                    result = subprocess.run([str(START_SCRIPT), "--print-command"], text=True, capture_output=True,
+                                            env=clean_environment({**base, "LLAMA_BEE_CANDIDATE_SERVER_PATH": path}))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("ERROR: candidate server", result.stderr)
+
     def test_candidate_tuning_rejects_partial_invalid_and_injection_shaped_environment(self):
         for overrides in (
             {"LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61"},
             {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024"},
             {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61; touch /tmp/pwned", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256"},
             {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "256", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "512"},
+            {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256", "LLAMA_BEE_CANDIDATE_SERVER_PATH": "/tmp/llama-server"},
+            {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256", "LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP": "$(touch /tmp/pwned)"},
+            {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256", "LLAMA_BEE_CANDIDATE_CACHE_RAM_MIB": "32769"},
         ):
             with self.subTest(overrides=overrides):
                 result = subprocess.run([str(START_SCRIPT), "--print-command"], text=True, capture_output=True,
