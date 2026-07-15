@@ -52,6 +52,11 @@ DEFAULT_ROLLBACK_DEADLINE_SECONDS = 1200.0
 DEFAULT_POLL_SECONDS = 2.0
 DEFAULT_VRAM_FLOOR_MIB = 2048
 DEFAULT_START_SCRIPT = str(Path.home() / ".local/bin/llama-bee-start")
+DEFAULT_N_GPU_LAYERS = 999
+DEFAULT_BATCH_SIZE = 2048
+DEFAULT_UBATCH_SIZE = 512
+MAX_N_GPU_LAYERS = 999
+MAX_BATCH_SIZE = 2048
 REQUEST_COUNT = 4
 CANDIDATE_SLICE = "app-beecapacity.slice"
 
@@ -70,6 +75,87 @@ ALLOWED_BEE_ENV = frozenset({
 })
 REQUIRED_MANAGED_ENV = frozenset({"LLAMA_BEE_MODEL", "LLAMA_BEE_CTK", "LLAMA_BEE_CTV"})
 SAFE_RUNTIME_ENV = {"PATH": "/usr/bin:/bin"}
+CANDIDATE_OVERRIDE_ENV = frozenset({
+    "LLAMA_BEE_CANDIDATE_OVERRIDES", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS",
+    "LLAMA_BEE_CANDIDATE_BATCH_SIZE", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE",
+})
+
+
+@dataclass(frozen=True)
+class CandidateSpec:
+    """The complete, bounded candidate-only command surface.
+
+    The three tuning values are serialized into both the operator approval and
+    the durable receipt.  They are never accepted as free-form argv or as
+    inherited environment.
+    """
+    start_script: str
+    port: int = DEFAULT_CANDIDATE_PORT
+    parallel: int = DEFAULT_PARALLEL
+    ctx_size: int = DEFAULT_CTX
+    gpu_index: int = DEFAULT_GPU_INDEX
+    n_gpu_layers: int = DEFAULT_N_GPU_LAYERS
+    batch_size: int = DEFAULT_BATCH_SIZE
+    ubatch_size: int = DEFAULT_UBATCH_SIZE
+
+    def __post_init__(self) -> None:
+        for name in ("port", "parallel", "ctx_size", "gpu_index", "n_gpu_layers", "batch_size", "ubatch_size"):
+            if type(getattr(self, name)) is not int:
+                raise ValueError(f"{name} must be an integer")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("port must be in 1..65535")
+        if self.parallel <= 0 or self.ctx_size <= 0 or self.gpu_index < 0:
+            raise ValueError("port, parallel, and context must be positive; GPU index cannot be negative")
+        if not 0 <= self.n_gpu_layers <= MAX_N_GPU_LAYERS:
+            raise ValueError(f"n_gpu_layers must be in 0..{MAX_N_GPU_LAYERS}")
+        if not 1 <= self.batch_size <= MAX_BATCH_SIZE:
+            raise ValueError(f"batch_size must be in 1..{MAX_BATCH_SIZE}")
+        if not 1 <= self.ubatch_size <= self.batch_size:
+            raise ValueError("ubatch_size must be in 1..batch_size")
+
+    def to_json(self) -> dict:
+        return {
+            "start_script": self.start_script, "port": self.port, "parallel": self.parallel,
+            "ctx_size": self.ctx_size, "gpu_index": self.gpu_index,
+            "n_gpu_layers": self.n_gpu_layers, "batch_size": self.batch_size,
+            "ubatch_size": self.ubatch_size,
+        }
+
+    @staticmethod
+    def from_json(data: dict) -> "CandidateSpec":
+        fields = {"start_script", "port", "parallel", "ctx_size", "gpu_index", "n_gpu_layers", "batch_size", "ubatch_size"}
+        if set(data) != fields:
+            raise ValueError("candidate_spec must contain exactly the approved candidate fields")
+        return CandidateSpec(**data)
+
+    def environment(self, loaded: dict[str, str]) -> dict[str, str]:
+        """Replay only approved managed state plus this typed candidate spec."""
+        unknown = set(loaded) - ALLOWED_BEE_ENV
+        missing = REQUIRED_MANAGED_ENV - set(loaded)
+        conflicts = set(loaded) & CANDIDATE_OVERRIDE_ENV
+        if unknown or missing or conflicts:
+            raise ValueError(f"loaded environment is not a clean candidate base (unknown={sorted(unknown)}, missing={sorted(missing)}, conflicts={sorted(conflicts)})")
+        env = dict(loaded)
+        env.update({
+            "LLAMA_BEE_PORT": str(self.port), "LLAMA_BEE_PARALLEL": str(self.parallel),
+            "LLAMA_BEE_CTX": str(self.ctx_size), "LLAMA_BEE_VISIBLE_DEVICES": str(self.gpu_index),
+            "LLAMA_BEE_CANDIDATE_OVERRIDES": "1",
+            "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": str(self.n_gpu_layers),
+            "LLAMA_BEE_CANDIDATE_BATCH_SIZE": str(self.batch_size),
+            "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": str(self.ubatch_size),
+        })
+        return env
+
+    def argv(self, loaded: dict[str, str]) -> list[str]:
+        # env -i is essential for user services: Environment= alone cannot
+        # subtract arbitrary variables inherited by the user service manager.
+        # The wrapper's shebang needs PATH; HOME is reconstructed only from
+        # the loaded approved wrapper path, not inherited from the controller.
+        script_path = Path(self.start_script).expanduser()
+        home = str(script_path.parents[2]) if script_path.is_absolute and len(script_path.parents) > 2 else str(Path.home())
+        clean_runtime = {**SAFE_RUNTIME_ENV, "HOME": home}
+        pairs = [f"{key}={value}" for key, value in sorted({**clean_runtime, **self.environment(loaded)}.items())]
+        return ["/usr/bin/env", "-i", *pairs, self.start_script, "--kv-unified"]
 
 
 class CommandRunner(Protocol):
@@ -143,6 +229,7 @@ class ApprovedSnapshot:
     drop_in_hashes: dict[str, str]
     exec_start: tuple[str, ...]
     environment: dict[str, str]
+    candidate_spec: CandidateSpec | None = None
 
     @staticmethod
     def from_json(data: dict) -> "ApprovedSnapshot":
@@ -151,15 +238,19 @@ class ApprovedSnapshot:
             drop_in_hashes=dict(data["drop_in_hashes"]),
             exec_start=tuple(data["exec_start"]),
             environment=dict(data["environment"]),
+            candidate_spec=CandidateSpec.from_json(data["candidate_spec"]) if data.get("candidate_spec") is not None else None,
         )
 
     def content_hash(self) -> str:
-        return canonical_hash(json.dumps({
+        contents = {
             "fragment_hash": self.fragment_hash,
             "drop_in_hashes": self.drop_in_hashes,
             "exec_start": self.exec_start,
             "environment": self.environment,
-        }, sort_keys=True, separators=(",", ":")))
+        }
+        if self.candidate_spec is not None:
+            contents["candidate_spec"] = self.candidate_spec.to_json()
+        return canonical_hash(json.dumps(contents, sort_keys=True, separators=(",", ":")))
 
 
 @dataclass(frozen=True)
@@ -258,35 +349,6 @@ class PreflightInspector:
             return PreflightFailure("loaded unit content/ExecStart/environment differs from operator-approved hash snapshot")
         return KnownGoodSnapshot(self.unit, fragment, fragment_hash, drop_hashes, environment, argv,
                                  main_pid, cgroup, port, gpu, self.approved.content_hash())
-
-
-@dataclass(frozen=True)
-class CandidateSpec:
-    start_script: str
-    port: int = DEFAULT_CANDIDATE_PORT
-    parallel: int = DEFAULT_PARALLEL
-    ctx_size: int = DEFAULT_CTX
-    gpu_index: int = DEFAULT_GPU_INDEX
-
-    def environment(self, loaded: dict[str, str]) -> dict[str, str]:
-        """Exact approved Bee environment plus the four explicit trial changes."""
-        if set(loaded) - ALLOWED_BEE_ENV:
-            raise ValueError("loaded environment contains non-allowlisted keys")
-        env = dict(loaded)
-        env.update({"LLAMA_BEE_PORT": str(self.port), "LLAMA_BEE_PARALLEL": str(self.parallel),
-                    "LLAMA_BEE_CTX": str(self.ctx_size), "LLAMA_BEE_VISIBLE_DEVICES": str(self.gpu_index)})
-        return env
-
-    def argv(self, loaded: dict[str, str]) -> list[str]:
-        # env -i is essential for user services: Environment= alone cannot
-        # subtract arbitrary variables inherited by the user service manager.
-        # The wrapper's shebang needs PATH; HOME is reconstructed only from
-        # the loaded approved wrapper path, not inherited from the controller.
-        script_path = Path(self.start_script).expanduser()
-        home = str(script_path.parents[2]) if script_path.is_absolute and len(script_path.parents) > 2 else str(Path.home())
-        clean_runtime = {**SAFE_RUNTIME_ENV, "HOME": home}
-        pairs = [f"{key}={value}" for key, value in sorted({**clean_runtime, **self.environment(loaded)}.items())]
-        return ["/usr/bin/env", "-i", *pairs, self.start_script, "--kv-unified"]
 
 
 def candidate_unit_name(transaction_id: str) -> str:
@@ -529,6 +591,7 @@ class TransactionReceipt:
     heartbeat_seconds: float
     controller_heartbeat: float
     candidate_identity: CandidateIdentity | None = None
+    candidate_spec: CandidateSpec | None = None
     controller_phase: str = "armed"
     owner_phase: str = "armed"
     restore_attempts: int = 0
@@ -536,7 +599,8 @@ class TransactionReceipt:
 
     def to_json(self) -> dict:
         return {**self.__dict__, "snapshot": self.snapshot.to_json(),
-                "candidate_identity": self.candidate_identity.to_json() if self.candidate_identity else None}
+                "candidate_identity": self.candidate_identity.to_json() if self.candidate_identity else None,
+                "candidate_spec": self.candidate_spec.to_json() if self.candidate_spec else None}
 
     @staticmethod
     def from_json(data: dict) -> "TransactionReceipt":
@@ -544,6 +608,8 @@ class TransactionReceipt:
         copy["snapshot"] = KnownGoodSnapshot.from_json(copy["snapshot"])
         if copy.get("candidate_identity") is not None:
             copy["candidate_identity"] = CandidateIdentity.from_json(copy["candidate_identity"])
+        if copy.get("candidate_spec") is not None:
+            copy["candidate_spec"] = CandidateSpec.from_json(copy["candidate_spec"])
         return TransactionReceipt(**copy)
 
 
@@ -787,20 +853,28 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--parallel", default=str(DEFAULT_PARALLEL))
     parser.add_argument("--ctx-size", default=str(DEFAULT_CTX))
     parser.add_argument("--gpu-index", default=str(DEFAULT_GPU_INDEX))
+    parser.add_argument("--n-gpu-layers", default=str(DEFAULT_N_GPU_LAYERS))
+    parser.add_argument("--batch-size", default=str(DEFAULT_BATCH_SIZE))
+    parser.add_argument("--ubatch-size", default=str(DEFAULT_UBATCH_SIZE))
     parser.add_argument("--phase-timeout-seconds", default=os.environ.get("BEE_CAPACITY_TEST_PHASE_TIMEOUT", str(DEFAULT_PHASE_TIMEOUT_SECONDS)))
     parser.add_argument("--heartbeat-seconds", default=os.environ.get("BEE_CAPACITY_TEST_HEARTBEAT", str(DEFAULT_HEARTBEAT_SECONDS)))
     parser.add_argument("--rollback-deadline-seconds", default=os.environ.get("BEE_CAPACITY_TEST_ROLLBACK_DEADLINE", str(DEFAULT_ROLLBACK_DEADLINE_SECONDS)))
     parser.add_argument("--systemctl-bin", default="systemctl")
     parser.add_argument("--systemd-run-bin", default="systemd-run")
     args = parser.parse_args(argv)
-    for name in ("port", "parallel", "ctx_size", "gpu_index"):
+    for name in ("port", "parallel", "ctx_size", "gpu_index", "n_gpu_layers", "batch_size", "ubatch_size"):
         try:
             value = int(getattr(args, name))
         except ValueError:
             parser.error(f"--{name.replace('_', '-')} must be an integer")
-        if value <= 0:
+        if name not in {"n_gpu_layers"} and value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be a positive integer")
         setattr(args, name, value)
+    try:
+        CandidateSpec(args.start_script, args.port, args.parallel, args.ctx_size, args.gpu_index,
+                      args.n_gpu_layers, args.batch_size, args.ubatch_size)
+    except ValueError as error:
+        parser.error(str(error))
     args.phase_timeout_seconds = safe_float(args.phase_timeout_seconds, "--phase-timeout-seconds", parser)
     args.heartbeat_seconds = safe_float(args.heartbeat_seconds, "--heartbeat-seconds", parser)
     args.rollback_deadline_seconds = safe_float(args.rollback_deadline_seconds, "--rollback-deadline-seconds", parser)
@@ -843,6 +917,12 @@ class TransactionController:
         # controller crash into an unprovable candidate lifetime.
         if receipt.candidate_identity != expected_identity:
             self.logger("candidate receipt lacks the exact pre-recorded identity")
+            return False
+        if receipt.candidate_spec != self.candidate:
+            self.logger("candidate receipt lacks the exact approved effective values")
+            return False
+        if not receipt.snapshot.exec_start or self.candidate.start_script != receipt.snapshot.exec_start[0]:
+            self.logger("candidate wrapper differs from the approved known-good ExecStart")
             return False
         # A stale heartbeat means "no phase completion within one whole phase
         # budget plus grace", not merely "a blocking systemctl call is still
@@ -888,17 +968,20 @@ def load_json(path: str, label: str) -> dict:
     return data
 
 
-def render_plan() -> str:
+def render_plan(candidate: CandidateSpec) -> str:
     return ("bee capacity test: read-only plan (no effects)\n"
             "preflight approved snapshot -> arm owner -> stop known-good -> async transient service -> proof -> owner cleanup/restore ack\n"
-            "candidate: GPU index 1, port 5151, parallel 4, context 131072; wrapper default remains parallel 1\n"
+            f"candidate: GPU index {candidate.gpu_index}, port {candidate.port}, parallel {candidate.parallel}, context {candidate.ctx_size}, "
+            f"n_gpu_layers {candidate.n_gpu_layers}, batch_size {candidate.batch_size}, ubatch_size {candidate.ubatch_size}; "
+            "wrapper defaults remain n_gpu_layers 999, batch_size 2048, ubatch_size 512, parallel 1\n"
             "apply requires --approved-snapshot and --props-fixture; overlap fails closed without correlated /slots evidence")
 
 
 def run_owner_entrypoint(receipt_path: Path, arguments: argparse.Namespace) -> int:
     store = ReceiptStore.from_receipt_path(receipt_path)
     receipt = store.read(receipt_path)
-    approved = ApprovedSnapshot(receipt.snapshot.fragment_hash, receipt.snapshot.drop_in_hashes, receipt.snapshot.exec_start, receipt.snapshot.environment)
+    approved = ApprovedSnapshot(receipt.snapshot.fragment_hash, receipt.snapshot.drop_in_hashes, receipt.snapshot.exec_start,
+                                receipt.snapshot.environment, receipt.candidate_spec)
     inspector = PreflightInspector(default_runner, arguments.systemctl_bin, receipt.unit, approved, make_health_checker(arguments.phase_timeout_seconds),
                                    lambda path: Path(path).read_text(encoding="utf-8"), arguments.phase_timeout_seconds, receipt.snapshot.gpu_index)
     owner = RollbackOwner(receipt_path, default_runner, inspector, lambda message: print(message, file=sys.stderr, flush=True), time.time, time.sleep)
@@ -907,10 +990,12 @@ def run_owner_entrypoint(receipt_path: Path, arguments: argparse.Namespace) -> i
 
 def main(argv: Iterable[str] | None = None) -> int:
     arguments = parse_arguments(argv)
+    candidate = CandidateSpec(arguments.start_script, arguments.port, arguments.parallel, arguments.ctx_size, arguments.gpu_index,
+                              arguments.n_gpu_layers, arguments.batch_size, arguments.ubatch_size)
     if arguments.rollback_owner:
         return run_owner_entrypoint(arguments.rollback_owner, arguments)
     if not arguments.apply:
-        print(render_plan())
+        print(render_plan(candidate))
         return 0
     if not arguments.props_fixture or not arguments.approved_snapshot:
         print("--apply requires --props-fixture and --approved-snapshot; no effects were performed", file=sys.stderr)
@@ -920,6 +1005,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         approved = ApprovedSnapshot.from_json(load_json(arguments.approved_snapshot, "approved snapshot"))
     except (KeyError, TypeError, ValueError) as error:
         print(str(error), file=sys.stderr)
+        return 2
+    if approved.candidate_spec is None:
+        print("approved snapshot is missing candidate_spec; no effects were performed", file=sys.stderr)
+        return 2
+    if approved.candidate_spec != candidate:
+        print("approved snapshot candidate_spec differs from requested effective values; no effects were performed", file=sys.stderr)
         return 2
     runner, clock = default_runner, time.time
     inspector = PreflightInspector(runner, arguments.systemctl_bin, arguments.unit, approved, make_health_checker(arguments.phase_timeout_seconds),
@@ -934,7 +1025,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     candidate_unit = candidate_unit_name(transaction_id)
     receipt = TransactionReceipt(transaction_id, arguments.unit, candidate_unit, snapshot,
                                  clock() + arguments.rollback_deadline_seconds, heartbeat_grace, clock(),
-                                 candidate_identity=expected_candidate_identity(candidate_unit))
+                                 candidate_identity=expected_candidate_identity(candidate_unit), candidate_spec=candidate)
     receipt_path = store.write(receipt)
     owner_argv = [sys.executable, str(Path(__file__).resolve()), "--rollback-owner", str(receipt_path),
                   "--systemctl-bin", arguments.systemctl_bin, "--phase-timeout-seconds", str(arguments.phase_timeout_seconds)]
@@ -945,7 +1036,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         print("rollback owner did not become active; known-good was not stopped", file=sys.stderr)
         return 2
     controller = TransactionController(receipt_path, store, inspector, runner, arguments.systemctl_bin, arguments.systemd_run_bin,
-                                       CandidateSpec(arguments.start_script, arguments.port, arguments.parallel, arguments.ctx_size, arguments.gpu_index),
+                                       candidate,
                                        fixture, arguments.phase_timeout_seconds, arguments.heartbeat_seconds,
                                        lambda message: print(message, file=sys.stderr), clock, time.sleep)
     return 0 if controller.run() else 1

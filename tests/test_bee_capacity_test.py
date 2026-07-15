@@ -38,6 +38,10 @@ def snapshot():
                                ("/home/x/.local/bin/llama-bee-start",), 42, "/cg", 5051, 1, approved().content_hash())
 
 
+def candidate(**values):
+    return m.CandidateSpec("/home/x/.local/bin/llama-bee-start", **values)
+
+
 class PreflightTests(unittest.TestCase):
     def inspect(self, output=SHOW, files=None, health=lambda port: port == 5051, approved_snapshot=None):
         files = files or {"/frag": FRAGMENT, "/drop": DROP}
@@ -67,6 +71,44 @@ class PreflightTests(unittest.TestCase):
 
 
 class CandidateServiceTests(unittest.TestCase):
+    def test_candidate_spec_accepts_requested_bounded_values_and_serializes_them(self):
+        spec = candidate(n_gpu_layers=61, batch_size=1024, ubatch_size=256)
+        self.assertEqual(spec.to_json()["n_gpu_layers"], 61)
+        self.assertEqual(spec.to_json()["batch_size"], 1024)
+        self.assertEqual(spec.to_json()["ubatch_size"], 256)
+        self.assertEqual(m.CandidateSpec.from_json(spec.to_json()), spec)
+
+    def test_approved_snapshot_hash_commits_to_exact_candidate_values(self):
+        spec = candidate(n_gpu_layers=61, batch_size=1024, ubatch_size=256)
+        approved_with_candidate = m.ApprovedSnapshot(approved().fragment_hash, approved().drop_in_hashes,
+                                                     approved().exec_start, approved().environment, spec)
+        changed = m.ApprovedSnapshot(approved().fragment_hash, approved().drop_in_hashes,
+                                     approved().exec_start, approved().environment, candidate(n_gpu_layers=62, batch_size=1024, ubatch_size=256))
+        self.assertNotEqual(approved_with_candidate.content_hash(), changed.content_hash())
+        self.assertEqual(m.ApprovedSnapshot.from_json({
+            "fragment_hash": approved_with_candidate.fragment_hash,
+            "drop_in_hashes": approved_with_candidate.drop_in_hashes,
+            "exec_start": approved_with_candidate.exec_start,
+            "environment": approved_with_candidate.environment,
+            "candidate_spec": spec.to_json(),
+        }).candidate_spec, spec)
+
+    def test_candidate_spec_defaults_preserve_known_good_rendering_values(self):
+        spec = candidate()
+        self.assertEqual((spec.n_gpu_layers, spec.batch_size, spec.ubatch_size), (999, 2048, 512))
+
+    def test_candidate_spec_rejects_invalid_or_conflicting_override_state(self):
+        for values in (
+            {"n_gpu_layers": -1}, {"n_gpu_layers": 1000}, {"batch_size": 0},
+            {"batch_size": 2049}, {"batch_size": 256, "ubatch_size": 512},
+            {"n_gpu_layers": True},
+        ):
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    candidate(**values)
+        with self.assertRaises(ValueError):
+            candidate().environment({**ENV, "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "$(touch /tmp/pwned)"})
+
     def test_command_is_nonblocking_transient_service_never_scope(self):
         calls = []
         runner = lambda command, timeout: (calls.append(command), done(command))[1]
@@ -93,8 +135,8 @@ class CandidateServiceTests(unittest.TestCase):
                          "/user.slice/user-1000.slice/user@1000.service/app.slice/app-beecapacity.slice/bee-capacity-candidate-t.service")
         self.assertIsNone(identity.main_pid)
 
-    def test_clean_env_replays_exact_managed_values_and_only_four_overrides(self):
-        argv = m.CandidateSpec("start", 5151, 4, 131072, 1).argv(ENV)
+    def test_clean_env_replays_exact_managed_values_and_only_typed_candidate_overrides(self):
+        argv = m.CandidateSpec("start", 5151, 4, 131072, 1, 61, 1024, 256).argv(ENV)
         self.assertEqual(argv[:2], ["/usr/bin/env", "-i"])
         values = dict(value.split("=", 1) for value in argv[2:-2])
         self.assertEqual(values["LLAMA_BEE_MMPROJ"], "/vision.gguf")
@@ -104,6 +146,10 @@ class CandidateServiceTests(unittest.TestCase):
         self.assertEqual(values["LLAMA_BEE_PARALLEL"], "4")
         self.assertEqual(values["LLAMA_BEE_CTX"], "131072")
         self.assertEqual(values["LLAMA_BEE_VISIBLE_DEVICES"], "1")
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_OVERRIDES"], "1")
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_N_GPU_LAYERS"], "61")
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_BATCH_SIZE"], "1024")
+        self.assertEqual(values["LLAMA_BEE_CANDIDATE_UBATCH_SIZE"], "256")
         self.assertEqual(values["PATH"], "/usr/bin:/bin")
         self.assertNotIn("HOME=/surprise", argv)
 
@@ -147,6 +193,19 @@ class ReceiptAndOwnerTests(unittest.TestCase):
         receipt = store.read(path)
         self.assertEqual(receipt.owner_phase, "stopping-candidate")
         self.assertEqual(receipt.controller_phase, "cleanup-requested")
+
+    def test_receipt_persists_exact_candidate_values_without_changing_legacy_owner_recovery(self):
+        exact = candidate(n_gpu_layers=61, batch_size=1024, ubatch_size=256)
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        store = m.ReceiptStore(Path(directory.name))
+        path = store.write(m.TransactionReceipt("t", "llama-bee.service", "candidate.service", snapshot(), 100, 5, 0,
+                                                candidate_spec=exact))
+        self.assertEqual(store.read(path).candidate_spec, exact)
+        # Existing receipts omit candidate_spec. The rollback owner still uses
+        # their unchanged known-good identity/hash semantics to recover.
+        legacy = store.write(m.TransactionReceipt("legacy", "llama-bee.service", "candidate.service", snapshot(), 100, 5, 0,
+                                                  candidate_identity=m.expected_candidate_identity("candidate.service")))
+        self.assertIsNone(store.read(legacy).candidate_spec)
 
     def test_only_owner_writes_restore_ack(self):
         owner, store, path, calls = self.make_owner()
@@ -457,18 +516,33 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(store.read(path).restore_ack)
         self.assertEqual(calls, [])
 
+    def test_controller_refuses_missing_or_mismatched_candidate_spec_before_any_effect(self):
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        store = m.ReceiptStore(Path(directory.name)); candidate_unit = m.candidate_unit_name("spec")
+        expected = m.expected_candidate_identity(candidate_unit)
+        path = store.write(m.TransactionReceipt("spec", "llama-bee.service", candidate_unit, snapshot(), 100, 5, 0,
+                                                candidate_identity=expected, candidate_spec=candidate(batch_size=1024, ubatch_size=256)))
+        calls = []
+        controller = m.TransactionController(path, store, type("I", (), {})(),
+                                             lambda command, timeout: calls.append(command), "systemctl", "systemd-run",
+                                             candidate(n_gpu_layers=61, batch_size=1024, ubatch_size=256), {}, 1, 1,
+                                             lambda x: None, lambda: 0, lambda x: None)
+        self.assertFalse(controller.run())
+        self.assertEqual(calls, [])
+
     def test_controller_exception_leaves_durable_owner_armed(self):
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         store = m.ReceiptStore(Path(directory.name)); candidate_unit = m.candidate_unit_name("t")
+        spec = candidate()
         path = store.write(m.TransactionReceipt("t", "llama-bee.service", candidate_unit, snapshot(), 100, 5, 0,
-                                                candidate_identity=m.expected_candidate_identity(candidate_unit)))
+                                                candidate_identity=m.expected_candidate_identity(candidate_unit), candidate_spec=spec))
         def runner(command, timeout):
             if command[0] == "systemd-run":
                 raise RuntimeError("controller crashed during candidate launch")
             if command[2] == "show":
                 return done(command, stdout=b"ActiveState=inactive\nNTasks=0\n")
             return done(command)
-        controller = m.TransactionController(path, store, type("I", (), {})(), runner, "systemctl", "systemd-run", m.CandidateSpec("start"), {}, 1, 1, lambda x: None, lambda: 0, lambda x: None)
+        controller = m.TransactionController(path, store, type("I", (), {})(), runner, "systemctl", "systemd-run", spec, {}, 1, 1, lambda x: None, lambda: 0, lambda x: None)
         with self.assertRaises(RuntimeError):
             controller.run()
         receipt = store.read(path)
@@ -479,8 +553,9 @@ class ControllerTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         store = m.ReceiptStore(Path(directory.name)); candidate_unit = m.candidate_unit_name("bound")
         expected = m.expected_candidate_identity(candidate_unit)
+        spec = candidate()
         path = store.write(m.TransactionReceipt("bound", "llama-bee.service", candidate_unit, snapshot(), 100, 5, 0,
-                                                candidate_identity=expected))
+                                                candidate_identity=expected, candidate_spec=spec))
         calls = []
         def runner(command, timeout):
             calls.append(command)
@@ -494,7 +569,7 @@ class ControllerTests(unittest.TestCase):
         m.http_get_json = lambda url, timeout: None  # stop at the first mocked proof gate
         try:
             controller = m.TransactionController(path, store, type("I", (), {})(), runner, "systemctl", "systemd-run",
-                                                 m.CandidateSpec("start"), {}, 1, 1, lambda x: None, lambda: 0, lambda x: None)
+                                                 spec, {}, 1, 1, lambda x: None, lambda: 0, lambda x: None)
             self.assertFalse(controller.run())
         finally:
             m.http_get_json = original
@@ -518,6 +593,30 @@ class CliTests(unittest.TestCase):
         finally:
             m.default_runner = original
 
+    def test_dry_run_prints_requested_effective_candidate_values_without_effects(self):
+        original = m.default_runner
+        m.default_runner = lambda command, timeout: self.fail(f"unexpected effect: {command}")
+        try:
+            self.assertEqual(m.main(["--n-gpu-layers", "61", "--batch-size", "1024", "--ubatch-size", "256"]), 0)
+        finally:
+            m.default_runner = original
+
+    def test_apply_refuses_missing_or_mismatched_approved_candidate_before_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "props.json"; fixture.write_text("{}")
+            missing = Path(directory) / "missing.json"
+            mismatch = Path(directory) / "mismatch.json"
+            base = {"fragment_hash": "x", "drop_in_hashes": {}, "exec_start": [m.DEFAULT_START_SCRIPT], "environment": ENV}
+            missing.write_text(json.dumps(base))
+            mismatch.write_text(json.dumps({**base, "candidate_spec": m.CandidateSpec(m.DEFAULT_START_SCRIPT, n_gpu_layers=61, batch_size=1024, ubatch_size=256).to_json()}))
+            original = m.default_runner
+            m.default_runner = lambda command, timeout: self.fail(f"unexpected effect: {command}")
+            try:
+                self.assertEqual(m.main(["--apply", "--props-fixture", str(fixture), "--approved-snapshot", str(missing)]), 2)
+                self.assertEqual(m.main(["--apply", "--props-fixture", str(fixture), "--approved-snapshot", str(mismatch)]), 2)
+            finally:
+                m.default_runner = original
+
     def test_malformed_environment_is_friendly(self):
         env = {**os.environ, "BEE_CAPACITY_TEST_PHASE_TIMEOUT": "broken"}
         result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, env=env)
@@ -527,6 +626,15 @@ class CliTests(unittest.TestCase):
     def test_conservative_deadline_validation(self):
         result = subprocess.run([sys.executable, str(SCRIPT), "--rollback-deadline-seconds", "1"], capture_output=True, text=True)
         self.assertIn("five phase budgets", result.stderr)
+
+    def test_candidate_cli_bounds_reject_injection_shaped_or_conflicting_values(self):
+        for arguments in (
+            ["--n-gpu-layers", "1000"], ["--batch-size", "$(touch /tmp/pwned)"],
+            ["--batch-size", "256", "--ubatch-size", "512"],
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run([sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

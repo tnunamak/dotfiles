@@ -48,6 +48,54 @@ checkpoint_min_step="${LLAMA_BEE_CHECKPOINT_MIN_STEP:-256}"
 cache_ram="${LLAMA_BEE_CACHE_RAM:-4096}"
 cache_type_k="${LLAMA_BEE_CTK:-q5_0}"
 cache_type_v="${LLAMA_BEE_CTV:-q4_1}"
+n_gpu_layers=999
+batch_size=2048
+ubatch_size=512
+
+# These values are a candidate-service capability, not ordinary wrapper
+# configuration.  A candidate may supply all of them through bee-capacity-
+# test's env -i boundary; partial, invalid, or ambient state is refused.
+candidate_override_names=(
+  LLAMA_BEE_CANDIDATE_N_GPU_LAYERS
+  LLAMA_BEE_CANDIDATE_BATCH_SIZE
+  LLAMA_BEE_CANDIDATE_UBATCH_SIZE
+)
+candidate_override_seen=false
+if [[ ${LLAMA_BEE_CANDIDATE_OVERRIDES+x} ]]; then
+  candidate_override_seen=true
+fi
+for name in "${candidate_override_names[@]}"; do
+  if [[ ${!name+x} ]]; then
+    candidate_override_seen=true
+  fi
+done
+
+if "$candidate_override_seen"; then
+  if [[ "${LLAMA_BEE_CANDIDATE_OVERRIDES:-}" != 1 ]]; then
+    echo "ERROR: candidate overrides require LLAMA_BEE_CANDIDATE_OVERRIDES=1" >&2
+    exit 1
+  fi
+  for name in "${candidate_override_names[@]}"; do
+    if [[ ! ${!name+x} ]]; then
+      echo "ERROR: candidate overrides require all three bounded values" >&2
+      exit 1
+    fi
+  done
+  n_gpu_layers="$LLAMA_BEE_CANDIDATE_N_GPU_LAYERS"
+  batch_size="$LLAMA_BEE_CANDIDATE_BATCH_SIZE"
+  ubatch_size="$LLAMA_BEE_CANDIDATE_UBATCH_SIZE"
+  for name in n_gpu_layers batch_size ubatch_size; do
+    value="${!name}"
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ ${#value} -gt 4 ]]; then
+      echo "ERROR: candidate $name must be a bounded integer, got '$value'" >&2
+      exit 1
+    fi
+  done
+  if (( 10#$n_gpu_layers > 999 || 10#$batch_size < 1 || 10#$batch_size > 2048 || 10#$ubatch_size < 1 || 10#$ubatch_size > 10#$batch_size )); then
+    echo "ERROR: candidate values require n_gpu_layers in 0..999 and 1 <= ubatch_size <= batch_size <= 2048" >&2
+    exit 1
+  fi
+fi
 
 # Keep the known-good Qwen 3.6 template local instead of relying on an HF cache.
 default_chat_template="/media/windows/AI Models/LLMs/Chat Templates/Qwen-Fixed-Chat-Templates/23a40b0bd4d197c31d39e3c442fd2cd6100b3971/chat_template.jinja"
@@ -66,7 +114,7 @@ server_args=(
   --port "$port"
   --host 127.0.0.1
   --slots
-  --n-gpu-layers 999
+  --n-gpu-layers "$n_gpu_layers"
   -np "$parallel"
   --ctx-size "$ctx_size"
   --ctx-checkpoints "$ctx_checkpoints"
@@ -76,8 +124,8 @@ server_args=(
   --cache-type-v "$cache_type_v"
   --cache-type-k-draft q8_0
   --cache-type-v-draft q8_0
-  -b 2048
-  -ub 512
+  -b "$batch_size"
+  -ub "$ubatch_size"
   --flash-attn on
   --no-host
   --jinja

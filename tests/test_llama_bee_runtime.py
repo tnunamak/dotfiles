@@ -58,6 +58,9 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
         self.assert_option(arguments, "--cache-type-k", "q5_0")
         self.assert_option(arguments, "--cache-type-v", "q4_1")
         self.assert_option(arguments, "--spec-draft-n-max", "3")
+        self.assert_option(arguments, "--n-gpu-layers", "999")
+        self.assert_option(arguments, "-b", "2048")
+        self.assert_option(arguments, "-ub", "512")
         self.assert_option(arguments, "--reasoning", "on")
         self.assert_option(arguments, "--reasoning-budget", "-1")
         self.assert_option(arguments, "--chat-template-kwargs", '{"preserve_thinking":true}')
@@ -96,6 +99,31 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
         self.assertIn("--no-mmproj-offload", arguments)
         self.assertNotIn("--spec-type", arguments)
         self.assertNotIn("--chat-template-file", arguments)
+
+    def test_candidate_only_tuning_renders_the_requested_allowlisted_values(self):
+        command = print_command({
+            "LLAMA_BEE_CANDIDATE_OVERRIDES": "1",
+            "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61",
+            "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024",
+            "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256",
+        })
+        arguments = command[2:]
+        self.assert_option(arguments, "--n-gpu-layers", "61")
+        self.assert_option(arguments, "-b", "1024")
+        self.assert_option(arguments, "-ub", "256")
+
+    def test_candidate_tuning_rejects_partial_invalid_and_injection_shaped_environment(self):
+        for overrides in (
+            {"LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61"},
+            {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024"},
+            {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61; touch /tmp/pwned", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "1024", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "256"},
+            {"LLAMA_BEE_CANDIDATE_OVERRIDES": "1", "LLAMA_BEE_CANDIDATE_N_GPU_LAYERS": "61", "LLAMA_BEE_CANDIDATE_BATCH_SIZE": "256", "LLAMA_BEE_CANDIDATE_UBATCH_SIZE": "512"},
+        ):
+            with self.subTest(overrides=overrides):
+                result = subprocess.run([str(START_SCRIPT), "--print-command"], text=True, capture_output=True,
+                                        env=clean_environment(overrides))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ERROR: candidate", result.stderr)
 
     def test_unit_and_memlock_drop_in_are_base_configuration_only(self):
         self.assertTrue(os.access(START_SCRIPT, os.X_OK))
