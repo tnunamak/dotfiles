@@ -4,6 +4,8 @@ One line per entry, **newest first**. Agents read this first to decide what to o
 (see `README.md` for the convention; the standing "check here before web-researching"
 rule is in `ai/AGENTS.md`). Add a line here whenever you create an entry.
 
+- [JavaScript consumers should receive a pinned package while source JSON and immutable release artifacts remain authoritative](api-contract-design/javascript-contracts-should-ship-as-pinned-packages-while-source-json-and-release-artifacts-remain-authoritative.md) — 2026-07-15 — Octokit distributes an OpenAPI spec as a Node package while Stripe keeps JSON/YAML specs public; for TypeScript consumers, use an exact npm package generated from authoritative JSON, retain immutable GitHub release assets for inspection/non-JS consumers, and use trusted publishing plus provenance rather than persistent tokens.
+
 ## llm-serving
 - [MTP hybrid Qwen serving with four slots needs measured headroom because 131k unified KV is aggregate and speculative rollback expands recurrent state](llm-serving/mtp-hybrid-qwen-shared-kv-four-slot-serving-needs-measured-headroom.md) — 2026-07-15 — upstream unified KV is aggregate across slots; MTP adds a separate draft context and remains unoptimized for recurrent-Qwen batching, while Bee’s Turbo/TCQ types require backend validation. Preserve a known cache pair and measure the full shared-context, four-slot workload before deploying aggressive compression.
 
