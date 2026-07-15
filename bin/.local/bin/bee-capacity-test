@@ -223,7 +223,7 @@ class CandidateSpec:
         home = str(script_path.parents[2]) if script_path.is_absolute and len(script_path.parents) > 2 else str(Path.home())
         clean_runtime = {**SAFE_RUNTIME_ENV, "HOME": home}
         pairs = [f"{key}={value}" for key, value in sorted({**clean_runtime, **self.environment(loaded)}.items())]
-        return ["/usr/bin/env", "-i", *pairs, self.start_script, "--kv-unified"]
+        return ["/usr/bin/env", "-i", *pairs, self.start_script]
 
 
 class CommandRunner(Protocol):

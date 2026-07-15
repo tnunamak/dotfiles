@@ -2,6 +2,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,11 @@ def snapshot():
 
 def candidate(**values):
     return m.CandidateSpec("/home/x/.local/bin/llama-bee-start", **values)
+
+
+def render_start(command, environment):
+    result = subprocess.run(command, check=True, text=True, capture_output=True, env=environment)
+    return shlex.split(result.stdout)
 
 
 class PreflightTests(unittest.TestCase):
@@ -171,7 +177,7 @@ class CandidateServiceTests(unittest.TestCase):
     def test_clean_env_replays_exact_managed_values_and_only_typed_candidate_overrides(self):
         argv = m.CandidateSpec("start", 5151, 4, 131072, 1, 61, 1024, 256).argv(ENV)
         self.assertEqual(argv[:2], ["/usr/bin/env", "-i"])
-        values = dict(value.split("=", 1) for value in argv[2:-2])
+        values = dict(value.split("=", 1) for value in argv[2:-1])
         self.assertEqual(values["LLAMA_BEE_MMPROJ"], "/vision.gguf")
         self.assertEqual(values["LLAMA_BEE_CHAT_TEMPLATE"], "/template.jinja")
         self.assertEqual(values["LLAMA_BEE_CACHE_RAM"], "4096")
@@ -185,6 +191,36 @@ class CandidateServiceTests(unittest.TestCase):
         self.assertEqual(values["LLAMA_BEE_CANDIDATE_UBATCH_SIZE"], "256")
         self.assertEqual(values["PATH"], "/usr/bin:/bin")
         self.assertNotIn("HOME=/surprise", argv)
+        self.assertEqual(argv[-1], "start")
+
+    def test_rendered_candidate_argv_has_one_wrapper_owned_kv_unified_and_only_typed_differences(self):
+        start_script = Path(__file__).parents[1] / "bin/.local/bin/llama-bee-start"
+        base_environment = {"PATH": "/usr/bin:/bin", "HOME": str(start_script.parents[2]), **ENV}
+        canonical = render_start([str(start_script), "--print-command"], base_environment)
+        spec = m.CandidateSpec(str(start_script), 5151, 4, 131072, 1, 61, 1024, 256,
+                               checkpoint_min_step=128, cache_ram_bytes=8 * m.MEBIBYTE)
+        candidate_command = render_start([*spec.argv(ENV), "--print-command"], base_environment)
+
+        expected = list(canonical)
+        for option, value in (("--port", "5151"), ("-np", "4"), ("--ctx-size", "131072"),
+                              ("--n-gpu-layers", "61"), ("-b", "1024"), ("-ub", "256"),
+                              ("--checkpoint-min-step", "128"), ("--cache-ram", "8")):
+            expected[expected.index(option) + 1] = value
+        self.assertEqual(candidate_command, expected)
+        self.assertEqual(candidate_command.count("--kv-unified"), 1)
+
+    def test_omitted_candidate_optional_controls_preserve_canonical_rendering(self):
+        start_script = Path(__file__).parents[1] / "bin/.local/bin/llama-bee-start"
+        base_environment = {"PATH": "/usr/bin:/bin", "HOME": str(start_script.parents[2]), **ENV}
+        canonical = render_start([str(start_script), "--print-command"], base_environment)
+        spec = m.CandidateSpec(str(start_script), 5151, 4, 131072, 1, 61, 1024, 256)
+        candidate_command = render_start([*spec.argv(ENV), "--print-command"], base_environment)
+
+        expected = list(canonical)
+        for option, value in (("--port", "5151"), ("-np", "4"), ("--ctx-size", "131072"),
+                              ("--n-gpu-layers", "61"), ("-b", "1024"), ("-ub", "256")):
+            expected[expected.index(option) + 1] = value
+        self.assertEqual(candidate_command, expected)
 
     def test_explicit_controls_replace_not_infer_their_managed_values(self):
         spec = candidate(server_path="/home/x/applications/beellama/build/bin/llama-server", server_sha256="a" * 64,
