@@ -211,6 +211,35 @@ echo "Stowing packages: ${PACKAGES[*]}"
 #   dedicated units and drop-ins, which avoids claiming unrelated user units.
 NO_FOLD_PKGS=(bin nvim claude tmux bee-watchdog-systemd llama-bee-systemd)
 
+# The Bee units used to be stowed from the broad `systemd` package. They now
+# live behind dedicated facade packages, but Stow will not transfer ownership
+# from one package to another automatically. Remove only links whose lexical
+# target is the old package (not the new facade, which resolves to the same
+# canonical source), then let --restow recreate the new ownership below.
+if [[ "$(uname)" == "Linux" ]]; then
+  migrate_legacy_systemd_link() {
+    local relative="$1"
+    local target="$HOME/$relative"
+    local legacy="$DOTFILES_DIR/systemd/$relative"
+    [[ -L "$target" ]] || return 0
+
+    local raw_target lexical_target lexical_legacy
+    raw_target="$(readlink "$target")"
+    lexical_target="$(realpath -sm "$(dirname "$target")/$raw_target")"
+    lexical_legacy="$(realpath -sm "$legacy")"
+    [[ "$lexical_target" == "$lexical_legacy" ]] || return 0
+
+    echo "Migrating legacy Stow ownership: $relative"
+    unlink "$target"
+  }
+
+  # Unfold the old package-owned drop-in directory before handling files.
+  migrate_legacy_systemd_link .config/systemd/user/llama-bee.service.d
+  mkdir -p "$HOME/.config/systemd/user/llama-bee.service.d"
+  migrate_legacy_systemd_link .config/systemd/user/bee-llama-watchdog.service
+  migrate_legacy_systemd_link .config/systemd/user/llama-bee.service
+fi
+
 # Remove files that tools create before stow can link them
 # (claude/rtk init write ~/.claude/settings.json as a regular file)
 [[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]] && rm ~/.claude/settings.json
