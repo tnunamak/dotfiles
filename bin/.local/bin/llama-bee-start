@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the locally-built BeeLlama server with its verified operator defaults.
+# Start the selected local llama.cpp-compatible engine with verified defaults.
 #
 # --print-command and --dry-run are intentionally side-effect-free: they render
 # a shell-quoted argv without requiring the Bee checkout, GPU budget, model, or
@@ -11,8 +11,10 @@ usage() {
   cat <<'EOF'
 Usage: llama-bee-start [--print-command|--dry-run] [llama-server arguments...]
 
-Starts BeeLlama with the local operator defaults. Environment variables named
-LLAMA_BEE_* override the corresponding model, cache, template, and GPU defaults.
+Starts the selected local engine with the local operator defaults. The
+production default is the pinned official llama.cpp build; LLAMA_BEE_ENGINE=bee
+selects the retained Bee build for an operator-controlled rollback. Environment
+variables named LLAMA_BEE_* remain the compatibility configuration API.
 --print-command and --dry-run print the exact shell-quoted command and exit.
 EOF
 }
@@ -37,8 +39,29 @@ fi
 
 applications_dir="${LLAMA_BEE_APPLICATIONS_DIR:-$HOME/applications}"
 bee_dir="${LLAMA_BEE_DIR:-$applications_dir/beellama}"
-llama_server="${LLAMA_BEE_SERVER:-$bee_dir/build/bin/llama-server}"
 gpu_budget_file="${LLAMA_BEE_GPU_BUDGET_FILE:-$applications_dir/config/gpu_budget.sh}"
+
+# The service and LLAMA_BEE_* prefix are compatibility identifiers. Engine
+# selection is explicit and operator-owned; model/profile requests never alter
+# it. Both binaries are identity-pinned so a rebuild cannot silently replace a
+# validated engine.
+engine="${LLAMA_BEE_ENGINE:-official}"
+case "$engine" in
+  official)
+    default_server="$applications_dir/llamacpp-official-505b1ed1-fa-all-quants-rpath/bin/llama-server"
+    default_server_sha256="e35790440096f4040353a1dad1efeef4663caf3ed3644017a631dcbd23bad914"
+    ;;
+  bee)
+    default_server="$bee_dir/build/bin/llama-server"
+    default_server_sha256="cce4b47d624ebe9580c59fb46dc727a708540048bbfa92284fb2d195359ea357"
+    ;;
+  *)
+    echo "ERROR: LLAMA_BEE_ENGINE must be 'official' or 'bee', got '$engine'" >&2
+    exit 1
+    ;;
+esac
+llama_server="${LLAMA_BEE_SERVER:-$default_server}"
+llama_server_sha256="${LLAMA_BEE_SERVER_SHA256:-$default_server_sha256}"
 
 model="${LLAMA_BEE_MODEL:-/media/windows/AI Models/LLMs/GGUF/Qwen3.6-27B-UD-Q4_K_XL-mtp.gguf}"
 port="${LLAMA_BEE_PORT:-5051}"
@@ -136,6 +159,7 @@ if "$candidate_override_seen"; then
       exit 1
     fi
     llama_server="$canonical_server_path"
+    llama_server_sha256="$candidate_server_sha256"
   fi
   if [[ ${LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP+x} ]]; then
     checkpoint_min_step="$LLAMA_BEE_CANDIDATE_CHECKPOINT_MIN_STEP"
@@ -151,6 +175,11 @@ if "$candidate_override_seen"; then
       exit 1
     fi
   fi
+fi
+
+if [[ ! "$llama_server_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "ERROR: LLAMA_BEE_SERVER_SHA256 must be a lowercase SHA-256 digest" >&2
+  exit 1
 fi
 
 # Keep the known-good Qwen 3.6 template local instead of relying on an HF cache.
@@ -211,12 +240,17 @@ server_args+=(
 )
 
 if [[ "${LLAMA_BEE_MTP:-1}" == 1 ]]; then
-  server_args+=(--spec-type mtp --spec-draft-n-max "${LLAMA_BEE_MTP_MAX:-3}")
+  # Upstream llama.cpp renamed the MTP speculative type to "draft-mtp"; the Bee
+  # fork used "mtp". Default to the upstream spelling; override for a Bee rollback.
+  server_args+=(--spec-type "${LLAMA_BEE_SPEC_TYPE:-draft-mtp}" --spec-draft-n-max "${LLAMA_BEE_MTP_MAX:-3}")
 fi
 if [[ -n "${LLAMA_BEE_MMPROJ:-}" ]]; then
   server_args+=(--mmproj "$LLAMA_BEE_MMPROJ")
   if [[ "${LLAMA_BEE_NO_MMPROJ_OFFLOAD:-0}" == 1 ]]; then
     server_args+=(--no-mmproj-offload)
+  fi
+  if [[ -n "${LLAMA_BEE_IMAGE_MIN_TOKENS:-}" ]]; then
+    server_args+=(--image-min-tokens "$LLAMA_BEE_IMAGE_MIN_TOKENS")
   fi
 fi
 if [[ -n "${LLAMA_BEE_TENSOR_SPLIT:-}" ]]; then
@@ -232,17 +266,23 @@ if "$print_command"; then
 fi
 
 if [[ ! -r "$gpu_budget_file" ]]; then
-  echo "ERROR: BeeLlama GPU budget file not found: $gpu_budget_file" >&2
+  echo "ERROR: local LLM GPU budget file not found: $gpu_budget_file" >&2
   exit 1
 fi
 # shellcheck source=/dev/null
 source "$gpu_budget_file"
 if [[ "${GPU1_LLM:-0}" -lt 1 ]]; then
-  echo "ERROR: BeeLlama requires GPU1_LLM>=1, got ${GPU1_LLM:-unset}" >&2
+  echo "ERROR: local LLM requires GPU1_LLM>=1, got ${GPU1_LLM:-unset}" >&2
   exit 1
 fi
 if [[ ! -x "$llama_server" ]]; then
-  echo "ERROR: BeeLlama server not executable: $llama_server" >&2
+  echo "ERROR: selected $engine server not executable: $llama_server" >&2
+  exit 1
+fi
+actual_server_sha256="$(/usr/bin/sha256sum -- "$llama_server")"
+actual_server_sha256="${actual_server_sha256%% *}"
+if [[ "$actual_server_sha256" != "$llama_server_sha256" ]]; then
+  echo "ERROR: selected $engine server SHA-256 does not match" >&2
   exit 1
 fi
 if [[ -n "$chat_template" && "$chat_template" != embedded && ! -f "$chat_template" ]]; then

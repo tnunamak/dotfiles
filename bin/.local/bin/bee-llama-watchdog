@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Restart llama-bee only after confirmed systemd service unavailability.
+"""Restart the local LLM service after confirmed systemd unavailability.
 
-The watchdog deliberately avoids every Bee HTTP endpoint. In particular, it
+The watchdog deliberately avoids every local-server HTTP endpoint. In particular, it
 never inspects queue or task state, so monitoring cannot enqueue, cancel, or
 otherwise perturb an engine request. Its restart decision is separate from
 command, filesystem, and evidence-capture effects so it can be tested without
@@ -88,7 +88,7 @@ class EventLogger:
 
     def write(self, message: str) -> None:
         line = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.wall_clock()))} {message}\n"
-        print(f"[bee-llama-watchdog] {message}", file=sys.stderr, flush=True)
+        print(f"[local-llm-watchdog] {message}", file=sys.stderr, flush=True)
         try:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             log_path = self.state_dir / "watchdog.log"
@@ -97,7 +97,7 @@ class EventLogger:
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
         except OSError as error:
-            print(f"[bee-llama-watchdog] could not write state log: {error}", file=sys.stderr, flush=True)
+            print(f"[local-llm-watchdog] could not write state log: {error}", file=sys.stderr, flush=True)
 
 
 class UnavailabilityState:
@@ -281,7 +281,7 @@ class EvidenceCapture:
             shutil.rmtree(directory)
 
 
-class BeeLlamaWatchdog:
+class LocalLlmWatchdog:
     def __init__(
         self,
         config: WatchdogConfig,
@@ -381,7 +381,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         return command_succeeded(runner, [config.systemctl_bin, "--user", "restart", config.unit])
 
     capture = EvidenceCapture(config, runner, logger, time.time)
-    watchdog = BeeLlamaWatchdog(
+    watchdog = LocalLlmWatchdog(
         config=config,
         service_state=service_state,
         capture=capture.capture,

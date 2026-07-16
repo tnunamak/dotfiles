@@ -49,7 +49,7 @@ class WatchdogHarness:
             nvidia_smi_bin="nvidia-smi",
             ps_bin="ps",
         )
-        self.watchdog = watchdog_module.BeeLlamaWatchdog(
+        self.watchdog = watchdog_module.LocalLlmWatchdog(
             config=self.config,
             service_state=lambda: self.service_state,
             capture=self.captures.append,
@@ -75,7 +75,7 @@ class WatchdogHarness:
             self.watchdog.poll_once()
 
 
-class BeeLlamaWatchdogTests(unittest.TestCase):
+class LocalLlmWatchdogTests(unittest.TestCase):
     def setUp(self):
         self.harness = WatchdogHarness()
 

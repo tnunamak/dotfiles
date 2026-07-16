@@ -1,5 +1,5 @@
 [Unit]
-Description=Restart BeeLlama after confirmed systemd unavailability
+Description=Restart the local LLM server after confirmed systemd unavailability
 After=default.target
 
 [Service]

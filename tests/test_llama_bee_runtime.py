@@ -45,7 +45,7 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
 
     def test_print_command_preserves_critical_operator_defaults(self):
         command = print_command()
-        self.assertEqual(command[:2], ["exec", str(Path.home() / "applications/beellama/build/bin/llama-server")])
+        self.assertEqual(command[:2], ["exec", str(Path.home() / "applications/llamacpp-official-505b1ed1-fa-all-quants-rpath/bin/llama-server")])
         arguments = command[2:]
 
         for option in ("--slots", "--metrics", "--no-host", "--mlock", "--reasoning", "--kv-unified", "--spec-type"):
@@ -67,6 +67,27 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
         self.assert_option(arguments, "--chat-template-kwargs", '{"preserve_thinking":true}')
         self.assert_option(arguments, "--chat-template-file", "/media/windows/AI Models/LLMs/Chat Templates/Qwen-Fixed-Chat-Templates/23a40b0bd4d197c31d39e3c442fd2cd6100b3971/chat_template.jinja")
 
+    def test_engine_selection_is_explicit_and_keeps_bee_as_rollback(self):
+        official = print_command({"LLAMA_BEE_ENGINE": "official"})
+        bee = print_command({"LLAMA_BEE_ENGINE": "bee"})
+        self.assertEqual(
+            official[:2],
+            ["exec", str(Path.home() / "applications/llamacpp-official-505b1ed1-fa-all-quants-rpath/bin/llama-server")],
+        )
+        self.assertEqual(
+            bee[:2],
+            ["exec", str(Path.home() / "applications/beellama/build/bin/llama-server")],
+        )
+
+        rejected = subprocess.run(
+            [str(START_SCRIPT), "--print-command"],
+            text=True,
+            capture_output=True,
+            env=clean_environment({"LLAMA_BEE_ENGINE": "unknown"}),
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("must be 'official' or 'bee'", rejected.stderr)
+
     def test_dry_run_is_the_same_deterministic_command_renderer(self):
         self.assertEqual(render_command(), render_command("--dry-run"))
 
@@ -79,6 +100,7 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
                 "LLAMA_BEE_MODEL": model,
                 "LLAMA_BEE_MMPROJ": projector,
                 "LLAMA_BEE_NO_MMPROJ_OFFLOAD": "1",
+                "LLAMA_BEE_IMAGE_MIN_TOKENS": "1024",
                 "LLAMA_BEE_MTP": "0",
                 "LLAMA_BEE_CHAT_TEMPLATE": "embedded",
                 "LLAMA_BEE_CHAT_TEMPLATE_KWARGS": '{"preserve_thinking":false}',
@@ -88,13 +110,14 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
             },
             ("--alias", "value with spaces"),
         )
-        self.assertEqual(command[:2], ["exec", "/applications with spaces/beellama/build/bin/llama-server"])
+        self.assertEqual(command[:2], ["exec", "/applications with spaces/llamacpp-official-505b1ed1-fa-all-quants-rpath/bin/llama-server"])
         arguments = command[2:]
         self.assert_option(arguments, "--model", model)
         self.assert_option(arguments, "--mmproj", projector)
         self.assert_option(arguments, "--ctx-size", "2048")
         self.assert_option(arguments, "--cache-type-v", "q8_0")
         self.assert_option(arguments, "--tensor-split", "1,0")
+        self.assert_option(arguments, "--image-min-tokens", "1024")
         self.assert_option(arguments, "--chat-template-kwargs", '{"preserve_thinking":false}')
         self.assert_option(arguments, "--alias", "value with spaces")
         self.assertIn("--no-mmproj-offload", arguments)
@@ -202,12 +225,14 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
     def test_unit_and_memlock_drop_in_are_base_configuration_only(self):
         self.assertTrue(os.access(START_SCRIPT, os.X_OK))
         unit = UNIT.read_text()
-        self.assertIn("WorkingDirectory=%h/applications/beellama", unit)
+        self.assertIn("WorkingDirectory=%h/applications", unit)
         self.assertIn("ExecStart=%h/.local/bin/llama-bee-start", unit)
+        self.assertIn('Environment="LLAMA_BEE_ENGINE=official"', unit)
+        self.assertIn('Environment="LLAMA_BEE_IMAGE_MIN_TOKENS=1024"', unit)
         self.assertIn('Environment="LLAMA_BEE_VISIBLE_DEVICES=1"', unit)
         self.assertIn('Environment="LLAMA_BEE_CTV=q4_1"', unit)
         self.assertNotIn("/home/tnunamak", unit)
-        self.assertEqual(RESOURCES_DROP_IN.read_text(), "# BeeLlama uses --mlock for a large model. The generic systemd user-manager\n# default is 8 MiB, which is too small and makes llama.cpp's mlock partial.\n[Service]\nLimitMEMLOCK=infinity\n")
+        self.assertEqual(RESOURCES_DROP_IN.read_text(), "# The local llama server uses --mlock for a large model. The user-manager\n# default is 8 MiB, which is too small and makes llama.cpp's mlock partial.\n[Service]\nLimitMEMLOCK=infinity\n")
         self.assertFalse(any(path.name == "20-model.conf" for path in PACKAGE.rglob("*")))
 
     def test_dedicated_no_fold_stow_install_links_only_bee_unit_files(self):

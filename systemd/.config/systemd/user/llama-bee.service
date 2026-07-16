@@ -1,5 +1,5 @@
 [Unit]
-Description=llama-server (BeeLlama) with MTP speculative decoding + TurboQuant KV cache
+Description=Local LLM server (official llama.cpp; Bee rollback available)
 After=network.target
 Conflicts=tabbyapi.service koboldcpp.service llama-turbo.service
 StartLimitIntervalSec=60
@@ -7,14 +7,17 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-WorkingDirectory=%h/applications/beellama
+WorkingDirectory=%h/applications
 ExecStart=%h/.local/bin/llama-bee-start
+Environment="LLAMA_BEE_ENGINE=official"
 Environment="LLAMA_BEE_MODEL=/media/windows/AI Models/LLMs/GGUF/Qwen3.6-27B-UD-Q4_K_XL-mtp.gguf"
 Environment="LLAMA_BEE_CTK=q5_0"
 Environment="LLAMA_BEE_CTV=q4_1"
 Environment="LLAMA_BEE_CTX=102400"
+Environment="LLAMA_BEE_CTX_CHECKPOINTS=0"
 Environment="LLAMA_BEE_MTP=1"
 Environment="LLAMA_BEE_NO_MMPROJ_OFFLOAD=1"
+Environment="LLAMA_BEE_IMAGE_MIN_TOKENS=1024"
 Environment="LLAMA_BEE_VISIBLE_DEVICES=1"
 Restart=on-failure
 RestartSec=5

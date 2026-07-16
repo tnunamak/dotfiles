@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Select the operator-owned engine behind the local LLM service.
+set -euo pipefail
+
+unit="${LOCAL_LLM_UNIT:-llama-bee.service}"
+drop_in="${LOCAL_LLM_ENGINE_DROP_IN:-$HOME/.config/systemd/user/llama-bee.service.d/90-engine.conf}"
+health_url="${LOCAL_LLM_HEALTH_URL:-http://127.0.0.1:5051/health}"
+timeout_seconds="${LOCAL_LLM_START_TIMEOUT_SECONDS:-180}"
+
+usage() {
+  cat <<'EOF'
+Usage: local-llm-engine status|official|bee
+
+Selects the engine for the local LLM service. Model and KV profiles remain
+gateway-owned; engine selection is an explicit operator action. A failed
+selection automatically restores the previous drop-in and service.
+EOF
+}
+
+engine_identity() {
+  case "$1" in
+    official)
+      printf '%s\n%s\n' \
+        "$HOME/applications/llamacpp-official-505b1ed1-fa-all-quants-rpath/bin/llama-server" \
+        "e35790440096f4040353a1dad1efeef4663caf3ed3644017a631dcbd23bad914"
+      ;;
+    bee)
+      printf '%s\n%s\n' \
+        "$HOME/applications/beellama/build/bin/llama-server" \
+        "cce4b47d624ebe9580c59fb46dc727a708540048bbfa92284fb2d195359ea357"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+selected_engine() {
+  systemctl --user show "$unit" --property=Environment --value \
+    | tr ' ' '\n' \
+    | sed -n 's/^LLAMA_BEE_ENGINE=//p' \
+    | tail -n 1
+}
+
+show_status() {
+  local engine pid executable
+  engine="$(selected_engine)"
+  pid="$(systemctl --user show "$unit" --property=MainPID --value)"
+  executable=""
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    executable="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+  fi
+  printf 'engine=%s\nunit=%s\npid=%s\nexecutable=%s\n' "$engine" "$unit" "$pid" "$executable"
+}
+
+restore_previous() {
+  if [[ -n "${backup:-}" && -f "$backup" ]]; then
+    mv -f -- "$backup" "$drop_in"
+  else
+    rm -f -- "$drop_in"
+  fi
+  systemctl --user daemon-reload
+  systemctl --user restart "$unit"
+}
+
+select_engine() {
+  local engine="$1" expected_path expected_sha256 temporary actual_pid actual_path actual_sha256
+  mapfile -t identity < <(engine_identity "$engine")
+  expected_path="${identity[0]}"
+  expected_sha256="${identity[1]}"
+  if [[ ! -x "$expected_path" ]]; then
+    echo "ERROR: selected engine is not executable: $expected_path" >&2
+    return 1
+  fi
+  actual_sha256="$(sha256sum -- "$expected_path")"
+  actual_sha256="${actual_sha256%% *}"
+  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+    echo "ERROR: selected $engine binary does not match its pinned SHA-256" >&2
+    return 1
+  fi
+
+  mkdir -p -- "$(dirname "$drop_in")"
+  backup=""
+  if [[ -f "$drop_in" ]]; then
+    backup="$(mktemp "${drop_in}.backup.XXXXXX")"
+    cp -- "$drop_in" "$backup"
+  fi
+  temporary="$(mktemp "${drop_in}.new.XXXXXX")"
+  trap 'rm -f -- "${temporary:-}" "${backup:-}"' EXIT
+  printf '# Managed by local-llm-engine; model profiles do not alter this file.\n[Service]\nEnvironment="LLAMA_BEE_ENGINE=%s"\n' "$engine" >"$temporary"
+  mv -f -- "$temporary" "$drop_in"
+
+  systemctl --user daemon-reload
+  if ! systemctl --user restart "$unit"; then
+    echo "ERROR: $engine failed to start; restoring previous engine" >&2
+    restore_previous
+    return 1
+  fi
+
+  local deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1; then
+      actual_pid="$(systemctl --user show "$unit" --property=MainPID --value)"
+      actual_path="$(readlink -f "/proc/$actual_pid/exe" 2>/dev/null || true)"
+      if [[ "$actual_path" == "$expected_path" ]]; then
+        rm -f -- "${backup:-}"
+        trap - EXIT
+        printf 'Selected %s and verified %s\n' "$engine" "$actual_path"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  echo "ERROR: $engine did not become healthy with the expected executable; restoring previous engine" >&2
+  restore_previous
+  return 1
+}
+
+case "${1:-}" in
+  status) show_status ;;
+  official|bee) select_engine "$1" ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

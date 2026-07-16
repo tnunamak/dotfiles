@@ -24,7 +24,8 @@ def done(argv, code=0, stdout=b"", stderr=b""):
 
 
 ENV = {"LLAMA_BEE_MODEL": "/model.gguf", "LLAMA_BEE_MMPROJ": "/vision.gguf", "LLAMA_BEE_CTK": "q5_0", "LLAMA_BEE_CTV": "q4_1",
-       "LLAMA_BEE_CACHE_RAM": "4096", "LLAMA_BEE_CHAT_TEMPLATE": "/template.jinja", "LLAMA_BEE_VISIBLE_DEVICES": "1", "LLAMA_BEE_CTX": "102400"}
+       "LLAMA_BEE_CACHE_RAM": "4096", "LLAMA_BEE_CHAT_TEMPLATE": "/template.jinja", "LLAMA_BEE_IMAGE_MIN_TOKENS": "1024",
+       "LLAMA_BEE_VISIBLE_DEVICES": "1", "LLAMA_BEE_CTX": "102400"}
 FRAGMENT = "[Service]\nExecStart=/home/x/.local/bin/llama-bee-start\n"
 DROP = "[Service]\nEnvironment=LLAMA_BEE_MMPROJ=/vision.gguf\n"
 SHOW = ("ActiveState=active\nFragmentPath=/frag\nDropInPaths=/drop\nMainPID=42\nControlGroup=/cg\n"
@@ -180,6 +181,7 @@ class CandidateServiceTests(unittest.TestCase):
         values = dict(value.split("=", 1) for value in argv[2:-1])
         self.assertEqual(values["LLAMA_BEE_MMPROJ"], "/vision.gguf")
         self.assertEqual(values["LLAMA_BEE_CHAT_TEMPLATE"], "/template.jinja")
+        self.assertEqual(values["LLAMA_BEE_IMAGE_MIN_TOKENS"], "1024")
         self.assertEqual(values["LLAMA_BEE_CACHE_RAM"], "4096")
         self.assertEqual(values["LLAMA_BEE_PORT"], "5151")
         self.assertEqual(values["LLAMA_BEE_PARALLEL"], "4")
