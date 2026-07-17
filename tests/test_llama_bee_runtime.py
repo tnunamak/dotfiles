@@ -58,6 +58,8 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
         self.assert_option(arguments, "--cache-ram", "4096")
         self.assert_option(arguments, "--cache-type-k", "q5_0")
         self.assert_option(arguments, "--cache-type-v", "q4_1")
+        self.assert_option(arguments, "--cache-type-k-draft", "q8_0")
+        self.assert_option(arguments, "--cache-type-v-draft", "q8_0")
         self.assert_option(arguments, "--spec-draft-n-max", "3")
         self.assert_option(arguments, "--n-gpu-layers", "999")
         self.assert_option(arguments, "-b", "2048")
@@ -106,6 +108,8 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
                 "LLAMA_BEE_CHAT_TEMPLATE_KWARGS": '{"preserve_thinking":false}',
                 "LLAMA_BEE_CTX": "2048",
                 "LLAMA_BEE_CTV": "q8_0",
+                "LLAMA_BEE_DRAFT_CTK": "q5_0",
+                "LLAMA_BEE_DRAFT_CTV": "q4_1",
                 "LLAMA_BEE_TENSOR_SPLIT": "1,0",
             },
             ("--alias", "value with spaces"),
@@ -116,6 +120,8 @@ class LlamaBeeRuntimeTests(unittest.TestCase):
         self.assert_option(arguments, "--mmproj", projector)
         self.assert_option(arguments, "--ctx-size", "2048")
         self.assert_option(arguments, "--cache-type-v", "q8_0")
+        self.assert_option(arguments, "--cache-type-k-draft", "q5_0")
+        self.assert_option(arguments, "--cache-type-v-draft", "q4_1")
         self.assert_option(arguments, "--tensor-split", "1,0")
         self.assert_option(arguments, "--image-min-tokens", "1024")
         self.assert_option(arguments, "--chat-template-kwargs", '{"preserve_thinking":false}')

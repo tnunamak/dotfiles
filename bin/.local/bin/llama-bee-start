@@ -71,6 +71,8 @@ checkpoint_min_step="${LLAMA_BEE_CHECKPOINT_MIN_STEP:-256}"
 cache_ram="${LLAMA_BEE_CACHE_RAM:-4096}"
 cache_type_k="${LLAMA_BEE_CTK:-q5_0}"
 cache_type_v="${LLAMA_BEE_CTV:-q4_1}"
+draft_cache_type_k="${LLAMA_BEE_DRAFT_CTK:-q8_0}"
+draft_cache_type_v="${LLAMA_BEE_DRAFT_CTV:-q8_0}"
 n_gpu_layers=999
 batch_size=2048
 ubatch_size=512
@@ -207,8 +209,8 @@ server_args=(
   --cache-ram "$cache_ram"
   --cache-type-k "$cache_type_k"
   --cache-type-v "$cache_type_v"
-  --cache-type-k-draft q8_0
-  --cache-type-v-draft q8_0
+  --cache-type-k-draft "$draft_cache_type_k"
+  --cache-type-v-draft "$draft_cache_type_v"
   -b "$batch_size"
   -ub "$ubatch_size"
   --flash-attn on
