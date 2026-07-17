@@ -1,5 +1,7 @@
 # Research corpus index
 
+
+- [The remaining credible Qwen3.6 engine gains are MTP depth tuning or a DFlash challenger, not non-P2P dual-GPU serving](llm-serving/remaining-qwen36-engine-upside-is-mtp-depth-or-dflash-not-dual-gpu.md) — 2026-07-16 — the local sweep keeps MTP depth 3 and ubatch 512, promotes target-verified q5/q4 draft KV at 205,824 context, excludes DFlash by operator choice, and rejects non-P2P dual-GPU serving.
 One line per entry, **newest first**. Agents read this first to decide what to open
 (see `README.md` for the convention; the standing "check here before web-researching"
 rule is in `ai/AGENTS.md`). Add a line here whenever you create an entry.
