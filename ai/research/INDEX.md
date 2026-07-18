@@ -1,5 +1,7 @@
 # Research corpus index
 
+- [A shared Android agent device should use a verified official SDK bootstrap plus a lock-owning CLI and skill, not an Android MCP](android-agent-device/shared-android-agent-device-uses-official-sdk-locked-cli-not-an-android-mcp.md) — 2026-07-18 — official Android SDK/AVD/emulator tooling and bounded CLI are the durable shared-device boundary; Appium/UIAutomator2/Maestro remain project-level runners, CDP remains optional diagnostics, and the reviewed Android MCPs fail the fixed-device/least-privilege/cross-agent-parity bar.
+
 One line per entry, **newest first**. Agents read this first to decide what to open
 (see `README.md` for the convention; the standing "check here before web-researching"
 rule is in `ai/AGENTS.md`). Add a line here whenever you create an entry.

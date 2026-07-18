@@ -80,6 +80,14 @@ case "$(uname)" in
     ;;
 esac
 
+# Optional, Linux-only shared Android virtual device for agent browser/device testing.
+# It is intentionally opt-in because the pinned system image is several GiB. The focused
+# installer owns all Android state under XDG user directories; setup.sh remains the entrypoint.
+if [[ "$(uname)" == "Linux" && "${ANDROID_AGENT_DEVICE_SETUP:-0}" == "1" ]]; then
+  chmod +x "$DOTFILES_DIR/scripts/android-agent-device-setup.sh"
+  "$DOTFILES_DIR/scripts/android-agent-device-setup.sh" --install
+fi
+
 # --- Cross-platform tool installs ---
 
 # Node.js (via nvm)

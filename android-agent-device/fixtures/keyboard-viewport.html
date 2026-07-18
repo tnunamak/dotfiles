@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-visual">
+    <title>Android keyboard viewport fixture</title>
+    <style>
+      body { background: #101827; color: #f8fafc; font: 20px system-ui; margin: 0; padding: 32px; }
+      main { margin: 16vh auto; max-width: 340px; }
+      label, input { display: block; width: 100%; }
+      input { box-sizing: border-box; font: inherit; margin: 24px 0; padding: 16px; }
+      pre { font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Keyboard viewport fixture</h1>
+      <label for="keyboard-test">Tap for the Android soft keyboard</label>
+      <input id="keyboard-test" autocomplete="off" inputmode="text" placeholder="Type here">
+      <pre id="metrics" aria-live="polite">loading</pre>
+    </main>
+    <script>
+      const metrics = document.querySelector('#metrics');
+      function render() {
+        const visual = window.visualViewport;
+        const value = [
+          `layout=${window.innerWidth}x${window.innerHeight}`,
+          `visual=${Math.round(visual.width)}x${Math.round(visual.height)}`,
+          `orientation=${screen.orientation?.type || 'unknown'}`,
+          `focused=${document.activeElement?.id || 'none'}`,
+        ].join(' ');
+        metrics.textContent = value;
+        document.title = `VV ${Math.round(visual.width)}x${Math.round(visual.height)}`;
+      }
+      window.visualViewport.addEventListener('resize', render);
+      window.visualViewport.addEventListener('scroll', render);
+      window.addEventListener('resize', render);
+      screen.orientation?.addEventListener('change', render);
+      document.querySelector('#keyboard-test').addEventListener('focus', render);
+      render();
+    </script>
+  </body>
+</html>
