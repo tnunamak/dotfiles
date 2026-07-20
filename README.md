@@ -89,8 +89,12 @@ XDG user directories. See the `android-agent-device` local skill for locked mult
 real soft-keyboard/VisualViewport tests, CDP, screenshots, and evidence collection.
 
 Remove it with `scripts/android-agent-device-setup.sh --uninstall`: it stops the shared device
-first if one is recorded, then deletes the XDG-scoped SDK/AVD/state/cache/evidence directories. It
-never touches `kvm` group membership or host packages (curl/unzip/python3/java).
+first if one is recorded, then deletes only the SDK/AVD/state/cache/evidence directories that
+`--install` itself created (proven by an ownership sentinel it writes into each one) — a directory
+that merely happens to be named/pathed like this capability's own, but that `--install` never
+wrote into, is left untouched instead of deleted. It never touches `kvm` group membership or host
+packages (curl/unzip/python3/java). If you installed before this sentinel existed, run `--install`
+once more (idempotent, no re-download) to backfill it before `--uninstall` will remove anything.
 
 Headroom is registered MCP-only. Its compression/retrieval tools are available to all agents, but `headroom wrap` is not the default until it is benchmarked against rtk/context-mode.
 

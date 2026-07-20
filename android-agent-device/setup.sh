@@ -26,16 +26,17 @@ require_linux() {
 }
 
 with_install_lock() {
+  # One global order, shared with cli.sh's with_lock via common.sh: the device lock (fd 9) is
+  # always acquired or reused first, the install lock (fd 8) second. No path may take install
+  # then device -- that ordering is exactly what let a standalone --install/--update/--uninstall
+  # deadlock when invoked from inside `android-agent-device lock -- ...`'s inherited fd 9, since
+  # this function used to unconditionally replace it with a fresh, contending open-file-description.
+  # Reusing/validating an inherited device lock here (instead of blindly reopening fd 9) is what
+  # makes that nested case work instead of self-deadlocking.
+  android_agent_device_acquire_device_lock
   android_agent_device_mkdirs
-  # Fixed lock order: install lock (fd 8) before device lock (fd 9). cli.sh's with_lock only ever
-  # takes fd 9, so this order can never deadlock against a concurrent agent lifecycle call. Taking
-  # fd 9 here too means --install/--update/--uninstall cannot mutate the SDK/AVD or delete its
-  # directories while an agent is running start/reset/run/smoke under the device lock, and vice
-  # versa: agents cannot start a device mid-install/update/uninstall.
   exec 8>"$ANDROID_AGENT_DEVICE_INSTALL_LOCK_FILE"
   flock -x 8
-  exec 9>"$ANDROID_AGENT_DEVICE_LOCK_FILE"
-  flock -x 9
   "$@"
 }
 
@@ -158,30 +159,66 @@ update_sdk_packages() {
   "$sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --update
 }
 
-# ANDROID_AGENT_DEVICE_SDK_ROOT/AVD_HOME/USER_HOME/STATE_DIR/CACHE_DIR/EVIDENCE_DIR are documented,
-# supported overrides (common.sh:21-31) that legitimately relocate this capability's storage (e.g.
-# to a different disk), so uninstall cannot require literal descent from the default XDG path. But
-# a mistyped or hostile override (e.g. pointed at $HOME) must never reach rm -rf either. Require
-# every canonicalized (realpath -m, so symlinks/traversal cannot hide the true target) deletion
-# target to contain "android-agent-device" as a whole path component: this capability creates only
-# paths shaped that way, so $HOME, "/", or any other pre-existing shared directory can never match,
-# while a genuinely relocated custom root (e.g. /mnt/bigdisk/android-agent-device/sdk) still can.
-path_has_capability_component() {
-  local path="$1" resolved segment
-  resolved="$(realpath -m "$path")"
-  IFS='/' read -ra segments <<< "$resolved"
-  for segment in "${segments[@]}"; do
-    [[ "$segment" == android-agent-device ]] && return 0
+# A directory name containing "android-agent-device" proves nothing about ownership: a user can
+# legitimately have an unrelated project/cache directory with that name, and rm -rf on it would
+# destroy everything nested underneath, name match or not. Ownership must instead be something
+# only this installer could have written. Each of the six capability-owned roots gets a sentinel
+# file, written once by install_impl after it creates that root, containing a fixed marker plus a
+# format version. Uninstall deletes a root only if that exact sentinel is present and valid; a
+# root that exists without it -- however it got that name -- is refused, not deleted.
+ANDROID_AGENT_DEVICE_SENTINEL_NAME=".android-agent-device-owned"
+ANDROID_AGENT_DEVICE_SENTINEL_MARKER="android-agent-device-capability-root"
+ANDROID_AGENT_DEVICE_SENTINEL_VERSION="1"
+
+sentinel_path() { printf '%s/%s\n' "$1" "$ANDROID_AGENT_DEVICE_SENTINEL_NAME"; }
+
+write_ownership_sentinels() {
+  local root
+  for root in "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
+    "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"; do
+    mkdir -p "$root"
+    printf 'marker=%s\nversion=%s\n' "$ANDROID_AGENT_DEVICE_SENTINEL_MARKER" "$ANDROID_AGENT_DEVICE_SENTINEL_VERSION" \
+      > "$(sentinel_path "$root")"
   done
-  return 1
 }
 
-require_deletion_targets_within_capability_roots() {
-  local path
+root_has_valid_ownership_sentinel() {
+  local root="$1" sentinel
+  sentinel="$(sentinel_path "$root")"
+  [[ -f "$sentinel" ]] || return 1
+  [[ "$(sed -n 's/^marker=//p' "$sentinel" | head -n 1)" == "$ANDROID_AGENT_DEVICE_SENTINEL_MARKER" ]] || return 1
+  [[ "$(sed -n 's/^version=//p' "$sentinel" | head -n 1)" == "$ANDROID_AGENT_DEVICE_SENTINEL_VERSION" ]]
+}
+
+# Canonicalizes (realpath -m, so symlinks/../traversal cannot hide the true target) every
+# documented override (common.sh:21-31) and requires proven ownership before any deletion. A
+# nonexistent root is safe to skip. So is one containing nothing but this capability's own
+# lifecycle bookkeeping (the device/install lock files, created merely by acquiring a lock -- which
+# happens on every invocation, including an uninstall of a tree that was never actually installed
+# -- and the sentinel itself): there is nothing there to lose. An existing root with any other
+# content and no valid sentinel is refused outright and the whole uninstall aborts -- it is never
+# partially applied.
+directory_has_only_lifecycle_bookkeeping() {
+  local dir="$1" entry name
+  while IFS= read -r -d '' entry; do
+    name="$(basename "$entry")"
+    case "$name" in
+      "$ANDROID_AGENT_DEVICE_SENTINEL_NAME"|device.lock|install.lock) ;;
+      *) return 1 ;;
+    esac
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  return 0
+}
+
+require_ownership_of_deletion_targets() {
+  local path resolved
   for path in "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
     "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"; do
-    path_has_capability_component "$path" || {
-      echo "Refusing to uninstall: $path (from a documented path override) does not resolve through an 'android-agent-device' path component. Fix the override or unset it, then retry." >&2
+    resolved="$(realpath -m "$path")"
+    [[ -e "$resolved" ]] || continue
+    directory_has_only_lifecycle_bookkeeping "$resolved" && continue
+    root_has_valid_ownership_sentinel "$resolved" || {
+      echo "Refusing to uninstall: $resolved (from a documented path override) has content but no valid android-agent-device ownership sentinel. It may be an unrelated directory that happens to share a path component; only a directory this installer created can be deleted. Move/remove it yourself if you are certain, or fix the override." >&2
       return 1
     }
   done
@@ -189,11 +226,11 @@ require_deletion_targets_within_capability_roots() {
 
 uninstall_impl() {
   local cli="$ROOT/cli.sh"
-  require_deletion_targets_within_capability_roots
-  # with_install_lock already holds fd 9 (the device lock) open on ANDROID_AGENT_DEVICE_LOCK_FILE.
-  # Marking LOCK_HELD=1 lets cli.sh's with_lock verify and reuse that inherited fd instead of
-  # opening an independent flock on the same file, which would deadlock against this process.
-  ANDROID_AGENT_DEVICE_LOCK_HELD=1 "$cli" stop || {
+  require_ownership_of_deletion_targets
+  # with_install_lock already acquired/reused fd 9 (the device lock) and exported LOCK_HELD=1, so
+  # cli.sh's with_lock verifies and reuses that inherited fd here instead of opening an independent
+  # flock on the same file, which would deadlock against this process.
+  "$cli" stop || {
     echo "Refusing to remove SDK/AVD state while the recorded emulator could not be stopped cleanly. Inspect 'android-agent-device status --json' and retry." >&2
     return 1
   }
@@ -210,6 +247,7 @@ install_impl() {
   install_cmdline_tools
   install_sdk_packages
   create_avd
+  write_ownership_sentinels
   echo "Installed $ANDROID_AGENT_DEVICE_NAME. Run android-agent-device diagnose, then android-agent-device start."
 }
 
@@ -238,4 +276,4 @@ main() {
     *) usage >&2; exit 2 ;;
   esac
 }
-main "$@"
+[[ "${ANDROID_AGENT_DEVICE_LIB_ONLY:-}" == 1 ]] || main "$@"

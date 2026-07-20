@@ -32,25 +32,14 @@ avd_ini() { printf '%s/%s.ini\n' "$ANDROID_AVD_HOME" "$ANDROID_AGENT_DEVICE_NAME
 state_file() { printf '%s/emulator.state\n' "$ANDROID_AGENT_DEVICE_STATE_DIR"; }
 log_file() { printf '%s/emulator.log\n' "$ANDROID_AGENT_DEVICE_STATE_DIR"; }
 
-device_lock_fd_valid() {
-  [[ -e /proc/self/fd/9 ]] || return 1
-  [[ "$(readlink -f /proc/self/fd/9 2>/dev/null || true)" == "$(readlink -f "$ANDROID_AGENT_DEVICE_LOCK_FILE" 2>/dev/null || true)" ]]
-}
-
 with_lock() {
-  android_agent_device_mkdirs
-  # ANDROID_AGENT_DEVICE_LOCK_HELD alone proves nothing: any process can export it. Only an
-  # actually-inherited fd 9 open on the real lock file is proof of re-entry, and flock on an
-  # inherited fd is reentrant (same open-file-description), so re-asserting it here is safe and
-  # cannot deadlock a legitimate nested call (e.g. the smoke script's own re-exec).
-  if [[ "${ANDROID_AGENT_DEVICE_LOCK_HELD:-}" == 1 ]] && device_lock_fd_valid; then
-    flock -x 9
-    "$@"
-    return
-  fi
-  exec 9>"$ANDROID_AGENT_DEVICE_LOCK_FILE"
-  flock -x 9
-  ANDROID_AGENT_DEVICE_LOCK_HELD=1 "$@"
+  # Shared with setup.sh via common.sh so both entry points honor one lock protocol: reuse/
+  # validate an inherited device lock fd, or acquire it fresh. flock on an inherited fd is
+  # reentrant (same open-file-description), so re-asserting it is safe and cannot deadlock a
+  # legitimate nested call (e.g. the smoke script's own re-exec, or setup.sh invoked under
+  # `android-agent-device lock -- ...`).
+  android_agent_device_acquire_device_lock
+  "$@"
 }
 
 state_value() {

@@ -110,12 +110,15 @@ uninstall_fresh="$tmp/uninstall-fresh"
 )
 [[ ! -e "$uninstall_fresh/data/android-agent-device" ]]
 
-# --uninstall removes leftover state directories when no emulator is recorded as running.
+# --uninstall removes leftover state directories when no emulator is recorded as running, for a
+# root this capability actually installed into (bearing its ownership sentinel).
 uninstall_tmp="$tmp/uninstall-populated"
 (
   export XDG_DATA_HOME="$uninstall_tmp/data" XDG_CACHE_HOME="$uninstall_tmp/cache"
   mkdir -p "$XDG_DATA_HOME/android-agent-device/sdk" "$XDG_DATA_HOME/android-agent-device/avd"
   touch "$XDG_DATA_HOME/android-agent-device/sdk/marker"
+  printf 'marker=android-agent-device-capability-root\nversion=1\n' \
+    > "$XDG_DATA_HOME/android-agent-device/sdk/.android-agent-device-owned"
   "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
   [[ ! -e "$XDG_DATA_HOME/android-agent-device/sdk" ]]
 )
@@ -142,7 +145,7 @@ uninstall_refuse="$tmp/uninstall-refuse"
 
 # --uninstall refuses a documented path override that resolves outside this capability's
 # namespace (the exact ANDROID_AGENT_DEVICE_SDK_ROOT=$HOME example from the adversarial review),
-# and leaves the forbidden path untouched.
+# and leaves the forbidden path untouched. $HOME has real content and no ownership sentinel.
 uninstall_forbidden="$tmp/uninstall-forbidden"
 forbidden_root="$tmp/pretend-home"
 (
@@ -157,12 +160,70 @@ forbidden_root="$tmp/pretend-home"
 )
 [[ -d "$forbidden_root/marker-should-survive" ]]
 
-# --uninstall still removes a legitimately relocated custom root: the override just has to
-# resolve through an "android-agent-device" path component, not literally under the default tree.
+# Terra's exact nested-directory reproduction: a whole-path-component name match is not ownership.
+# An unrelated project directory that happens to be named "android-agent-device", containing real
+# user data, must survive uninstall untouched -- it was never installer-created and has no
+# ownership sentinel, no matter how its path is shaped.
+uninstall_nested_unrelated="$tmp/uninstall-nested-unrelated"
+nested_root="$tmp/unrelated-project/android-agent-device"
+(
+  mkdir -p "$nested_root/important-user-data"
+  printf keep > "$nested_root/important-user-data/marker"
+  export XDG_DATA_HOME="$uninstall_nested_unrelated/data" XDG_CACHE_HOME="$uninstall_nested_unrelated/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$nested_root"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -f "$nested_root/important-user-data/marker" ]]
+
+# A symlinked override resolving (via realpath -m) outside a sentinel-bearing root is refused, and
+# the real unrelated target survives -- the same nested-unrelated case reached through a symlink.
+uninstall_symlink="$tmp/uninstall-symlink"
+symlink_victim="$tmp/symlink-victim/android-agent-device"
+(
+  mkdir -p "$symlink_victim/important-user-data"
+  printf keep > "$symlink_victim/important-user-data/marker"
+  mkdir -p "$tmp/symlink-parent"
+  ln -s "$symlink_victim" "$tmp/symlink-parent/android-agent-device"
+  export XDG_DATA_HOME="$uninstall_symlink/data" XDG_CACHE_HOME="$uninstall_symlink/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$tmp/symlink-parent/android-agent-device"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -f "$symlink_victim/important-user-data/marker" ]]
+
+# A ../ traversal override resolving outside the sentinel-bearing root is refused the same way.
+uninstall_traversal="$tmp/uninstall-traversal"
+traversal_victim="$tmp/traversal-victim"
+(
+  mkdir -p "$traversal_victim/important-user-data"
+  printf keep > "$traversal_victim/important-user-data/marker"
+  mkdir -p "$tmp/traversal-parent/android-agent-device"
+  export XDG_DATA_HOME="$uninstall_traversal/data" XDG_CACHE_HOME="$uninstall_traversal/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$tmp/traversal-parent/android-agent-device/../../traversal-victim"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -f "$traversal_victim/important-user-data/marker" ]]
+
+# --uninstall still removes a legitimately relocated custom root: the override just has to be a
+# root this installer actually created (proven by its ownership sentinel), not literally under the
+# default XDG tree.
 uninstall_custom="$tmp/uninstall-custom"
 custom_root="$tmp/relocated/android-agent-device/sdk"
 (
   mkdir -p "$custom_root/marker"
+  printf 'marker=android-agent-device-capability-root\nversion=1\n' \
+    > "$custom_root/.android-agent-device-owned"
   export XDG_DATA_HOME="$uninstall_custom/data" XDG_CACHE_HOME="$uninstall_custom/cache"
   export ANDROID_AGENT_DEVICE_SDK_ROOT="$custom_root"
   "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
@@ -250,6 +311,54 @@ lock_hierarchy="$tmp/lock-hierarchy"
   exec 9>&-
   wait "$bg_pid"
   [[ -f "$marker" ]]
+)
+
+# Terra's exact nested-lock deadlock reproduction: `android-agent-device lock -- ...` is the
+# documented public way to hold the device lock for a multi-command critical section. If COMMAND
+# invokes the setup script's --uninstall, it must reuse the inherited fd 9 rather than replacing it
+# and blocking on itself. This must complete well within the timeout, not hang until it fires.
+lock_nested_deadlock="$tmp/lock-nested-deadlock"
+mkdir -p "$lock_nested_deadlock/data" "$lock_nested_deadlock/cache"
+nested_status=0
+timeout 8s env XDG_DATA_HOME="$lock_nested_deadlock/data" XDG_CACHE_HOME="$lock_nested_deadlock/cache" \
+  "$TEST_ROOT/bin/.local/bin/android-agent-device" lock -- env \
+    XDG_DATA_HOME="$lock_nested_deadlock/data" XDG_CACHE_HOME="$lock_nested_deadlock/cache" \
+    "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall >/dev/null 2>&1 || nested_status=$?
+[[ $nested_status -ne 124 ]]
+
+# Inverse-order contention: a process holding both locks via with_install_lock (device lock fd 9
+# acquired/validated first, then install lock fd 8) must make a concurrent device-lock-only caller
+# (cli.sh's with_lock, the start/stop/run/reset path) block until release, and both must eventually
+# complete -- proving the two entry points cannot each wait on a lock the other already holds.
+lock_inverse_order="$tmp/lock-inverse-order"
+(
+  export XDG_DATA_HOME="$lock_inverse_order/data" XDG_CACHE_HOME="$lock_inverse_order/cache"
+  marker_a="$lock_inverse_order/a-ran"
+  marker_b="$lock_inverse_order/b-ran"
+
+  env XDG_DATA_HOME="$XDG_DATA_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+    ANDROID_AGENT_DEVICE_LIB_ONLY=1 \
+    bash -c "
+      source '$TEST_ROOT/android-agent-device/setup.sh'
+      with_install_lock bash -c 'sleep 2; touch \"$marker_a\"'
+    " &
+  a_pid=$!
+
+  sleep 0.5
+
+  env XDG_DATA_HOME="$XDG_DATA_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+    ANDROID_AGENT_DEVICE_LIB_ONLY=1 \
+    bash -c "
+      source '$TEST_ROOT/android-agent-device/cli.sh'
+      with_lock bash -c 'touch \"$marker_b\"'
+    " &
+  b_pid=$!
+
+  sleep 1
+  [[ ! -f "$marker_b" ]]
+
+  wait "$a_pid" "$b_pid"
+  [[ -f "$marker_a" && -f "$marker_b" ]]
 )
 
 echo 'PASS android-agent-device lifecycle/configuration contracts (no downloads)'

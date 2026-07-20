@@ -39,6 +39,29 @@ android_agent_device_mkdirs() {
     "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"
 }
 
+# Shared by cli.sh and setup.sh so both entry points agree on one lock protocol. fd 9 is the
+# device lock. ANDROID_AGENT_DEVICE_LOCK_HELD alone is not proof of holding it (any process can
+# export it); only an fd 9 that is actually inherited AND resolves to the real lock file counts.
+android_agent_device_lock_fd_valid() {
+  [[ "${ANDROID_AGENT_DEVICE_LOCK_HELD:-}" == 1 ]] || return 1
+  [[ -e /proc/self/fd/9 ]] || return 1
+  [[ "$(readlink -f /proc/self/fd/9 2>/dev/null || true)" == "$(readlink -f "$ANDROID_AGENT_DEVICE_LOCK_FILE" 2>/dev/null || true)" ]]
+}
+
+# One global order, honored by every entry point: reuse/validate an inherited device lock if
+# present; otherwise acquire it fresh. Never open a new fd 9 when a valid one is already held --
+# that would replace the caller's open-file-description and then self-deadlock waiting on it.
+android_agent_device_acquire_device_lock() {
+  android_agent_device_mkdirs
+  if android_agent_device_lock_fd_valid; then
+    flock -x 9
+    return
+  fi
+  exec 9>"$ANDROID_AGENT_DEVICE_LOCK_FILE"
+  flock -x 9
+  export ANDROID_AGENT_DEVICE_LOCK_HELD=1
+}
+
 android_agent_device_sdkmanager() { printf '%s\n' "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"; }
 android_agent_device_avdmanager() { printf '%s\n' "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager"; }
 android_agent_device_emulator() { printf '%s\n' "$ANDROID_SDK_ROOT/emulator/emulator"; }
