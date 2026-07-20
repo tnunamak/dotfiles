@@ -140,4 +140,116 @@ uninstall_refuse="$tmp/uninstall-refuse"
   [[ -f "$XDG_DATA_HOME/android-agent-device/state/emulator.state" ]]
 )
 
+# --uninstall refuses a documented path override that resolves outside this capability's
+# namespace (the exact ANDROID_AGENT_DEVICE_SDK_ROOT=$HOME example from the adversarial review),
+# and leaves the forbidden path untouched.
+uninstall_forbidden="$tmp/uninstall-forbidden"
+forbidden_root="$tmp/pretend-home"
+(
+  mkdir -p "$forbidden_root/marker-should-survive"
+  export XDG_DATA_HOME="$uninstall_forbidden/data" XDG_CACHE_HOME="$uninstall_forbidden/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$forbidden_root"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -d "$forbidden_root/marker-should-survive" ]]
+
+# --uninstall still removes a legitimately relocated custom root: the override just has to
+# resolve through an "android-agent-device" path component, not literally under the default tree.
+uninstall_custom="$tmp/uninstall-custom"
+custom_root="$tmp/relocated/android-agent-device/sdk"
+(
+  mkdir -p "$custom_root/marker"
+  export XDG_DATA_HOME="$uninstall_custom/data" XDG_CACHE_HOME="$uninstall_custom/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$custom_root"
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+)
+[[ ! -e "$custom_root" ]]
+
+# --uninstall refuses when the state file is missing entirely but the shared ADB port is occupied
+# (e.g. state was lost/corrupted while a device from an earlier interrupted lifecycle is still up):
+# the missing-state branch must still fail closed on occupancy, not just on an invalid state file.
+uninstall_occupied="$tmp/uninstall-occupied"
+(
+  export XDG_DATA_HOME="$uninstall_occupied/data" XDG_CACHE_HOME="$uninstall_occupied/cache"
+  python3 -c "
+import socket, time
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('127.0.0.1', 5557))
+sock.listen(1)
+time.sleep(10)
+" &
+  occupier_pid=$!
+  sleep 0.5
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  kill "$occupier_pid" 2>/dev/null || true
+  wait "$occupier_pid" 2>/dev/null || true
+  [[ $uninstall_status -ne 0 ]]
+  [[ -d "$XDG_DATA_HOME/android-agent-device" ]]
+)
+
+# A forged ANDROID_AGENT_DEVICE_LOCK_HELD marker without a real inherited fd 9 cannot bypass the
+# device lock: a genuine external holder must still block a fresh process that only sets the
+# marker. -u ANDROID_AGENT_DEVICE_LIB_ONLY is required here: it was exported above (for the
+# in-process lifecycle tests) and would otherwise make the invoked CLI subprocess skip its own
+# main(), producing a false pass with no relation to locking.
+lock_bypass="$tmp/lock-bypass"
+(
+  export XDG_DATA_HOME="$lock_bypass/data" XDG_CACHE_HOME="$lock_bypass/cache"
+  export ANDROID_AGENT_DEVICE_LIB_ONLY=1
+  source "$TEST_ROOT/android-agent-device/cli.sh"
+  android_agent_device_mkdirs
+  exec 9>"$ANDROID_AGENT_DEVICE_LOCK_FILE"
+  flock -x 9
+
+  marker="$lock_bypass/child-ran"
+  env -u ANDROID_AGENT_DEVICE_LIB_ONLY \
+    XDG_DATA_HOME="$XDG_DATA_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+    ANDROID_AGENT_DEVICE_LOCK_HELD=1 \
+    bash -c "'$TEST_ROOT/bin/.local/bin/android-agent-device' stop >/dev/null 2>&1; touch '$marker'" 9>&- &
+  child_pid=$!
+
+  sleep 1.5
+  [[ ! -f "$marker" ]]
+
+  exec 9>&-
+  wait "$child_pid"
+  [[ -f "$marker" ]]
+)
+
+# --install/--update/--uninstall take the device lock too (fd 9), not just the separate install
+# lock: a concurrent --uninstall must block while an agent (or another install/update) holds the
+# device lock, and proceed once it is released. This is the coherent lock hierarchy the review
+# asked for in place of two independent locks that could race SDK/AVD mutation against a live
+# emulator.
+lock_hierarchy="$tmp/lock-hierarchy"
+(
+  export XDG_DATA_HOME="$lock_hierarchy/data" XDG_CACHE_HOME="$lock_hierarchy/cache"
+  export ANDROID_AGENT_DEVICE_LIB_ONLY=1
+  source "$TEST_ROOT/android-agent-device/cli.sh"
+  android_agent_device_mkdirs
+  exec 9>"$ANDROID_AGENT_DEVICE_LOCK_FILE"
+  flock -x 9
+
+  marker="$lock_hierarchy/uninstall-ran"
+  env -u ANDROID_AGENT_DEVICE_LIB_ONLY \
+    XDG_DATA_HOME="$XDG_DATA_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+    bash -c "'$TEST_ROOT/scripts/android-agent-device-setup.sh' --uninstall >/dev/null 2>&1; touch '$marker'" 9>&- &
+  bg_pid=$!
+
+  sleep 1.5
+  [[ ! -f "$marker" ]]
+
+  exec 9>&-
+  wait "$bg_pid"
+  [[ -f "$marker" ]]
+)
+
 echo 'PASS android-agent-device lifecycle/configuration contracts (no downloads)'

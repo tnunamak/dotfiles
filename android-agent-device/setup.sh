@@ -27,8 +27,15 @@ require_linux() {
 
 with_install_lock() {
   android_agent_device_mkdirs
+  # Fixed lock order: install lock (fd 8) before device lock (fd 9). cli.sh's with_lock only ever
+  # takes fd 9, so this order can never deadlock against a concurrent agent lifecycle call. Taking
+  # fd 9 here too means --install/--update/--uninstall cannot mutate the SDK/AVD or delete its
+  # directories while an agent is running start/reset/run/smoke under the device lock, and vice
+  # versa: agents cannot start a device mid-install/update/uninstall.
   exec 8>"$ANDROID_AGENT_DEVICE_INSTALL_LOCK_FILE"
   flock -x 8
+  exec 9>"$ANDROID_AGENT_DEVICE_LOCK_FILE"
+  flock -x 9
   "$@"
 }
 
@@ -151,14 +158,45 @@ update_sdk_packages() {
   "$sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --update
 }
 
-uninstall_impl() {
-  local cli="$ROOT/cli.sh"
-  if [[ -f "$ANDROID_AGENT_DEVICE_STATE_DIR/emulator.state" ]]; then
-    "$cli" stop || {
-      echo "Refusing to remove SDK/AVD state while the recorded emulator could not be stopped cleanly. Inspect 'android-agent-device status --json' and retry." >&2
+# ANDROID_AGENT_DEVICE_SDK_ROOT/AVD_HOME/USER_HOME/STATE_DIR/CACHE_DIR/EVIDENCE_DIR are documented,
+# supported overrides (common.sh:21-31) that legitimately relocate this capability's storage (e.g.
+# to a different disk), so uninstall cannot require literal descent from the default XDG path. But
+# a mistyped or hostile override (e.g. pointed at $HOME) must never reach rm -rf either. Require
+# every canonicalized (realpath -m, so symlinks/traversal cannot hide the true target) deletion
+# target to contain "android-agent-device" as a whole path component: this capability creates only
+# paths shaped that way, so $HOME, "/", or any other pre-existing shared directory can never match,
+# while a genuinely relocated custom root (e.g. /mnt/bigdisk/android-agent-device/sdk) still can.
+path_has_capability_component() {
+  local path="$1" resolved segment
+  resolved="$(realpath -m "$path")"
+  IFS='/' read -ra segments <<< "$resolved"
+  for segment in "${segments[@]}"; do
+    [[ "$segment" == android-agent-device ]] && return 0
+  done
+  return 1
+}
+
+require_deletion_targets_within_capability_roots() {
+  local path
+  for path in "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
+    "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"; do
+    path_has_capability_component "$path" || {
+      echo "Refusing to uninstall: $path (from a documented path override) does not resolve through an 'android-agent-device' path component. Fix the override or unset it, then retry." >&2
       return 1
     }
-  fi
+  done
+}
+
+uninstall_impl() {
+  local cli="$ROOT/cli.sh"
+  require_deletion_targets_within_capability_roots
+  # with_install_lock already holds fd 9 (the device lock) open on ANDROID_AGENT_DEVICE_LOCK_FILE.
+  # Marking LOCK_HELD=1 lets cli.sh's with_lock verify and reuse that inherited fd instead of
+  # opening an independent flock on the same file, which would deadlock against this process.
+  ANDROID_AGENT_DEVICE_LOCK_HELD=1 "$cli" stop || {
+    echo "Refusing to remove SDK/AVD state while the recorded emulator could not be stopped cleanly. Inspect 'android-agent-device status --json' and retry." >&2
+    return 1
+  }
   rm -rf "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
     "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"
   # Only this capability's own namespace directories, never the shared XDG parent itself.

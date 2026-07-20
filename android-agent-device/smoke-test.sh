@@ -214,6 +214,33 @@ dismiss_chrome_notification_onboarding_if_present() {
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$ROOT/fixtures" >"$EVIDENCE_DIR/http.log" 2>&1 &
 server_pid=$!
 
+wait_for_fixture_server() {
+  local deadline=$((SECONDS + 20))
+  while (( SECONDS < deadline )); do
+    # A bare TCP connect only proves something is listening: a pre-existing, unrelated local
+    # service on the same port would pass that check too. Require our own backgrounded PID to
+    # still be alive both immediately before and after a real HTTP GET for the known fixture file,
+    # and require the response body to actually be that fixture's content.
+    kill -0 "$server_pid" 2>/dev/null || { echo "Fixture HTTP server on 127.0.0.1:$PORT exited before it could be verified. See $EVIDENCE_DIR/http.log." >&2; return 1; }
+    if python3 -c "
+import sys
+import urllib.request
+try:
+    with urllib.request.urlopen('http://127.0.0.1:' + sys.argv[1] + '/keyboard-viewport.html', timeout=1) as response:
+        body = response.read()
+except OSError:
+    sys.exit(1)
+sys.exit(0 if b'keyboard-test' in body else 1)
+" "$PORT" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "Fixture HTTP server did not start serving the expected fixture on 127.0.0.1:$PORT within 20s. See $EVIDENCE_DIR/http.log." >&2
+  return 1
+}
+wait_for_fixture_server
+
 "$CLI" diagnose --json | tee "$EVIDENCE_DIR/diagnose.json"
 "$CLI" start | tee "$EVIDENCE_DIR/start.log"
 status_json="$("$CLI" status --json)"
