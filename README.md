@@ -73,6 +73,34 @@ To apply the dotfiles-managed MCP definitions to Codex, Claude, and Gemini:
 
 The shared MCP definitions live in `ai/mcp-servers.json` as one canonical server list with per-agent availability. `sync-mcps.sh` renders that list for Codex, Claude, and Gemini. It keeps the repo free of secrets: Codex reads token env vars at runtime, while Claude/Gemini write current bearer headers into local config, so rerun the sync after rotating those keys.
 
+### Shared Android agent device (Linux, opt-in)
+
+Install the checksum-verified, user-scoped Android SDK bootstrap and shared emulator only on hosts that need real Android browser/device testing:
+
+```bash
+ANDROID_AGENT_DEVICE_SETUP=1 ./setup.sh
+android-agent-device diagnose --json
+android-agent-device start
+```
+
+The initial install needs sudo for stable host packages and may add the current user to the `kvm`
+group; log out and back in once if it does. The AVD, SDK, cache, locks, and evidence stay under
+XDG user directories. See the `android-agent-device` local skill for locked multi-agent workflows,
+real soft-keyboard/VisualViewport tests, CDP, screenshots, and evidence collection.
+
+`--install` preflights all six SDK/AVD/state/cache/evidence roots before touching any of them: a
+root must be absent, empty, already carry this installer's own ownership record, or (only at the
+un-overridden default path) be explicitly migrated with `ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1`. A
+pre-existing, nonempty custom root is refused outright rather than silently adopted. Once installed,
+`--uninstall` stops the shared device first if one is recorded, then deletes only roots carrying a
+valid, non-symlinked ownership record — a canonical path, a role, and one ID shared identically
+across all six roots from the same install, corroborated across at least two of them so a single
+copied or forged record can never authorize deletion on its own. It never touches `kvm` group
+membership or host packages (curl/unzip/python3/java). If you installed before this ownership
+record existed, run `--install` again with `ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1` set (idempotent,
+no re-download) to migrate the existing default-path install before `--uninstall` will remove
+anything from it.
+
 Headroom is registered MCP-only. Its compression/retrieval tools are available to all agents, but `headroom wrap` is not the default until it is benchmarked against rtk/context-mode.
 
 Tokensmashing methodology lives in `ai/tokensmash.md`; use `tokensmash compare` / `tokensmash suite` to measure actual emitted payloads instead of trusting reducer dashboards.
