@@ -27,11 +27,14 @@ ANDROID_AGENT_DEVICE_SETUP=1 ~/code/dotfiles/setup.sh
 ~/code/dotfiles/scripts/android-agent-device-setup.sh --install
 ```
 
-To remove the capability entirely, the host owner runs
+`--install` preflights all six SDK/AVD/state/cache/evidence roots before mutating any of them: a
+nonempty custom root that isn't already this installer's own is refused outright, never silently
+adopted. To remove the capability entirely, the host owner runs
 `~/code/dotfiles/scripts/android-agent-device-setup.sh --uninstall`. It stops the recorded shared
-device first, then deletes only directories `--install` itself created (proven by a sentinel file
-it writes into each one); a same-named or same-pathed directory `--install` never wrote into is
-refused rather than deleted. It never touches `kvm` group membership or host packages.
+device first, then deletes only roots carrying a valid, non-symlinked ownership record (one ID
+shared across all six roots from the same install, corroborated across at least two of them); a
+same-named or same-pathed directory `--install` never wrote into is refused rather than deleted.
+It never touches `kvm` group membership or host packages.
 
 `diagnose` reports KVM node access (`kvm_device_access`) separately from the emulator's own
 `emulator_accel_check`; both must be true for the intended accelerated path.

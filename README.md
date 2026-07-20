@@ -88,13 +88,18 @@ group; log out and back in once if it does. The AVD, SDK, cache, locks, and evid
 XDG user directories. See the `android-agent-device` local skill for locked multi-agent workflows,
 real soft-keyboard/VisualViewport tests, CDP, screenshots, and evidence collection.
 
-Remove it with `scripts/android-agent-device-setup.sh --uninstall`: it stops the shared device
-first if one is recorded, then deletes only the SDK/AVD/state/cache/evidence directories that
-`--install` itself created (proven by an ownership sentinel it writes into each one) — a directory
-that merely happens to be named/pathed like this capability's own, but that `--install` never
-wrote into, is left untouched instead of deleted. It never touches `kvm` group membership or host
-packages (curl/unzip/python3/java). If you installed before this sentinel existed, run `--install`
-once more (idempotent, no re-download) to backfill it before `--uninstall` will remove anything.
+`--install` preflights all six SDK/AVD/state/cache/evidence roots before touching any of them: a
+root must be absent, empty, already carry this installer's own ownership record, or (only at the
+un-overridden default path) be explicitly migrated with `ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1`. A
+pre-existing, nonempty custom root is refused outright rather than silently adopted. Once installed,
+`--uninstall` stops the shared device first if one is recorded, then deletes only roots carrying a
+valid, non-symlinked ownership record — a canonical path, a role, and one ID shared identically
+across all six roots from the same install, corroborated across at least two of them so a single
+copied or forged record can never authorize deletion on its own. It never touches `kvm` group
+membership or host packages (curl/unzip/python3/java). If you installed before this ownership
+record existed, run `--install` again with `ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1` set (idempotent,
+no re-download) to migrate the existing default-path install before `--uninstall` will remove
+anything from it.
 
 Headroom is registered MCP-only. Its compression/retrieval tools are available to all agents, but `headroom wrap` is not the default until it is benchmarked against rtk/context-mode.
 

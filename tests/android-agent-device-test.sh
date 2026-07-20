@@ -110,15 +110,28 @@ uninstall_fresh="$tmp/uninstall-fresh"
 )
 [[ ! -e "$uninstall_fresh/data/android-agent-device" ]]
 
+# Stubs install_impl's real host/SDK/AVD steps but keeps preflight_install_roots and
+# write_ownership_records real, and has each stub populate its own root like the real step would
+# (install_cmdline_tools writes into sdk+cache, create_avd writes into avd), so a real,
+# multi-root-corroborated ownership record set is produced -- the actual contract under test.
+run_stubbed_install() {
+  ANDROID_AGENT_DEVICE_LIB_ONLY=1 bash -c '
+    source "'"$TEST_ROOT"'/android-agent-device/setup.sh"
+    install_host_prerequisites() { :; }
+    install_cmdline_tools() { mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools" "$ANDROID_AGENT_DEVICE_CACHE_DIR"; touch "$ANDROID_SDK_ROOT/cmdline-tools/marker" "$ANDROID_AGENT_DEVICE_CACHE_DIR/sdk-archive-marker"; }
+    install_sdk_packages() { :; }
+    create_avd() { mkdir -p "$ANDROID_AVD_HOME"; touch "$ANDROID_AVD_HOME/agent_pixel_8_api_36.ini"; }
+    install_impl
+  '
+}
+
 # --uninstall removes leftover state directories when no emulator is recorded as running, for a
-# root this capability actually installed into (bearing its ownership sentinel).
+# root this capability actually installed into: run a real (stubbed) --install first so all six
+# roots carry one corroborated, install-written ownership record, then uninstall must remove them.
 uninstall_tmp="$tmp/uninstall-populated"
 (
   export XDG_DATA_HOME="$uninstall_tmp/data" XDG_CACHE_HOME="$uninstall_tmp/cache"
-  mkdir -p "$XDG_DATA_HOME/android-agent-device/sdk" "$XDG_DATA_HOME/android-agent-device/avd"
-  touch "$XDG_DATA_HOME/android-agent-device/sdk/marker"
-  printf 'marker=android-agent-device-capability-root\nversion=1\n' \
-    > "$XDG_DATA_HOME/android-agent-device/sdk/.android-agent-device-owned"
+  run_stubbed_install
   "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
   [[ ! -e "$XDG_DATA_HOME/android-agent-device/sdk" ]]
 )
@@ -215,20 +228,165 @@ traversal_victim="$tmp/traversal-victim"
 )
 [[ -f "$traversal_victim/important-user-data/marker" ]]
 
-# --uninstall still removes a legitimately relocated custom root: the override just has to be a
-# root this installer actually created (proven by its ownership sentinel), not literally under the
-# default XDG tree.
+# Valid fresh custom install: a real (stubbed) --install against an absent/empty custom
+# ANDROID_AGENT_DEVICE_SDK_ROOT override must succeed and write a corroborated record set, and the
+# subsequent --uninstall must then remove it cleanly -- legitimate relocation still works end to
+# end, it just now requires install_impl to have actually run and validated it, not a hand-authored
+# marker standing in for that validation.
 uninstall_custom="$tmp/uninstall-custom"
 custom_root="$tmp/relocated/android-agent-device/sdk"
 (
-  mkdir -p "$custom_root/marker"
-  printf 'marker=android-agent-device-capability-root\nversion=1\n' \
-    > "$custom_root/.android-agent-device-owned"
   export XDG_DATA_HOME="$uninstall_custom/data" XDG_CACHE_HOME="$uninstall_custom/cache"
   export ANDROID_AGENT_DEVICE_SDK_ROOT="$custom_root"
+  run_stubbed_install
+  [[ -f "$custom_root/.android-agent-device-owned" ]]
   "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
 )
 [[ ! -e "$custom_root" ]]
+
+# Terra's exact P1 reproduction: --install must never silently adopt a pre-existing nonempty
+# CUSTOM root by writing a record into it. It must refuse before any mutation, and the
+# subsequent --uninstall (which never saw a successful install) must leave the original data alone.
+install_blesses_preexisting="$tmp/install-blesses-preexisting"
+preexisting_root="$tmp/preexisting-custom-root"
+(
+  mkdir -p "$preexisting_root/user-content"
+  printf keep > "$preexisting_root/user-content/marker"
+  export XDG_DATA_HOME="$install_blesses_preexisting/data" XDG_CACHE_HOME="$install_blesses_preexisting/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$preexisting_root"
+  set +e
+  run_stubbed_install
+  install_status=$?
+  set -e
+  [[ $install_status -ne 0 ]]
+  [[ ! -e "$preexisting_root/.android-agent-device-owned" ]]
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -f "$preexisting_root/user-content/marker" ]]
+
+# A partial/mismatched record: exactly one root carries a well-formed, internally-consistent
+# record (path+role match, but its install_id has no corroborating sibling since the other roots
+# are absent). A lone root's self-report must never be sufficient -- corroboration requires at
+# least two independently-read roots to agree, which a single forged/copied record can never do.
+partial_record="$tmp/partial-record"
+(
+  export XDG_DATA_HOME="$partial_record/data" XDG_CACHE_HOME="$partial_record/cache"
+  mkdir -p "$XDG_DATA_HOME/android-agent-device/sdk/some-content"
+  printf keep > "$XDG_DATA_HOME/android-agent-device/sdk/some-content/marker"
+  printf 'path=%s\nrole=sdk\ninstall_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
+    "$(realpath -m "$XDG_DATA_HOME/android-agent-device/sdk")" \
+    > "$XDG_DATA_HOME/android-agent-device/sdk/.android-agent-device-owned"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+  [[ -f "$XDG_DATA_HOME/android-agent-device/sdk/some-content/marker" ]]
+)
+
+# A copied record with the right shape but the wrong recorded path (e.g. copied from a different
+# install or host) must not validate for this root, even though it parses cleanly.
+copied_record_path_mismatch="$tmp/copied-record-path-mismatch"
+mismatch_root="$tmp/mismatch-victim/android-agent-device"
+(
+  mkdir -p "$mismatch_root/important-data"
+  printf keep > "$mismatch_root/important-data/marker"
+  printf 'path=/some/other/totally/different/path\nrole=sdk\ninstall_id=deadbeefdeadbeefdeadbeefdeadbeef\n' \
+    > "$mismatch_root/.android-agent-device-owned"
+  export XDG_DATA_HOME="$copied_record_path_mismatch/data" XDG_CACHE_HOME="$copied_record_path_mismatch/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$mismatch_root"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -f "$mismatch_root/important-data/marker" ]]
+
+# A symlinked ownership record file (the root itself is real, but .android-agent-device-owned is a
+# symlink to external content) is rejected without ever reading/writing through the symlink target.
+symlink_record="$tmp/symlink-record"
+symlink_record_root="$tmp/symlink-record-root"
+(
+  mkdir -p "$symlink_record_root/important-data"
+  printf keep > "$symlink_record_root/important-data/marker"
+  printf 'path=%s\nrole=sdk\ninstall_id=deadbeefdeadbeefdeadbeefdeadbeef\n' \
+    "$(realpath -m "$symlink_record_root")" > "$tmp/external-record-target"
+  ln -s "$tmp/external-record-target" "$symlink_record_root/.android-agent-device-owned"
+  export XDG_DATA_HOME="$symlink_record/data" XDG_CACHE_HOME="$symlink_record/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$symlink_record_root"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  [[ $uninstall_status -ne 0 ]]
+)
+[[ -f "$symlink_record_root/important-data/marker" ]]
+
+# Atomic all-roots preflight: if one of the six roots is disqualified (nonempty, unowned custom
+# override), --install must abort before writing ANY ownership record anywhere, even into roots
+# that would themselves have qualified (here, the default-path roots are all empty/absent and
+# would otherwise pass). No partial adoption across the six roots.
+atomic_preflight="$tmp/atomic-preflight"
+atomic_bad_root="$tmp/atomic-bad-custom-root"
+(
+  mkdir -p "$atomic_bad_root/user-content"
+  printf keep > "$atomic_bad_root/user-content/marker"
+  export XDG_DATA_HOME="$atomic_preflight/data" XDG_CACHE_HOME="$atomic_preflight/cache"
+  export ANDROID_AGENT_DEVICE_AVD_HOME="$atomic_bad_root"
+  set +e
+  run_stubbed_install
+  install_status=$?
+  set -e
+  [[ $install_status -ne 0 ]]
+  [[ ! -e "$atomic_bad_root/.android-agent-device-owned" ]]
+  [[ ! -e "$XDG_DATA_HOME/android-agent-device/sdk/.android-agent-device-owned" ]]
+  [[ -f "$atomic_bad_root/user-content/marker" ]]
+)
+
+# Legacy one-time migration: a pre-existing tree at the exact DEFAULT (un-overridden) path with
+# real content but no record is refused without the explicit acknowledgement, and accepted (record
+# written, original content preserved, not wiped) with ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1. A
+# CUSTOM override is never eligible for migration regardless of the acknowledgement flag.
+legacy_migration="$tmp/legacy-migration"
+(
+  export XDG_DATA_HOME="$legacy_migration/data" XDG_CACHE_HOME="$legacy_migration/cache"
+  mkdir -p "$XDG_DATA_HOME/android-agent-device/sdk/cmdline-tools"
+  touch "$XDG_DATA_HOME/android-agent-device/sdk/cmdline-tools/marker-real-sdk-content"
+
+  set +e
+  run_stubbed_install
+  no_ack_status=$?
+  set -e
+  [[ $no_ack_status -ne 0 ]]
+  [[ ! -e "$XDG_DATA_HOME/android-agent-device/sdk/.android-agent-device-owned" ]]
+
+  ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1 run_stubbed_install
+  [[ -f "$XDG_DATA_HOME/android-agent-device/sdk/.android-agent-device-owned" ]]
+  [[ -f "$XDG_DATA_HOME/android-agent-device/sdk/cmdline-tools/marker-real-sdk-content" ]]
+)
+
+# The same pre-existing-content shape at a CUSTOM (overridden) path is never migration-eligible,
+# acknowledgement or not -- only absent/empty/already-owned custom roots are ever accepted.
+legacy_migration_custom_ineligible="$tmp/legacy-migration-custom-ineligible"
+custom_legacy_root="$tmp/custom-legacy-root"
+(
+  mkdir -p "$custom_legacy_root/cmdline-tools"
+  touch "$custom_legacy_root/cmdline-tools/marker-real-sdk-content"
+  export XDG_DATA_HOME="$legacy_migration_custom_ineligible/data" XDG_CACHE_HOME="$legacy_migration_custom_ineligible/cache"
+  export ANDROID_AGENT_DEVICE_SDK_ROOT="$custom_legacy_root"
+  export ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1
+  set +e
+  run_stubbed_install
+  install_status=$?
+  set -e
+  [[ $install_status -ne 0 ]]
+  [[ ! -e "$custom_legacy_root/.android-agent-device-owned" ]]
+)
 
 # --uninstall refuses when the state file is missing entirely but the shared ADB port is occupied
 # (e.g. state was lost/corrupted while a device from an earlier interrupted lifecycle is still up):

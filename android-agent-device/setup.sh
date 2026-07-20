@@ -159,69 +159,240 @@ update_sdk_packages() {
   "$sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --update
 }
 
-# A directory name containing "android-agent-device" proves nothing about ownership: a user can
-# legitimately have an unrelated project/cache directory with that name, and rm -rf on it would
-# destroy everything nested underneath, name match or not. Ownership must instead be something
-# only this installer could have written. Each of the six capability-owned roots gets a sentinel
-# file, written once by install_impl after it creates that root, containing a fixed marker plus a
-# format version. Uninstall deletes a root only if that exact sentinel is present and valid; a
-# root that exists without it -- however it got that name -- is refused, not deleted.
-ANDROID_AGENT_DEVICE_SENTINEL_NAME=".android-agent-device-owned"
-ANDROID_AGENT_DEVICE_SENTINEL_MARKER="android-agent-device-capability-root"
-ANDROID_AGENT_DEVICE_SENTINEL_VERSION="1"
+# A directory name/component, or a predictable fixed-content sentinel file, is not proof of
+# ownership: a user can legitimately have unrelated pre-existing data at a path this capability is
+# configured to use (default or an operator override), and a fixed marker text is trivially
+# copyable between roots or hosts. Ownership must instead be a record that (a) is a real regular
+# file this installer wrote, never a symlink; (b) names the exact canonical path and role it lives
+# in, so a marker copied to a different root or renamed cannot validate there; and (c) carries one
+# install-run-scoped random ID shared identically across all six roots, so a marker manually placed
+# in one root without the matching set in the other five cannot validate alone. install_impl's
+# preflight (below) additionally refuses to ever write a record into a nonempty, unowned CUSTOM
+# root at all -- adoption without proof is exactly the defect this replaces.
+ANDROID_AGENT_DEVICE_RECORD_NAME=".android-agent-device-owned"
 
-sentinel_path() { printf '%s/%s\n' "$1" "$ANDROID_AGENT_DEVICE_SENTINEL_NAME"; }
+# role names double as the record's "role=" field and must be unique per canonical root. The third
+# field is non-empty exactly when the root is a CUSTOM override rather than the un-overridden
+# default path. ANDROID_AGENT_DEVICE_STATE_DIR/CACHE_DIR/EVIDENCE_DIR are self-referential defaults
+# in common.sh (the override variable and the resolved variable share one name), so once
+# android_agent_device_init_paths has run once in this process, that variable is always non-empty
+# regardless of whether an operator actually set it -- checking it directly cannot tell override
+# from default apart. Comparing the resolved path against a freshly recomputed pure default (using
+# only $XDG_DATA_HOME/$XDG_CACHE_HOME, ignoring any already-exported override variable) does.
+android_agent_device_roots() {
+  local sdk_override='' avd_override='' home_override='' state_override='' cache_override='' evidence_override=''
+  [[ -n "${ANDROID_AGENT_DEVICE_SDK_ROOT:-}" ]] && sdk_override=1
+  [[ -n "${ANDROID_AGENT_DEVICE_AVD_HOME:-}" ]] && avd_override=1
+  [[ -n "${ANDROID_AGENT_DEVICE_USER_HOME:-}" ]] && home_override=1
+  [[ "$ANDROID_AGENT_DEVICE_STATE_DIR" != "$XDG_DATA_HOME/android-agent-device/state" ]] && state_override=1
+  [[ "$ANDROID_AGENT_DEVICE_CACHE_DIR" != "$XDG_CACHE_HOME/android-agent-device" ]] && cache_override=1
+  [[ "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR" != "$XDG_DATA_HOME/android-agent-device/evidence" ]] && evidence_override=1
+  cat <<EOF
+sdk|$ANDROID_SDK_ROOT|$sdk_override
+avd|$ANDROID_AVD_HOME|$avd_override
+android-home|$ANDROID_USER_HOME|$home_override
+state|$ANDROID_AGENT_DEVICE_STATE_DIR|$state_override
+cache|$ANDROID_AGENT_DEVICE_CACHE_DIR|$cache_override
+evidence|$ANDROID_AGENT_DEVICE_EVIDENCE_DIR|$evidence_override
+EOF
+}
 
-write_ownership_sentinels() {
-  local root
-  for root in "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
-    "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"; do
-    mkdir -p "$root"
-    printf 'marker=%s\nversion=%s\n' "$ANDROID_AGENT_DEVICE_SENTINEL_MARKER" "$ANDROID_AGENT_DEVICE_SENTINEL_VERSION" \
-      > "$(sentinel_path "$root")"
+record_path() { printf '%s/%s\n' "$1" "$ANDROID_AGENT_DEVICE_RECORD_NAME"; }
+
+# A record (or its root) reached through a symlink is rejected outright: `-L` on the resolved
+# record path, and comparing the resolved root against its non-canonicalized form, both catch a
+# symlink component without ever following one to read/write through it.
+path_is_or_is_under_symlink() {
+  local probe
+  probe="$1"
+  while [[ "$probe" != / && -n "$probe" ]]; do
+    [[ -L "$probe" ]] && return 0
+    probe="$(dirname "$probe")"
   done
+  return 1
 }
 
-root_has_valid_ownership_sentinel() {
-  local root="$1" sentinel
-  sentinel="$(sentinel_path "$root")"
-  [[ -f "$sentinel" ]] || return 1
-  [[ "$(sed -n 's/^marker=//p' "$sentinel" | head -n 1)" == "$ANDROID_AGENT_DEVICE_SENTINEL_MARKER" ]] || return 1
-  [[ "$(sed -n 's/^version=//p' "$sentinel" | head -n 1)" == "$ANDROID_AGENT_DEVICE_SENTINEL_VERSION" ]]
+root_has_valid_ownership_record() {
+  local root="$1" role="$2" install_id="$3" record recorded_path recorded_role recorded_id
+  record="$(record_path "$root")"
+  [[ -f "$record" && ! -L "$record" ]] || return 1
+  path_is_or_is_under_symlink "$root" && return 1
+  recorded_path="$(sed -n 's/^path=//p' "$record" | head -n 1)"
+  recorded_role="$(sed -n 's/^role=//p' "$record" | head -n 1)"
+  recorded_id="$(sed -n 's/^install_id=//p' "$record" | head -n 1)"
+  [[ "$recorded_path" == "$(realpath -m "$root")" ]] || return 1
+  [[ "$recorded_role" == "$role" ]] || return 1
+  [[ -n "$recorded_id" ]] || return 1
+  [[ "$recorded_id" == "$install_id" ]]
 }
 
-# Canonicalizes (realpath -m, so symlinks/../traversal cannot hide the true target) every
-# documented override (common.sh:21-31) and requires proven ownership before any deletion. A
-# nonexistent root is safe to skip. So is one containing nothing but this capability's own
-# lifecycle bookkeeping (the device/install lock files, created merely by acquiring a lock -- which
-# happens on every invocation, including an uninstall of a tree that was never actually installed
-# -- and the sentinel itself): there is nothing there to lose. An existing root with any other
-# content and no valid sentinel is refused outright and the whole uninstall aborts -- it is never
-# partially applied.
-directory_has_only_lifecycle_bookkeeping() {
+# Any owner's record identifies the shared install-run ID it belongs to, regardless of what that
+# ID is; used to discover an already-self-consistent set (all six carrying the same ID) without
+# needing to know the ID in advance.
+root_ownership_record_install_id() {
+  local root="$1" record
+  record="$(record_path "$root")"
+  [[ -f "$record" && ! -L "$record" ]] || return 1
+  path_is_or_is_under_symlink "$root" && return 1
+  sed -n 's/^install_id=//p' "$record" | head -n 1
+}
+
+directory_empty_of_content() {
   local dir="$1" entry name
   while IFS= read -r -d '' entry; do
     name="$(basename "$entry")"
     case "$name" in
-      "$ANDROID_AGENT_DEVICE_SENTINEL_NAME"|device.lock|install.lock) ;;
+      "$ANDROID_AGENT_DEVICE_RECORD_NAME"|device.lock|install.lock) ;;
       *) return 1 ;;
     esac
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   return 0
 }
 
-require_ownership_of_deletion_targets() {
-  local path resolved
-  for path in "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
-    "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"; do
-    resolved="$(realpath -m "$path")"
+# A root is at its literal, un-overridden default location only if the corresponding
+# ANDROID_AGENT_DEVICE_*_ROOT/_HOME/_DIR override was never set; legacy one-time migration is
+# restricted to exactly this case; a CUSTOM override never migrates, only adopts empty/owned.
+role_is_default_path() { [[ -z "$3" ]]; }
+
+# Classifies one root before any install mutation happens anywhere. Echoes one of:
+# absent | empty | owned | migratable-legacy-default | disqualified. Never writes anything.
+# corroborated_id (possibly empty) must come from discover_corroborated_install_id, computed once
+# across all six roots by the caller -- never from this root's own self-reported ID in isolation,
+# which a single forged/copied record could satisfy on its own.
+classify_root_for_install() {
+  local role="$1" root="$2" override="$3" corroborated_id="$4" resolved
+  resolved="$(realpath -m "$root")"
+  if path_is_or_is_under_symlink "$resolved" && [[ -e "$resolved" ]]; then
+    printf 'disqualified: %s is reached through a symlink; this installer never writes through one\n' "$resolved"
+    return 1
+  fi
+  if [[ ! -e "$resolved" ]]; then
+    echo absent
+    return 0
+  fi
+  if [[ -n "$corroborated_id" ]] && root_has_valid_ownership_record "$resolved" "$role" "$corroborated_id"; then
+    echo owned
+    return 0
+  fi
+  if directory_empty_of_content "$resolved"; then
+    echo empty
+    return 0
+  fi
+  if role_is_default_path "$role" "$root" "$override" && [[ "${ANDROID_AGENT_DEVICE_MIGRATE_LEGACY:-}" == 1 ]]; then
+    echo migratable-legacy-default
+    return 0
+  fi
+  if role_is_default_path "$role" "$root" "$override"; then
+    printf 'disqualified: %s (default %s path) has content but no valid ownership record and no ANDROID_AGENT_DEVICE_MIGRATE_LEGACY=1 acknowledgement for the documented one-time migration\n' "$resolved" "$role"
+  else
+    printf 'disqualified: %s (a custom ANDROID_AGENT_DEVICE_* override for %s) is nonempty and not already validly owned; a custom root must be absent, empty, or already this installer'"'"'s to be used -- it is never auto-adopted or migrated\n' "$resolved" "$role"
+  fi
+  return 1
+}
+
+# Preflights every one of the six roots before any of install_impl's other steps run (host
+# packages, SDK download, AVD creation) and before any ownership record is written anywhere. A
+# single disqualified root aborts the whole install; nothing is downloaded, mutated, or claimed.
+preflight_install_roots() {
+  local line role root override verdict failed=false corroborated_id
+  corroborated_id="$(discover_corroborated_install_id 2>/dev/null || true)"
+  while IFS='|' read -r role root override; do
+    [[ -n "$role" ]] || continue
+    if ! verdict="$(classify_root_for_install "$role" "$root" "$override" "$corroborated_id")"; then
+      echo "Refusing to install: $verdict" >&2
+      failed=true
+      continue
+    fi
+  done < <(android_agent_device_roots)
+  [[ "$failed" == false ]] || { echo "No root was mutated, no sentinel was written, and nothing was downloaded." >&2; return 1; }
+}
+
+# Writes all six ownership records only after preflight_install_roots has passed for all of them.
+# Each write is atomic (mktemp + mv within the same root, so no reader ever observes a partial
+# record) and refuses to write through a symlinked root. One shared install ID is generated once
+# and used for every record, so a record copied alone to another root (a different path/role) or
+# without its five siblings (a different, unmatched ID) cannot pass validation there.
+write_ownership_records() {
+  local install_id role root override resolved stage
+  install_id="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+  while IFS='|' read -r role root override; do
+    [[ -n "$role" ]] || continue
+    mkdir -p "$root"
+    resolved="$(realpath -m "$root")"
+    path_is_or_is_under_symlink "$resolved" && { echo "Refusing to write an ownership record through a symlinked root: $resolved" >&2; return 1; }
+    stage="$(mktemp "$resolved/.android-agent-device-owned.XXXXXX")"
+    printf 'path=%s\nrole=%s\ninstall_id=%s\n' "$resolved" "$role" "$install_id" > "$stage"
+    mv -T "$stage" "$(record_path "$resolved")"
+  done < <(android_agent_device_roots)
+}
+
+# Trusting a root's own self-reported install_id to validate that same root is circular: a single
+# forged or copied record with an arbitrary but internally-consistent ID would always "match
+# itself." A shared install identity is only meaningful if it is actually shared -- corroborated by
+# every OTHER nonempty root's own independently-read record, not just asserted by the one root being
+# checked. Reads every nonempty root's record's ID first; only an ID that every nonempty root agrees
+# on (unanimously, not just this one) counts as the real, current install's identity.
+discover_corroborated_install_id() {
+  local role root override resolved id ids="" candidate count=0
+  while IFS='|' read -r role root override; do
+    [[ -n "$role" ]] || continue
+    resolved="$(realpath -m "$root")"
     [[ -e "$resolved" ]] || continue
-    directory_has_only_lifecycle_bookkeeping "$resolved" && continue
-    root_has_valid_ownership_sentinel "$resolved" || {
-      echo "Refusing to uninstall: $resolved (from a documented path override) has content but no valid android-agent-device ownership sentinel. It may be an unrelated directory that happens to share a path component; only a directory this installer created can be deleted. Move/remove it yourself if you are certain, or fix the override." >&2
+    directory_empty_of_content "$resolved" && continue
+    id="$(root_ownership_record_install_id "$resolved" 2>/dev/null || true)"
+    [[ -n "$id" ]] || return 1
+    ids="$ids $id"
+    count=$((count + 1))
+  done < <(android_agent_device_roots)
+  # write_ownership_records always writes all six roots in one atomic pass, so a genuine install
+  # never leaves exactly one nonempty root with a record and the rest empty/absent. Requiring at
+  # least two independently-read, agreeing roots is what makes corroboration meaningful: a single
+  # root's self-report (forged or copied) can never satisfy "unanimous" on its own.
+  [[ $count -ge 2 ]] || return 1
+  candidate="$(awk '{print $1}' <<<"$ids")"
+  for id in $ids; do [[ "$id" == "$candidate" ]] || return 1; done
+  printf '%s\n' "$candidate"
+}
+
+# Canonicalizes (realpath -m, so symlinks/../traversal cannot hide the true target) every
+# documented override (common.sh:21-31) and requires a valid record for the one install ID every
+# nonempty root corroborates, before any deletion. A nonexistent root, or one containing nothing
+# but this capability's own lock-file/record bookkeeping (mkdirs runs on every invocation, so those
+# can exist even on a tree that was never installed), is safe to skip -- there is nothing there to
+# lose. If even one nonempty root disagrees on the ID, is missing a record, or fails validation,
+# the whole uninstall aborts -- it is never partially applied, and no root is deleted on the
+# strength of its own unverified self-report alone.
+any_root_has_content() {
+  local role root override resolved
+  while IFS='|' read -r role root override; do
+    [[ -n "$role" ]] || continue
+    resolved="$(realpath -m "$root")"
+    [[ -e "$resolved" ]] || continue
+    directory_empty_of_content "$resolved" || return 0
+  done < <(android_agent_device_roots)
+  return 1
+}
+
+require_ownership_of_deletion_targets() {
+  local role root override resolved corroborated_id
+  # A genuinely fresh tree (nothing anywhere but this invocation's own lock bookkeeping) has
+  # nothing to protect or corroborate; only look for a shared install identity once there is at
+  # least one nonempty root, so a never-installed uninstall stays a safe no-op instead of a refusal.
+  any_root_has_content || return 0
+  corroborated_id="$(discover_corroborated_install_id)" || {
+    echo "Refusing to uninstall: the six capability roots do not all agree on one install identity (a root may be unowned, missing its record, or recording a different install). Nothing was deleted." >&2
+    return 1
+  }
+  while IFS='|' read -r role root override; do
+    [[ -n "$role" ]] || continue
+    resolved="$(realpath -m "$root")"
+    [[ -e "$resolved" ]] || continue
+    directory_empty_of_content "$resolved" && continue
+    root_has_valid_ownership_record "$resolved" "$role" "$corroborated_id" || {
+      echo "Refusing to uninstall: $resolved (role=$role) has content but no valid android-agent-device ownership record for the corroborated install identity. It may be an unrelated directory, a copied/forged marker, or a record for a different install; only a directory this installer's --install validated and recorded can be deleted. Move/remove it yourself if you are certain, or fix the override." >&2
       return 1
     }
-  done
+  done < <(android_agent_device_roots)
 }
 
 uninstall_impl() {
@@ -243,11 +414,16 @@ uninstall_impl() {
 }
 
 install_impl() {
+  # Preflight all six roots before any host/SDK/AVD mutation, per-root, or ownership record write.
+  # A disqualified root (nonempty, unowned, and not an explicitly acknowledged legacy-default
+  # migration) aborts here: nothing is downloaded, nothing is mutated, no record is written
+  # anywhere -- not even into the roots that would otherwise have qualified.
+  preflight_install_roots
   install_host_prerequisites
   install_cmdline_tools
   install_sdk_packages
   create_avd
-  write_ownership_sentinels
+  write_ownership_records
   echo "Installed $ANDROID_AGENT_DEVICE_NAME. Run android-agent-device diagnose, then android-agent-device start."
 }
 
