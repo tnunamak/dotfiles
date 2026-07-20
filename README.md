@@ -88,6 +88,10 @@ group; log out and back in once if it does. The AVD, SDK, cache, locks, and evid
 XDG user directories. See the `android-agent-device` local skill for locked multi-agent workflows,
 real soft-keyboard/VisualViewport tests, CDP, screenshots, and evidence collection.
 
+Remove it with `scripts/android-agent-device-setup.sh --uninstall`: it stops the shared device
+first if one is recorded, then deletes the XDG-scoped SDK/AVD/state/cache/evidence directories. It
+never touches `kvm` group membership or host packages (curl/unzip/python3/java).
+
 Headroom is registered MCP-only. Its compression/retrieval tools are available to all agents, but `headroom wrap` is not the default until it is benchmarked against rtk/context-mode.
 
 Tokensmashing methodology lives in `ai/tokensmash.md`; use `tokensmash compare` / `tokensmash suite` to measure actual emitted payloads instead of trusting reducer dashboards.

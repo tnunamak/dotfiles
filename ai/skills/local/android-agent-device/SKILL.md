@@ -27,6 +27,11 @@ ANDROID_AGENT_DEVICE_SETUP=1 ~/code/dotfiles/setup.sh
 ~/code/dotfiles/scripts/android-agent-device-setup.sh --install
 ```
 
+To remove the capability entirely, the host owner runs
+`~/code/dotfiles/scripts/android-agent-device-setup.sh --uninstall`. It stops the recorded shared
+device first, then deletes the XDG-scoped SDK/AVD/state/cache/evidence directories; it never
+touches `kvm` group membership or host packages.
+
 `diagnose` reports KVM node access (`kvm_device_access`) separately from the emulator's own
 `emulator_accel_check`; both must be true for the intended accelerated path.
 The installer adds the user to the `kvm` group when necessary; logging out and back in is the

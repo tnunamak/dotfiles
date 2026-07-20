@@ -9,11 +9,15 @@ android_agent_device_init_paths
 
 usage() {
   cat <<'EOF'
-Usage: android-agent-device-setup [--install] [--update] [--print-config] [--help]
+Usage: android-agent-device-setup [--install] [--update] [--uninstall] [--print-config] [--help]
 
 --install       Install host prerequisites, a checksum-verified SDK bootstrap, fixed SDK package IDs, and the AVD.
 --update        Explicitly update Android SDK packages after showing available updates.
+--uninstall     Stop the shared device if owned, then remove the user-scoped SDK/AVD/state/cache/evidence directories.
 --print-config  Print resolved user-scoped paths and fixed package IDs; no downloads.
+
+--uninstall never touches kvm group membership or host packages (curl/unzip/python3/java);
+those are host-level grants outside this capability's XDG-scoped state.
 EOF
 }
 
@@ -147,6 +151,22 @@ update_sdk_packages() {
   "$sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --update
 }
 
+uninstall_impl() {
+  local cli="$ROOT/cli.sh"
+  if [[ -f "$ANDROID_AGENT_DEVICE_STATE_DIR/emulator.state" ]]; then
+    "$cli" stop || {
+      echo "Refusing to remove SDK/AVD state while the recorded emulator could not be stopped cleanly. Inspect 'android-agent-device status --json' and retry." >&2
+      return 1
+    }
+  fi
+  rm -rf "$ANDROID_SDK_ROOT" "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME" \
+    "$ANDROID_AGENT_DEVICE_STATE_DIR" "$ANDROID_AGENT_DEVICE_CACHE_DIR" "$ANDROID_AGENT_DEVICE_EVIDENCE_DIR"
+  # Only this capability's own namespace directories, never the shared XDG parent itself.
+  rmdir --ignore-fail-on-non-empty "$XDG_DATA_HOME/android-agent-device" "$XDG_CACHE_HOME/android-agent-device" 2>/dev/null || true
+  echo "Removed the user-scoped Android SDK, AVD, state, cache, and evidence directories."
+  echo "kvm group membership and host packages (curl/unzip/python3/java) were left in place; remove those yourself if desired."
+}
+
 install_impl() {
   install_host_prerequisites
   install_cmdline_tools
@@ -172,6 +192,10 @@ main() {
     --update)
       require_linux
       with_install_lock update_impl
+      ;;
+    --uninstall)
+      require_linux
+      with_install_lock uninstall_impl
       ;;
     *) usage >&2; exit 2 ;;
   esac

@@ -87,9 +87,57 @@ reset_impl
 [[ "$lifecycle" == 'stop start:true ' ]]
 unset -f stop_impl start_impl
 
+# Unset before invoking any subprocess CLI below. ANDROID_AGENT_DEVICE_LIB_ONLY would otherwise
+# make a subprocess skip its own main(). The derived path vars use a self-referential default
+# (e.g. ANDROID_AGENT_DEVICE_STATE_DIR="${ANDROID_AGENT_DEVICE_STATE_DIR:-...}") so an operator can
+# pin them directly; once this script exported them from the first XDG_DATA_HOME above, later
+# subtests exporting a new XDG_DATA_HOME would otherwise inherit the stale pinned paths.
+unset ANDROID_AGENT_DEVICE_LIB_ONLY ANDROID_SDK_ROOT ANDROID_HOME ANDROID_AVD_HOME \
+  ANDROID_USER_HOME ANDROID_EMULATOR_HOME ANDROID_AGENT_DEVICE_STATE_DIR \
+  ANDROID_AGENT_DEVICE_CACHE_DIR ANDROID_AGENT_DEVICE_EVIDENCE_DIR \
+  ANDROID_AGENT_DEVICE_LOCK_FILE ANDROID_AGENT_DEVICE_INSTALL_LOCK_FILE
+
 # Installer and smoke retain explicit single-process boundaries rather than hidden prerequisites.
 grep -q 'ANDROID_AGENT_DEVICE_INSTALL_LOCK_FILE' "$TEST_ROOT/android-agent-device/setup.sh"
 grep -q 'ANDROID_AGENT_DEVICE_SMOKE_LOCK_HELD' "$TEST_ROOT/android-agent-device/smoke-test.sh"
 ! rg -q '\bnode\b' "$TEST_ROOT/android-agent-device/smoke-test.sh"
+
+# --uninstall is a safe no-op against a never-installed tree (no downloads, no sudo).
+uninstall_fresh="$tmp/uninstall-fresh"
+(
+  export XDG_DATA_HOME="$uninstall_fresh/data" XDG_CACHE_HOME="$uninstall_fresh/cache"
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+)
+[[ ! -e "$uninstall_fresh/data/android-agent-device" ]]
+
+# --uninstall removes leftover state directories when no emulator is recorded as running.
+uninstall_tmp="$tmp/uninstall-populated"
+(
+  export XDG_DATA_HOME="$uninstall_tmp/data" XDG_CACHE_HOME="$uninstall_tmp/cache"
+  mkdir -p "$XDG_DATA_HOME/android-agent-device/sdk" "$XDG_DATA_HOME/android-agent-device/avd"
+  touch "$XDG_DATA_HOME/android-agent-device/sdk/marker"
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  [[ ! -e "$XDG_DATA_HOME/android-agent-device/sdk" ]]
+)
+
+# --uninstall refuses to delete state it cannot confirm is safe to stop (a live foreign PID).
+uninstall_refuse="$tmp/uninstall-refuse"
+(
+  export XDG_DATA_HOME="$uninstall_refuse/data" XDG_CACHE_HOME="$uninstall_refuse/cache"
+  mkdir -p "$XDG_DATA_HOME/android-agent-device/state"
+  sleep 30 &
+  foreign_pid=$!
+  foreign_ticks="$(awk '{print $22}' "/proc/$foreign_pid/stat")"
+  printf 'pid=%s\nstart_ticks=%s\nname=agent_pixel_8_api_36\nconsole_port=5556\nadb_port=5557\nowner_token=test\n' \
+    "$foreign_pid" "$foreign_ticks" > "$XDG_DATA_HOME/android-agent-device/state/emulator.state"
+  set +e
+  "$TEST_ROOT/scripts/android-agent-device-setup.sh" --uninstall
+  uninstall_status=$?
+  set -e
+  kill "$foreign_pid" 2>/dev/null || true
+  wait "$foreign_pid" 2>/dev/null || true
+  [[ $uninstall_status -ne 0 ]]
+  [[ -f "$XDG_DATA_HOME/android-agent-device/state/emulator.state" ]]
+)
 
 echo 'PASS android-agent-device lifecycle/configuration contracts (no downloads)'
