@@ -1,0 +1,7 @@
+[Unit]
+Description=Snapshot kitty/KWin desktop layout
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/tnunamak/.local/bin/desktop-layout-snapshot

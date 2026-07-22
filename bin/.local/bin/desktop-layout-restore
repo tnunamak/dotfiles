@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Recreate only an absent kitty fleet; every placement uses a newly-created ID.
+set -euo pipefail
+state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="${DESKTOP_LAYOUT_MANIFEST:-$state/manifest.json}"; dry=0; force=0
+created_set="${DESKTOP_LAYOUT_CREATED_SET:-}"; test_socket_dir="${DESKTOP_LAYOUT_TEST_SOCKET_DIR:-}"; spawn_number=0
+while (($#)); do case "$1" in --dry-run) dry=1;;--force) force=1;;--manifest) manifest="$2";shift;;*) echo 'usage: desktop-layout-restore [--dry-run] [--force] [--manifest FILE]' >&2;exit 2;;esac;shift;done
+[[ -s "$manifest" ]] || exit 0; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 1
+mapfile -t existing < <(kdotool search --class kitty 2>/dev/null || true); if (( !force && ${#existing[@]}>2 )); then echo "desktop-layout-restore: ${#existing[@]} kitty windows already exist; skipping";exit 0;fi
+screen(){ kscreen-doctor -o 2>/dev/null|awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{print w,h}'; }
+read -r cw ch < <(screen); sw="$(jq -r '.screen.width // 0' "$manifest")";sh="$(jq -r '.screen.height // 0' "$manifest")"; ((sw>0))||sw=$cw;((sh>0))||sh=$ch
+if ((dry));then jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '.windows[]|"launch "+(if .is_tmux then "tmux window "+(.tmux_window_index|tostring) else "plain kitty" end)+" desktop "+(.virtual_desktop|tostring)+" at "+((.position.x*$cw/$sw|round)|tostring)+","+((.position.y*$ch/$sh|round)|tostring)' "$manifest";exit 0;fi
+for _ in $(seq 1 240);do [[ "$(systemctl --user is-active tmux-restore.service 2>/dev/null||true)" != activating ]]&&break;sleep .5;done
+while IFS= read -r row;do
+  cwd="$(jq -r '.cwd // env.HOME' <<< "$row")";[[ -d "$cwd" ]]||cwd="$HOME";tmux_row="$(jq -r .is_tmux <<< "$row")";idx="$(jq -r '.tmux_window_index // empty' <<< "$row")";desk="$(jq -r .virtual_desktop <<< "$row")"
+  mapfile -t before < <(kdotool search --class kitty 2>/dev/null||true)
+  spawn_number=$((spawn_number+1)); args=(--directory "$cwd")
+  socket=""
+  if [[ -n "$test_socket_dir" ]]; then
+    mkdir -p "$test_socket_dir"; socket="$test_socket_dir/kitty-$spawn_number-$RANDOM"
+    args+=(--title "desktop-layout-test-$spawn_number-$RANDOM" --listen-on "unix:$socket")
+  fi
+  if [[ "$tmux_row" == true ]];then kitty "${args[@]}" env TMUX_ATTACH_TARGET_WINDOW="$idx" tmux-local-attach-main >/dev/null 2>&1 & else kitty "${args[@]}" >/dev/null 2>&1 & fi;pid=$!;new=""
+  for _ in $(seq 1 100);do mapfile -t after < <(kdotool search --class kitty 2>/dev/null||true);for candidate in "${after[@]}";do printf '%s\n' "${before[@]}"|grep -Fxq -- "$candidate"&&continue;[[ "$(kdotool getwindowpid "$candidate" 2>/dev/null||true)" == "$pid" ]]&&{ new="$candidate";break 2;};done;sleep .1;done
+  [[ -n "$new" ]]||{ echo "desktop-layout-restore: unable to identify kitty pid $pid" >&2;continue; }
+  # Test callers receive only IDs proven absent from the pre-spawn snapshot.
+  # This script never closes windows; cleanup is deliberately external and
+  # must use each recorded instance socket.
+  if [[ -n "$created_set" ]]; then printf '%s|%s\n' "$new" "$socket" >> "$created_set"; fi
+  read -r x y w h < <(jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '[.position.x*$cw/$sw,.position.y*$ch/$sh,.size.width*$cw/$sw,.size.height*$ch/$sh]|map(round)|join(" ")' <<< "$row")
+  kdotool set_desktop_for_window "$new" "$desk";kdotool windowsize "$new" "$w" "$h";kdotool windowmove "$new" "$x" "$y"
+done < <(jq -c '.windows[]' "$manifest")

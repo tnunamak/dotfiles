@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore kitty/KWin desktop layout after tmux restore
+After=graphical-session.target tmux.service tmux-restore.service
+Wants=tmux.service tmux-restore.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+ExecStart=/home/tnunamak/.local/bin/desktop-layout-restore
+
+[Install]
+WantedBy=graphical-session.target

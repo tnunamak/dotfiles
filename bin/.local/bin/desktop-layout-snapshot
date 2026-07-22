@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Save compositor geometry plus kitty/tmux identity. Remote control is used
+# first, because one kitty process may own several OS windows.
+set -euo pipefail
+state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="$state/manifest.json"
+mkdir -p "$state"; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 0
+mapfile -t windows < <(kdotool search --class kitty 2>/dev/null || true); ((${#windows[@]})) || exit 0
+screen="$(kscreen-doctor -o 2>/dev/null | awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{printf "{\"width\":%d,\"height\":%d}",w,h}')"
+clients="$(tmux -N list-clients -F '#{client_tty}|#{session_name}|#{window_index}|#{window_name}' 2>/dev/null || true)"
+rows="$(mktemp "$state/rows.XXXXXX")"; trap 'rm -f "$rows" "$manifest.tmp.$$"' EXIT
+for id in "${windows[@]}"; do
+  pid="$(kdotool getwindowpid "$id" 2>/dev/null || true)"; desk="$(kdotool get_desktop_for_window "$id" 2>/dev/null || true)"
+  geo="$(kdotool getwindowgeometry "$id" 2>/dev/null || true)"; title="$(kdotool getwindowname "$id" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ && "$desk" =~ ^[0-9]+$ ]] || continue
+  read -r x y w h < <(awk -F'[:, x]+' '/Position:/{x=$3;y=$4}/Geometry:/{w=$3;h=$4}END{print x,y,w,h}' <<< "$geo")
+  [[ "$x" && "$y" && "$w" && "$h" ]] || continue
+  source=pid_tty; cwd="$HOME"; tty="$(ps -o tty= -p "$pid" 2>/dev/null|tr -d ' ')"; remote=""
+  if [[ -S "/tmp/kitty-$pid" ]]; then
+    remote="$(kitten @ --to "unix:/tmp/kitty-$pid" ls 2>/dev/null | jq -ce --arg id "$id" --arg t "$title" '[.[]|select((.platform_window_id|tostring)==$id)] as $p|if ($p|length)==1 then $p[0] else [.[]|select(any(.tabs[]?;.is_active and .title==$t))] as $m|if ($m|length)==1 then $m[0] else empty end end' 2>/dev/null || true)"
+  fi
+  if [[ -n "$remote" ]]; then
+    source=kitty_remote; cwd="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].cwd // empty' <<< "$remote")"
+    child="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].pid // empty' <<< "$remote")"
+    [[ "$child" =~ ^[0-9]+$ ]] && tty="$(ps -o tty= -p "$child" 2>/dev/null|tr -d ' ')"
+  fi
+  info=""; [[ -n "$tty" && "$tty" != '?' ]] && info="$(awk -F'|' -v t="/dev/$tty" '$1==t{print;exit}' <<< "$clients")"
+  # kitty's compositor process has no tty; its direct tmux-client child does.
+  # Do not guess when a pre-config kitty owns multiple OS windows: without its
+  # remote-control tree, that association is genuinely ambiguous.
+  if [[ -z "$info" ]]; then
+    mapfile -t child_ttys < <(ps -o tty= --ppid "$pid" 2>/dev/null | tr -d ' ' | awk '$0!="?" && $0!="" {print "/dev/" $0}')
+    if ((${#child_ttys[@]} == 1)); then info="$(awk -F'|' -v t="${child_ttys[0]}" '$1==t{print;exit}' <<< "$clients")"; fi
+  fi
+  session=""; index=""; name=""; [[ -n "$info" ]] && IFS='|' read -r _ session index name <<< "$info"
+  jq -cn --arg id "$id" --argjson d "$desk" --argjson x "$x" --argjson y "$y" --argjson w "$w" --argjson h "$h" --arg cwd "${cwd:-$HOME}" --arg s "$session" --arg i "$index" --arg n "$name" --arg source "$source" '{kwin_window_id:$id,virtual_desktop:$d,position:{x:$x,y:$y},size:{width:$w,height:$h},cwd:$cwd,is_tmux:($s!=""),tmux_session:($s|if .=="" then null else . end),tmux_window_index:($i|if .=="" then null else tonumber end),tmux_window_name:($n|if .=="" then null else . end),identity_source:$source}' >> "$rows"
+done
+[[ -s "$rows" ]] || exit 0
+for n in 5 4 3 2; do [[ -f "$manifest.$((n-1))" ]] && mv -f "$manifest.$((n-1))" "$manifest.$n"; done
+[[ -f "$manifest" ]] && mv -f "$manifest" "$manifest.1"
+jq -s --argjson screen "$screen" '{version:1,captured_at:(now|todateiso8601),screen:$screen,windows:.}' "$rows" > "$manifest.tmp.$$"
+mv -f "$manifest.tmp.$$" "$manifest"

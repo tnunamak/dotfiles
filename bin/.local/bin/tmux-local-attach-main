@@ -10,6 +10,23 @@
 # real target group at runtime instead of binding to a literal name.
 set -euo pipefail
 
+# Used only by desktop-layout-restore. Normal launches retain their existing
+# restore-queue then least-viewed selection behavior.
+requested_window="${TMUX_ATTACH_TARGET_WINDOW:-}"
+tmux_socket="${TMUX_ATTACH_SOCKET:-}"
+if [[ "${1:-}" == "--window" ]]; then
+  requested_window="${2:-}"
+  shift 2
+fi
+if (( $# > 0 )); then
+  echo "usage: tmux-local-attach-main [--window INDEX]" >&2
+  exit 2
+fi
+if [[ -n "$requested_window" && ! "$requested_window" =~ ^[0-9]+$ ]]; then
+  echo "tmux-local-attach-main: window index must be a non-negative integer" >&2
+  exit 2
+fi
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
 LOCK_FILE="${STATE_DIR}/attach-main.lock"
 RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
@@ -24,9 +41,13 @@ DETACHED_SEEN_FILE="${STATE_DIR}/main.detached-seen"
 
 mkdir -p "$STATE_DIR"
 
+tmux_command() {
+  if [[ -n "$tmux_socket" ]]; then command tmux -N -L "$tmux_socket" "$@"; else command tmux -N "$@"; fi
+}
+
 wait_for_tmux_server() {
   for _ in $(seq 1 80); do
-    if command tmux -N list-sessions >/dev/null 2>&1; then
+    if tmux_command list-sessions >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.25
@@ -35,7 +56,7 @@ wait_for_tmux_server() {
 }
 
 ensure_tmux_server() {
-  if command tmux -N list-sessions >/dev/null 2>&1; then
+  if tmux_command list-sessions >/dev/null 2>&1; then
     return 0
   fi
 
@@ -46,7 +67,7 @@ ensure_tmux_server() {
   fi
 
   # Non-systemd fallback for machines that use this script without tmux.service.
-  command tmux start-server 2>/dev/null || return 1
+  tmux_command start-server 2>/dev/null || return 1
   wait_for_tmux_server
 }
 
@@ -56,7 +77,7 @@ if ! ensure_tmux_server; then
   exit 0
 fi
 
-tmux() { command tmux -N "$@"; }
+tmux() { tmux_command "$@"; }
 
 # Wait for systemd boot-restore to complete before we create grouped sessions.
 # Without this, we race against tmux-restore.service: we might create `main`
@@ -291,7 +312,7 @@ target="$(
     flock 9
 
     # Wrap tmux so child processes don't inherit the lock fd
-    tmux() { command tmux -N "$@" 9>&-; }
+    tmux() { tmux_command "$@" 9>&-; }
 
     # Find or create the target group.
     group_info="$(find_target_group || true)"
@@ -339,10 +360,20 @@ target="$(
       reap_orphan_clones "$group" "$seed" || true
     fi
 
-    # Pick a window: restore queue first, then smart selection
-    target_window="$(pop_restore_window "$seed" || true)"
-    if [[ -z "$target_window" ]]; then
-      target_window="$(choose_normal_window "$group" "$seed" || true)"
+    # Explicit targeting never consumes the restore queue; it is a separate,
+    # deterministic desktop-replay policy.
+    if [[ -n "$requested_window" ]]; then
+      if ! window_exists_in "$seed" "$requested_window"; then
+        echo "tmux-local-attach-main: requested window $requested_window is unavailable" >&2
+        exit 1
+      fi
+      target_window="$requested_window"
+    else
+      # Normal launches: restore queue first, then smart selection.
+      target_window="$(pop_restore_window "$seed" || true)"
+      if [[ -z "$target_window" ]]; then
+        target_window="$(choose_normal_window "$group" "$seed" || true)"
+      fi
     fi
 
     # Find the lowest available session name (main-0, main-1, ...) — note we

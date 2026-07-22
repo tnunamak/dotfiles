@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically snapshot kitty/KWin desktop layout
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

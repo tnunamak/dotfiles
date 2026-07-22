@@ -173,6 +173,13 @@ if ! command -v rtk &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 fi
 
+# Coolify CLI (self-hosted PaaS management)
+# The official installer supports a user-scoped install, which keeps its binary in
+# ~/.local/bin alongside the other user-managed CLIs and avoids another sudo-owned tool.
+if ! command -v coolify &>/dev/null; then
+  curl -fsSL https://raw.githubusercontent.com/coollabsio/coolify-cli/main/scripts/install.sh | bash -s -- --user
+fi
+
 # Headroom MCP tools. Keep this MCP-only by default until `headroom wrap` is
 # benchmarked against rtk/context-mode; wrapping would add another
 # agent/provider traffic-interception layer. The proxy extra is still needed
@@ -283,13 +290,14 @@ if [[ -x "$PATCH_SCRIPT" ]]; then
   "$PATCH_SCRIPT" || true
 fi
 
-# Enable tmux-restore.service (Linux only — stowed by the `tmux` package).
+# Enable tmux and desktop-layout restore units (Linux only — stowed by the
+# `tmux` package). Desktop restore self-gates when kitty is already present.
 # Replaces tmux-continuum's boot-time restore, which races against its own
 # auto-save and the first kitty attach. See CLAUDE.md for the debugging
 # history that led to this decision.
 if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   systemctl --user daemon-reload
-  systemctl --user enable tmux-restore.service 2>/dev/null || true
+  systemctl --user enable tmux-restore.service desktop-layout-restore.service desktop-layout-snapshot.timer 2>/dev/null || true
 fi
 
 # Codex: disable alternate-screen mode so the TUI runs inline and kitty's
