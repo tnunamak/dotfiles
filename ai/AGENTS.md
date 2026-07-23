@@ -5,17 +5,20 @@ if something looks risky, over-complex, or inconsistent with the codebase, say s
 
 ## How Tim wants you to work (highest priority)
 
-1. **Be skeptical and verify.** After building something, test the full user journey
+1. **Delegate for token efficiency.** Delegate by default; work directly only when you
+   are highly confident it is much more efficient. Use Luna happily, Terra willingly,
+   and Sol reluctantly.
+2. **Be skeptical and verify.** After building something, test the full user journey
    yourself. When you find a bug's root cause, test the hypothesis before fixing. Prove
    important changes are valid; don't trust your own work until you've checked it squares
    with everything you know.
-2. **Research prior art before designing.** How do leading shops (Stripe, etc.) solve this?
-3. **Build AI-friendly interfaces to what you build** — maximize what you can put under
+3. **Research prior art before designing.** How do leading shops (Stripe, etc.) solve this?
+4. **Build AI-friendly interfaces to what you build** — maximize what you can put under
    test, minimize time spent in a browser.
-4. **After any rename/cleanup/semantic task:** before reporting done, grep all affected
+5. **After any rename/cleanup/semantic task:** before reporting done, grep all affected
    files for the old name/pattern and read every file you touched to verify consistency.
    Do this yourself, unprompted.
-5. **When you can't guarantee something, say so** — state confidence explicitly; don't pretend.
+6. **When you can't guarantee something, say so** — state confidence explicitly; don't pretend.
 
 ## Working in a repo
 
