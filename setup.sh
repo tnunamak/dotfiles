@@ -135,6 +135,22 @@ if ! [[ -x "$HOME/.local/bin/claude" ]]; then
   curl -fsSL https://claude.ai/install.sh | bash
 fi
 
+# Antigravity CLI. Google does not publish the standalone `agy` CLI through
+# its APT repository; the official installer is the supported CLI channel.
+# Stage it under a temporary HOME so its shell-profile setup cannot modify
+# files owned by this dotfiles repo, then install only the verified binary.
+if ! command -v agy &>/dev/null; then
+  mkdir -p "$HOME/.tmp" "$HOME/.local/bin"
+  AGY_STAGE=$(mktemp -d "$HOME/.tmp/agy-install.XXXXXX")
+  mkdir -p "$AGY_STAGE/home" "$AGY_STAGE/bin"
+  curl -fsSL https://antigravity.google/cli/install.sh -o "$AGY_STAGE/install.sh"
+  HOME="$AGY_STAGE/home" \
+    bash "$AGY_STAGE/install.sh" --dir "$AGY_STAGE/bin"
+  install -m 0755 "$AGY_STAGE/bin/agy" "$HOME/.local/bin/agy"
+  rm -rf "$AGY_STAGE"
+  unset AGY_STAGE
+fi
+
 # Install shared npm global packages (from npm-global-packages.txt)
 echo "Installing shared npm global packages..."
 while IFS= read -r pkg; do
