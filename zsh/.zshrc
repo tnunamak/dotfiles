@@ -14,8 +14,9 @@ setopt NO_BEEP
 # Emacs keybindings
 bindkey -e
 
-# Completion (cached for fast startup)
-autoload -Uz compinit && compinit -C
+# Completion (compinit reuses its dump when the completion set is unchanged)
+[[ -d ~/.grok/completions/zsh ]] && fpath=(~/.grok/completions/zsh $fpath)
+autoload -Uz compinit && compinit
 zstyle ':completion:*' menu select
 zstyle ':completion:*' matcher-list 'm:{a-z}={A-Z}'
 
