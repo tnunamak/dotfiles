@@ -90,3 +90,6 @@ jq -n \
 	'{label:$label,state:$state,tmux_pane:$tmux_pane,agent:$agent,cwd:$cwd,ts:$ts,session_id:$session_id,hook_event_name:$hook_event_name}' \
 	>"$tmp"
 mv "$tmp" "$sidecar"
+
+# Claude hook stdout must always be valid JSON, including for Stop hooks.
+printf '{}\n'

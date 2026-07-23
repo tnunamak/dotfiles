@@ -14,16 +14,34 @@
 # Env override for testing:
 #   RESEARCH_CAPTURE_STATE_DIR — default: ~/.local/state/research-capture
 
-# Fail-silent wrapper: any unhandled exit goes to 0.
-trap 'exit 0' ERR
-
 STATE_DIR="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}"
-
-# 1. Kill switch.
-[ -f "$STATE_DIR/OFF" ] && exit 0
 
 # Read stdin (may be empty for some hook types — that's fine).
 input="$(cat 2>/dev/null || true)"
+
+# Codex Stop hooks require a JSON object on stdout. Other lifecycle hooks keep
+# their existing plain-text context-injection contract.
+hook_event=""
+if command -v jq >/dev/null 2>&1 && [ -n "$input" ]; then
+    hook_event="$(printf '%s' "$input" | jq -r '.hook_event_name // .hookEventName // .event_name // empty' 2>/dev/null || true)"
+fi
+is_codex_stop=false
+[ "$hook_event" = "Stop" ] && is_codex_stop=true
+
+emit_empty_stop_response() {
+    if $is_codex_stop; then
+        printf '{}\n'
+    fi
+}
+
+# Fail-silent wrapper: any unhandled exit goes to 0 with a valid Stop response.
+trap 'emit_empty_stop_response; exit 0' ERR
+
+# 1. Kill switch.
+if [ -f "$STATE_DIR/OFF" ]; then
+    emit_empty_stop_response
+    exit 0
+fi
 
 # Extract session_id if available and jq is present.
 session_id=""
@@ -45,8 +63,11 @@ else
     done
 fi
 
-# No pending flag → no research this session → exit silently.
-[ -n "$flag_file" ] || exit 0
+# No pending flag → no research this session → exit silently (or `{}` for Stop).
+if [ -z "$flag_file" ]; then
+    emit_empty_stop_response
+    exit 0
+fi
 
 # 3. Build a short summary of tool kinds used (from flag content).
 tool_kinds=""
@@ -56,8 +77,15 @@ if [ -f "$flag_file" ]; then
 fi
 [ -n "$tool_kinds" ] || tool_kinds="web-research tools"
 
-# Print the nudge to stdout (plain text — PreCompact injects via stdout on exit 0).
-printf 'Research-capture reminder: this session used web-research tools (%s) and the conversation is about to be compacted. If real prior-art, library, or design research was done and the findings are worth keeping, capture them to ai/research/ now (new entry + one line in INDEX.md, per ai/research/README.md) before they are summarized away. Skip if there are no durable findings.\n' "$tool_kinds"
+# PreCompact injects plain-text context on stdout. Stop cannot inject context;
+# keep the reminder visible on stderr and return the required JSON object.
+reminder="Research-capture reminder: this session used web-research tools ($tool_kinds) and the conversation is about to be compacted. If real prior-art, library, or design research was done and the findings are worth keeping, capture them to ai/research/ now (new entry + one line in INDEX.md, per ai/research/README.md) before they are summarized away. Skip if there are no durable findings."
+if $is_codex_stop; then
+    printf '%s\n' "$reminder" >&2
+    printf '{}\n'
+else
+    printf '%s\n' "$reminder"
+fi
 
 # 3b. Record that the nudge actually fired — one line per fire, so effectiveness
 # is measurable after the fact (the hook is otherwise invisible: fires, prints,
