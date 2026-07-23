@@ -7,8 +7,9 @@
 # authenticate non-interactively the step is skipped with a notice rather than
 # failing the whole run.
 #
-# Scope: the per-machine extras that are NOT universal — an OOM safety net and a
-# hardware-tuned sysctl. See RECOVERY.md for the bare-metal rebuild runbook and
+# Scope: the per-machine extras that are NOT universal — an OOM safety net,
+# hardware-tuned sysctl, and headless KWallet unlock through password-authenticated
+# SSH/TTY sessions. See RECOVERY.md for the bare-metal rebuild runbook and
 # ~/.workstation-issues.json (seeded from this dir) for the workaround ledger.
 set -uo pipefail
 
@@ -26,7 +27,7 @@ have_sudo() { sudo -n true 2>/dev/null; }
 
 if ! have_sudo; then
   echo "  host.sh(peregrine): sudo not available non-interactively."
-  echo "  Run these once to apply the OOM safety net + sysctl:"
+  echo "  Run these once to apply the OOM/sysctl and SSH/KWallet policy:"
   echo "    sudo bash '$HOST_DIR/host.sh' --sudo-steps"
   # Still do the userspace bits below (none currently), then exit cleanly.
 fi
@@ -34,7 +35,7 @@ fi
 # --- The privileged steps, factored so they can run via sudo re-exec too ---
 apply_sudo_steps() {
   echo "  [earlyoom] install"
-  apt-get install -y earlyoom >/dev/null
+  apt-get install -y earlyoom libpam-kwallet5 >/dev/null || return 1
 
   echo "  [earlyoom] /etc/default/earlyoom"
   # -M 6291456,4194304 : SIGTERM at 6GiB, SIGKILL at 4GiB free. The earlier
@@ -71,7 +72,83 @@ EOF
   # args before our config landed; `enable --now` won't restart a running unit.
   systemctl restart earlyoom >/dev/null 2>&1
 
-  echo "  done: earlyoom=$(systemctl is-active earlyoom) swappiness=$(cat /proc/sys/vm/swappiness)"
+  ensure_pam_line_after() {
+    local pam_file="$1"
+    local anchor="$2"
+    local line="$3"
+    local backup="${pam_file}.dotfiles-pre-kwallet"
+    local staged
+
+    grep -Fqx -- "$line" "$pam_file" && return 0
+    grep -Fqx -- "$anchor" "$pam_file" || {
+      echo "  [kwallet] expected anchor missing in $pam_file: $anchor" >&2
+      return 1
+    }
+
+    if [[ ! -e "$backup" ]]; then
+      cp -a -- "$pam_file" "$backup" || return 1
+    fi
+    staged="$(mktemp)"
+    awk -v anchor="$anchor" -v line="$line" '
+      { print }
+      $0 == anchor { print line }
+    ' "$pam_file" > "$staged"
+    grep -Fqx -- "$line" "$staged" || {
+      rm -f -- "$staged"
+      echo "  [kwallet] failed to stage $pam_file" >&2
+      return 1
+    }
+    install -m 0644 "$staged" "$pam_file"
+    rm -f -- "$staged"
+  }
+
+  echo "  [kwallet] enable password handoff for SSH and TTY"
+  ensure_pam_line_after \
+    /etc/pam.d/sshd \
+    '@include common-auth' \
+    '-auth   optional        pam_kwallet5.so' || return 1
+  ensure_pam_line_after \
+    /etc/pam.d/sshd \
+    '@include common-session' \
+    '-session optional       pam_kwallet5.so auto_start force_run' || return 1
+  ensure_pam_line_after \
+    /etc/pam.d/login \
+    '@include common-auth' \
+    '-auth   optional        pam_kwallet5.so' || return 1
+  ensure_pam_line_after \
+    /etc/pam.d/login \
+    '@include common-session' \
+    '-session optional       pam_kwallet5.so auto_start force_run' || return 1
+
+  echo "  [sshd] require authorized key + PAM password for tnunamak"
+  local sshd_dropin=/etc/ssh/sshd_config.d/10-tnunamak-kwallet.conf
+  local sshd_rollback
+  sshd_rollback="$(mktemp)"
+  if [[ -f "$sshd_dropin" ]]; then
+    cp -- "$sshd_dropin" "$sshd_rollback"
+  else
+    : > "$sshd_rollback"
+  fi
+  install -D -m 0644 "$HOST_DIR/10-tnunamak-kwallet.conf" "$sshd_dropin" || {
+    rm -f -- "$sshd_rollback"
+    return 1
+  }
+  if ! /usr/sbin/sshd -t; then
+    if [[ -s "$sshd_rollback" ]]; then
+      install -m 0644 "$sshd_rollback" "$sshd_dropin"
+    else
+      rm -f -- "$sshd_dropin"
+    fi
+    rm -f -- "$sshd_rollback"
+    echo "  [sshd] invalid configuration; restored previous state" >&2
+    return 1
+  fi
+  rm -f -- "$sshd_rollback"
+  if systemctl is-active --quiet ssh.service; then
+    systemctl reload ssh.service || return 1
+  fi
+
+  echo "  done: earlyoom=$(systemctl is-active earlyoom) swappiness=$(cat /proc/sys/vm/swappiness) ssh=$(systemctl is-active ssh.service)"
 }
 
 # Allow `sudo bash host.sh --sudo-steps` to run just the privileged part.
@@ -95,7 +172,7 @@ if [[ -f "$LEDGER_SRC" ]]; then
 fi
 
 if have_sudo; then
-  echo "  host.sh(peregrine): applying OOM safety net + sysctl"
+  echo "  host.sh(peregrine): applying OOM/sysctl and SSH/KWallet policy"
   sudo bash "${BASH_SOURCE[0]}" --sudo-steps
 fi
 

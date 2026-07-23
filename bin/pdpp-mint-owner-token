@@ -3,8 +3,8 @@
 # server-to-server, mirroring apps/web/src/app/dashboard/lib/owner-token.ts
 # (function mintOwnerToken).
 #
-# Defaults BASE_URL and PDPP_OWNER_PASSWORD from environment, so if you have
-# sourced ~/.shell_secrets in your shell, this just works:
+# Defaults BASE_URL and PDPP_OWNER_PASSWORD from the Infisical-hydrated shell
+# environment, so this normally just works:
 #
 #   pdpp-mint-owner-token
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-${PDPP_BASE_URL:-}}"
 : "${BASE_URL:?BASE_URL or PDPP_BASE_URL required (e.g. https://pdpp.vivid.fish)}"
-: "${PDPP_OWNER_PASSWORD:?PDPP_OWNER_PASSWORD required (set in ~/.shell_secrets)}"
+: "${PDPP_OWNER_PASSWORD:?PDPP_OWNER_PASSWORD required (managed in Infisical personal-dev/dev)}"
 CLIENT_ID="pdpp-polyfill-owner-bootstrap"
 
 COOKIE_JAR="$(mktemp)"

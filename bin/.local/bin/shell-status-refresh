@@ -279,6 +279,7 @@ individual_tools=(
   "starship;starship --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/starship/starship/releases/latest --jq .tag_name;curl -sS https://starship.rs/install.sh | sh -s -- -y"
   "zoxide;zoxide --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/ajeetdsouza/zoxide/releases/latest --jq .tag_name;curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh"
   "uv;uv --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/astral-sh/uv/releases/latest --jq .tag_name;curl -LsSf https://astral.sh/uv/install.sh | sh"
+  "infisical;infisical --version 2>/dev/null | awk '{print \$3}';gh api repos/Infisical/cli/releases/latest --jq .tag_name;infisical-update"
   "bun;bun --version 2>/dev/null | head -1;gh api repos/oven-sh/bun/releases/latest --jq .tag_name;bun upgrade"
   "immich-go;go version -m \"\$(command -v immich-go)\" 2>/dev/null | awk '\$1 == \"mod\" && \$2 == \"github.com/simulot/immich-go\" {print \$3}';gh api repos/simulot/immich-go/releases/latest --jq .tag_name;go install github.com/simulot/immich-go@latest"
   "clawmeter;clawmeter --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/tnunamak/clawmeter/releases/latest --jq .tag_name;go install github.com/tnunamak/clawmeter/cmd/clawmeter@latest"

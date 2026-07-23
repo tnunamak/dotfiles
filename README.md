@@ -28,7 +28,7 @@ cd ~/code/dotfiles
 Create machine-local configs as needed:
 
 - `~/.shell_local` — machine-specific PATH, tool init (nvm, conda, etc.). See `shell/.shell_local.example`.
-- `~/.shell_secrets` — API keys, tokens (never committed). Put `LINEAR_API_KEY` here for the managed Linear MCP setup.
+- Infisical `personal-dev/dev` — canonical store for global API keys and tokens. Run `infisical login --domain=https://secrets.vivid.fish` once per machine; shell startup exports them and the CLI keeps an encrypted outage cache.
 - `~/.gitconfig.local` — signing key, email. Copied from example on first run.
 - `~/.claude/CLAUDE.local.md` — private context (infrastructure details, IPs, etc.)
 

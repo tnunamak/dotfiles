@@ -68,11 +68,11 @@ case "$(uname)" in
       exit 1
     fi
     echo "Installing system packages (brew)..."
-    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat tmux jq 2>&1 | grep -v 'already installed'
+    brew install neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat tmux jq coreutils 2>&1 | grep -v 'already installed'
     for cask in kitty docker; do
       brew list --cask "$cask" &>/dev/null || brew install --cask "$cask"
     done
-    brew upgrade neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat tmux jq 2>&1 | grep -v 'already.*latest'
+    brew upgrade neovim git ripgrep fzf starship zoxide stow uv git-filter-repo socat tmux jq coreutils 2>&1 | grep -v 'already.*latest'
     ;;
   *)
     echo "Unsupported platform: $(uname)"
@@ -106,16 +106,13 @@ if ! command -v uv &>/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-# Infisical CLI (secrets manager — hydrates ~/.shell_secrets vars from secrets.vivid.fish;
+# Infisical CLI (canonical store for global shell secrets from secrets.vivid.fish;
 # see shell/.shell_config. After install, run once per machine: infisical login --domain=https://secrets.vivid.fish)
 if ! command -v infisical &>/dev/null; then
   if [[ "$OSTYPE" == darwin* ]]; then
     brew install infisical/get-cli/infisical 2>&1 | grep -v 'already installed' || true
   else
-    INF_TAG=$(curl -fsSL https://api.github.com/repos/Infisical/cli/releases/latest | jq -r .tag_name)
-    INF_ARCH=$(uname -m); [[ "$INF_ARCH" == aarch64 ]] && INF_ARCH=arm64; [[ "$INF_ARCH" == x86_64 ]] && INF_ARCH=amd64
-    curl -fsSL "https://github.com/Infisical/cli/releases/download/${INF_TAG}/cli_${INF_TAG#v}_linux_${INF_ARCH}.tar.gz" \
-      | tar xz -C "$HOME/.local/bin" infisical 2>/dev/null && chmod +x "$HOME/.local/bin/infisical"
+    "$DOTFILES_DIR/bin/.local/bin/infisical-update"
   fi
 fi
 
@@ -423,7 +420,6 @@ fi
 # --- Local config setup ---
 
 touch ~/.shell_local
-touch ~/.shell_secrets
 mkdir -p ~/.claude
 touch ~/.claude/CLAUDE.local.md
 

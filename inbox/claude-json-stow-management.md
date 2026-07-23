@@ -10,7 +10,7 @@
 - **`~/.claude.json`** is NOT stow-managed — plain file written by `claude mcp add --scope user`
 - `setup.sh:192` already registers `codex-cli` via `claude mcp add codex-cli --scope user -- npx -y codex-mcp-server`
 - Current MCP servers and their secrets:
-  - `gemini` — has `GEMINI_API_KEY` hardcoded (this key is also in `~/.shell_secrets`)
+  - `gemini` — has `GEMINI_API_KEY` hardcoded (the canonical key is in Infisical `personal-dev/dev`)
   - `searxng` — has `SEARXNG_URL: http://searxng.home` (not sensitive, fine to commit)
   - `playwright`, `kimi`, `context7`, `docker`, `playwright-headed`, `codex-cli`, `linear` — no secrets
 
@@ -25,7 +25,7 @@ Two options:
 
 **Option B: Stow-manage `~/.claude.json`**
 - Commit the file with `GEMINI_API_KEY` scrubbed (empty string or placeholder)
-- `setup.sh` sources `~/.shell_secrets` and patches the key in after stowing (e.g. via `claude mcp add gemini` with the real key, overwriting)
+- Patch the key from the Infisical-hydrated environment after stowing (e.g. via `claude mcp add gemini` with the real key, overwriting)
 - Upside: full MCP config is versioned
 - Downside: more moving parts, need to ensure the patch step runs after stow
 

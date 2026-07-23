@@ -42,6 +42,6 @@ authenticate, or run `host.sh` directly.
 
 ## Secrets
 
-Never commit tokens/keys here. Secrets stay in `~/.shell_secrets` / the
-NAS-backed store; `RECOVERY.md` records *where to restore them from*, not the
-values.
+Never commit tokens/keys here. Global shell secrets stay in Infisical; other
+machine-local credentials stay in their documented out-of-band stores.
+`RECOVERY.md` records *where to restore them from*, not the values.

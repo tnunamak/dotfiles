@@ -1,13 +1,27 @@
 # Shared shell config — sourced by both .zshrc and .bashrc
 
-# Auto-attach to tmux (skip with NOTMUX=1 for debugging tmux itself)
-if [[ -z "$NOTMUX" ]] && [[ $- == *i* ]] && [[ -z "$TMUX" ]] && command -v tmux &>/dev/null; then
-  if [[ -n "$SSH_CONNECTION" ]]; then
-    exec tmux new-session -A -s main
-  else
-    "$HOME/.local/bin/tmux-local-attach-main"
-  fi
+# Complete pam_kwallet5's headless login handoff before attaching to an
+# existing tmux server (which has an older environment) or hydrating secrets.
+if [[ -n "${PAM_KWALLET5_LOGIN:-}" ]] &&
+   [[ -x /usr/share/libpam-kwallet-common/pam_kwallet_init ]]; then
+  QT_QPA_PLATFORM=offscreen /usr/share/libpam-kwallet-common/pam_kwallet_init
+  unset PAM_KWALLET5_LOGIN
 fi
+
+# Auto-attach Kitty and SSH pseudo-terminals to a per-client grouped tmux
+# session (skip with NOTMUX=1 for debugging tmux itself). Keep Linux virtual
+# consoles (/dev/tty1, /dev/tty2, ...) outside tmux by default: they are the
+# recovery shell when the desktop or a terminal UI is broken.
+_shell_tty="$(tty 2>/dev/null || true)"
+_shell_is_virtual_console=
+case "$_shell_tty" in
+  /dev/tty[0-9]*) _shell_is_virtual_console=1 ;;
+esac
+if [[ -z "$NOTMUX" ]] && [[ $- == *i* ]] && [[ -z "$TMUX" ]] &&
+   [[ -z "$_shell_is_virtual_console" ]] && command -v tmux &>/dev/null; then
+  exec "$HOME/.local/bin/tmux-local-attach-main"
+fi
+unset _shell_tty _shell_is_virtual_console
 
 # Platform detection
 case "$(uname)" in
@@ -101,16 +115,44 @@ firewall-status() {
 
 # SSH agent (persistent across terminals)
 if [[ -n "$IS_LINUX" ]]; then
-  if [[ ! -S ~/.ssh/ssh_auth_sock ]]; then
+  export SSH_AUTH_SOCK=~/.ssh/ssh_auth_sock
+  ssh-add -l > /dev/null 2>&1
+  _ssh_agent_status=$?
+  if (( _ssh_agent_status == 2 )); then
+    # A stale socket can still exist after its ssh-agent died.  Test the agent,
+    # not merely the socket path, before reusing it.
     eval "$(ssh-agent -s)" > /dev/null
     ln -sf "$SSH_AUTH_SOCK" ~/.ssh/ssh_auth_sock
+    ssh-add -l > /dev/null 2>&1
+    _ssh_agent_status=$?
   fi
-  export SSH_AUTH_SOCK=~/.ssh/ssh_auth_sock
-  ssh-add -l > /dev/null 2>&1 || ssh-add -q
+  # Exit 1 means the agent is healthy but has no identities; 2 means it could
+  # not be contacted.  Never leak the latter into every new terminal.
+  (( _ssh_agent_status == 1 )) && ssh-add -q > /dev/null 2>&1 || true
+  unset _ssh_agent_status
 fi
 
-# Secrets
-[[ -f ~/.shell_secrets ]] && . ~/.shell_secrets
+# Secrets — hydrate from Infisical (personal-dev/dev). Its encrypted local cache
+# keeps this same export path working during a server outage; there is no
+# plaintext fallback. Live export runs per shell (~100-300ms).
+if command -v infisical >/dev/null 2>&1; then
+  # timeout + </dev/null guard against infisical's expired-session re-auth: on a
+  # tty it spawns a blocking `login --silent` that never returns (hung every new
+  # terminal on 2026-07-23).
+  _inf_timeout=timeout
+  command -v "$_inf_timeout" >/dev/null 2>&1 || _inf_timeout=gtimeout
+  if command -v "$_inf_timeout" >/dev/null 2>&1 && _inf_secrets="$("$_inf_timeout" 5 infisical export \
+    --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
+    --env=dev --format=dotenv-export \
+    --domain=https://secrets.vivid.fish 2>/dev/null </dev/null)"; then
+    eval "$_inf_secrets"
+  elif [[ $- == *i* ]]; then
+    printf '%s\n' 'Infisical secrets unavailable. Run: infisical login --domain=https://secrets.vivid.fish'
+  fi
+  unset _inf_secrets _inf_timeout
+elif [[ $- == *i* ]]; then
+  printf '%s\n' 'Infisical CLI not installed; managed shell secrets are unavailable.'
+fi
 
 # Machine-specific config (nvm, conda, android, etc.)
 [[ -f ~/.shell_local ]] && . ~/.shell_local

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Install or update Infisical using the platform's configured installation
+# channel. Linux uses the standalone GitHub release and verifies its checksum.
+set -euo pipefail
+
+case "$(uname -s)" in
+  Linux) platform=linux ;;
+  Darwin)
+    command -v brew >/dev/null || {
+      echo "Homebrew is required to update Infisical on macOS." >&2
+      exit 1
+    }
+    exec brew upgrade infisical/get-cli/infisical
+    ;;
+  *)
+    echo "Unsupported platform: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64 | arm64) arch=arm64 ;;
+  *)
+    echo "Unsupported architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+if command -v gh >/dev/null; then
+  tag="$(gh api repos/Infisical/cli/releases/latest --jq .tag_name)"
+else
+  tag="$(curl --fail --silent --show-error --location \
+    https://api.github.com/repos/Infisical/cli/releases/latest |
+    jq --raw-output .tag_name)"
+fi
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "Invalid Infisical release tag: $tag" >&2
+  exit 1
+}
+
+version="${tag#v}"
+archive="cli_${version}_${platform}_${arch}.tar.gz"
+release_url="https://github.com/Infisical/cli/releases/download/${tag}"
+
+mkdir -p "$HOME/.local/bin" "$HOME/.tmp"
+stage="$(mktemp -d "$HOME/.tmp/infisical-update.XXXXXX")"
+trap 'rm -rf "$stage"' EXIT
+
+curl --fail --silent --show-error --location \
+  "$release_url/$archive" --output "$stage/$archive"
+curl --fail --silent --show-error --location \
+  "$release_url/checksums.txt" --output "$stage/checksums.txt"
+
+expected="$(
+  awk -v archive="$archive" '$2 == archive { print $1 }' "$stage/checksums.txt"
+)"
+[[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || {
+  echo "No valid checksum found for $archive" >&2
+  exit 1
+}
+printf '%s  %s\n' "$expected" "$stage/$archive" | sha256sum --check --status
+
+tar --extract --gzip --file "$stage/$archive" --directory "$stage" infisical
+actual="$("$stage/infisical" --version | awk '{print $3}')"
+[[ "$actual" == "$version" ]] || {
+  echo "Downloaded Infisical reports $actual, expected $version" >&2
+  exit 1
+}
+
+target="$HOME/.local/bin/infisical"
+install --mode=0755 "$stage/infisical" "${target}.new.$$"
+mv --force "${target}.new.$$" "$target"
+echo "Infisical $version installed at $target"

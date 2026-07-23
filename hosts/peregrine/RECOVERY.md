@@ -63,7 +63,8 @@ under `~/applications/*/` and need their repos + models restored first.)
 ## Secrets (referenced, never committed)
 
 Restore these from your out-of-band store / NAS — values are NOT in this repo:
-- `~/.shell_secrets` (PDPP owner token, etc.)
+- Infisical `personal-dev/dev` (global shell secrets; log in with
+  `infisical login --domain=https://secrets.vivid.fish`)
 - `~/sandbox/.coolify-token`
 - `~/sandbox/garage-credentials.txt`
 
@@ -71,19 +72,48 @@ Restore these from your out-of-band store / NAS — values are NOT in this repo:
 
 Tracked in `~/.workstation-issues.json` (seeded from this dir on first run). The
 shell startup status surfaces them and flags when their upstream bug is fixed.
-Current: OOM safety net (earlyoom) + `vm.swappiness=80` (revisit ~2026-07-13
-against `~/.cache/swap-tuning-baseline/`); Brave webcam/Wayland white-screen.
+Current: OOM safety net (earlyoom `-M 6291456,4194304 -s 100,100`) +
+`vm.swappiness=80` (revisit ~2026-07-13 against
+`~/.cache/swap-tuning-baseline/`); Brave webcam/Wayland white-screen.
+
+`host.sh` also configures the deliberate headless-wallet login policy:
+
+- SDDM autologin leaves KWallet locked.
+- TTY password login unlocks KWallet through PAM.
+- SSH for `tnunamak` requires an authorized key and the account password via
+  `AuthenticationMethods publickey,password`; PAM unlocks KWallet with
+  `force_run`, and `.shell_config` completes the handoff before tmux attaches.
+- The per-user D-Bus activation override at
+  `~/.local/share/dbus-1/services/org.freedesktop.secrets.service` makes
+  KDE's `ksecretd` the standard Secret Service provider. This prevents
+  applications such as Infisical from silently creating a second credential
+  store in GNOME Keyring. The file is managed by the `bin` Stow package.
+- Infisical uses its `auto` vault backend, so its login credential lives behind
+  KWallet while its encrypted project-secret cache remains available offline.
+  `auto` is not fail-closed: Infisical can recreate its encrypted file vault
+  after a system-keyring write failure. Strict KWallet-only behavior requires
+  upstream support; see the Infisical offline-cache research note.
+
+The SSH rule lives in `/etc/ssh/sshd_config.d/10-tnunamak-kwallet.conf`.
+The installer keeps one-time pre-change backups at
+`/etc/pam.d/{sshd,login}.dotfiles-pre-kwallet`. To roll back, remove the SSH
+drop-in, restore those two backups, validate with `sudo sshd -t`, and reload
+`ssh.service`.
 
 ## Tuning the OOM floor when your workload changes
 
-The earlyoom SIGKILL floor (`-M 2097152,1048576` = 2GiB SIGTERM / 1GiB SIGKILL
-in `host.sh`) is the one value tied to a *workload assumption*, not a fixed fact.
-It must exceed how much memory a burst can allocate in one earlyoom poll
-(100 ms): `floor_MiB / 0.1s` must beat your fastest sustained allocation rate.
-1GiB covers ~10 GiB/s — above earlyoom's own 6 GiB/s benchmark and typical
-LLM-weight `mmap(MAP_POPULATE)` bursts.
+The earlyoom floor (`-M 6291456,4194304` = 6GiB SIGTERM / 4GiB SIGKILL in
+`host.sh`) is the one value tied to a *workload assumption*, not a fixed fact.
+It was raised from 2GiB/1GiB after the 2026-06-28 pressure/OOM incidents showed
+this workstation could already be in severe reclaim/PSI trouble above 4GiB
+available memory. See `MEMORY-OOM-2026-06-28.md` for the incident evidence and
+recheck commands.
 
-**Raise the floor** (e.g. `-M 3145728,2097152` = 3GiB/2GiB → covers ~20 GiB/s) if:
+This host intentionally uses `-s 100,100`: full swap by itself is normal here
+when it is mostly cold anonymous pages. Treat memory pressure and kernel OOMs as
+the signal, not "swap is full".
+
+**Raise the floor** (e.g. `-M 8388608,6291456` = 8GiB/6GiB) if:
 - you load much larger / multiple-simultaneous models, or a newer inference
   engine commits weights faster,
 - you add RAM / faster RAM / more memory channels,

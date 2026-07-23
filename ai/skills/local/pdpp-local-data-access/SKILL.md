@@ -17,20 +17,22 @@ grounds that scoped grants would be "more correct" — they would, in a multi-ap
 deployment. This skill is the deliberate local exception.
 
 When NOT to use this skill:
-- You are not on Tim's local machine (no `PDPP_OWNER_TOKEN` in env, no `~/.shell_secrets`).
+- You are not on Tim's local machine (no `PDPP_OWNER_TOKEN` in the environment).
 - You are building an app or agent that other people will run. Use the upstream
   skill at `https://pdpp.vivid.fish/.well-known/skills/pdpp-data-access/SKILL.md`
   (scoped grants, per-stream scopes, the proper protocol).
 
 ## Setup
 
-Secrets live in `~/.shell_secrets` (mode 0600, NOT in git). It is sourced
-automatically by interactive zsh/bash via `~/.shell_config`. From a fresh
-non-interactive shell:
+Secrets live in Infisical project `personal-dev`, environment `dev`.
+Interactive zsh/bash exports them via `~/.shell_config`. For a non-interactive
+command whose environment has not already been hydrated:
 
 ```bash
-source ~/.shell_secrets
-# Now available: $PDPP_BASE_URL, $PDPP_OWNER_PASSWORD, $PDPP_OWNER_TOKEN
+infisical run \
+  --domain=https://secrets.vivid.fish \
+  --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
+  --env=dev -- your-command
 ```
 
 `$PDPP_BASE_URL` is `https://pdpp.vivid.fish`. The RS API base is
@@ -38,21 +40,18 @@ source ~/.shell_secrets
 
 ## Refreshing the token
 
-If a request returns `401`, the token has expired. Mint a new one and overwrite
-the value in `~/.shell_secrets`:
+If a request returns `401`, mint a replacement from an Infisical-hydrated shell:
 
 ```bash
-source ~/.shell_secrets
 NEW_TOKEN=$(~/code/dotfiles/bin/pdpp-mint-owner-token)
-# Update ~/.shell_secrets in place. The line format is: export PDPP_OWNER_TOKEN=...
-sed -i.bak "s|^export PDPP_OWNER_TOKEN=.*|export PDPP_OWNER_TOKEN=$NEW_TOKEN|" ~/.shell_secrets
+# Store NEW_TOKEN as PDPP_OWNER_TOKEN in Infisical personal-dev/dev without
+# printing it, then verify the stored token before revoking the old token.
 unset NEW_TOKEN
-# Re-source in the current shell:
-source ~/.shell_secrets
 ```
 
-The mint script reads `PDPP_BASE_URL` and `PDPP_OWNER_PASSWORD` from the
-environment, so sourcing first is enough.
+Use the Infisical dashboard or an authenticated secret-write workflow that does
+not expose the token in argv or transcripts. The mint script reads
+`PDPP_BASE_URL` and `PDPP_OWNER_PASSWORD` from the environment.
 
 ## Discover what's available
 
@@ -111,13 +110,13 @@ ballooning the agent's context window.
 - **Never paste the token into a curl command verbatim** — always use
   `"$PDPP_OWNER_TOKEN"` so it's substituted at exec time and doesn't appear in
   shell history with `set -x` enabled.
-- **Never commit `~/.shell_secrets`** or any file containing the token. The
-  dotfiles repo's `.gitignore` should already exclude it; do not "fix" that.
+- **Never write the token to a plaintext fallback file.** Infisical is the
+  canonical store and its CLI maintains an encrypted local outage cache.
 - **Never share the token cross-process** beyond what `containerEnv` already
   does (devcontainers inherit it via `${localEnv:PDPP_OWNER_TOKEN}`).
-- If a token leaks, rotate by re-running `pdpp-mint-owner-token` and updating
-  `~/.shell_secrets`. The old token is not revocable by Tim directly without
-  poking the PDPP DB; treat rotation as best-effort.
+- If a token leaks, mint and verify a replacement in Infisical, then revoke the
+  old token. Legacy bootstrap-owner tokens require an exact soft-revoke in the
+  PDPP token store because they do not appear in the dynamic-client UI.
 
 ## Cross-references
 
