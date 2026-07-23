@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Purelymail API CLI wrapper. See ../SKILL.md for usage and safety rules.
+set -euo pipefail
+
+API_BASE="${PMCTL_API_BASE:-https://purelymail.com}"
+
+DESTRUCTIVE_ENDPOINTS=(
+  deleteUser
+  deleteDomain
+  deleteRoutingRule
+  deleteAppPassword
+  deletePasswordReset
+)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: pmctl <endpoint> [--data-file <path> | --data-stdin]
+             [--secret-output-file <path>]
+       pmctl <endpoint> < body.json
+
+Reads the API token from PURELYMAIL_API_TOKEN (env only — never pass it as
+an argument). Request body fields must come from --data-file or stdin, never
+argv, so secrets don't leak into shell history or process listings.
+
+Destructive endpoints (deleteUser, deleteDomain, deleteRoutingRule,
+deleteAppPassword, deletePasswordReset) require
+PMCTL_CONFIRM_DESTRUCTIVE=yes to be set for that invocation.
+
+createAppPassword requires --secret-output-file. The response is written there
+with mode 0600 and is never emitted on stdout or stderr.
+EOF
+}
+
+is_destructive() {
+  local endpoint="$1"
+  local d
+  for d in "${DESTRUCTIVE_ENDPOINTS[@]}"; do
+    [[ "$d" == "$endpoint" ]] && return 0
+  done
+  return 1
+}
+
+main() {
+  if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
+    usage
+    exit 64
+  fi
+
+  local endpoint="$1"
+  shift
+
+  local data_file=""
+  local secret_output_file=""
+  local use_stdin=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --data-file)
+        data_file="${2:?--data-file requires a path}"
+        shift 2
+        ;;
+      --data-stdin)
+        use_stdin=1
+        shift
+        ;;
+      --secret-output-file)
+        secret_output_file="${2:?--secret-output-file requires a path}"
+        shift 2
+        ;;
+      *)
+        echo "pmctl: unknown argument '$1' (request body must come from --data-file or stdin, not argv)" >&2
+        exit 64
+        ;;
+    esac
+  done
+
+  if [[ -z "${PURELYMAIL_API_TOKEN:-}" ]]; then
+    echo "pmctl: PURELYMAIL_API_TOKEN is not set in the environment" >&2
+    exit 1
+  fi
+
+  if is_destructive "$endpoint" && [[ "${PMCTL_CONFIRM_DESTRUCTIVE:-}" != "yes" ]]; then
+    echo "pmctl: '$endpoint' is destructive; refusing without PMCTL_CONFIRM_DESTRUCTIVE=yes" >&2
+    exit 1
+  fi
+
+  if [[ "$endpoint" == "createAppPassword" && -z "$secret_output_file" ]]; then
+    echo "pmctl: createAppPassword requires --secret-output-file" >&2
+    exit 64
+  fi
+
+  case "$endpoint" in
+    createUser|deleteUser|listUser|modifyUser|getUser|createAppPassword|deleteAppPassword|upsertPasswordReset|deletePasswordReset|listPasswordReset|createRoutingRule|deleteRoutingRule|listRoutingRules|addDomain|getOwnershipCode|listDomains|updateDomainSettings|deleteDomain|checkAccountCredit) ;;
+    *) echo "pmctl: unsupported endpoint '$endpoint'" >&2; exit 64 ;;
+  esac
+
+  local body="{}"
+  if [[ -n "$data_file" ]]; then
+    body="$(cat -- "$data_file")"
+  elif [[ "$use_stdin" -eq 1 ]] || [[ ! -t 0 ]]; then
+    body="$(cat)"
+  fi
+
+  local body_file response http_status payload
+  body_file="$(mktemp)"
+  chmod 600 "$body_file"
+  # Expand the generated filename while the local is in scope; an EXIT trap
+  # referring to the local by name would fail under `set -u` after main returns.
+  trap "rm -f -- $(printf '%q' "$body_file")" EXIT
+  printf '%s' "$body" >"$body_file"
+
+  # The token is supplied through curl's stdin config, never argv. The request
+  # body is referenced by filename so passwords and recovery targets also stay
+  # out of argv and process listings.
+  response="$(printf '%s\n' \
+    'silent' \
+    'show-error' \
+    'request = "POST"' \
+    "url = \"${API_BASE}/api/v0/${endpoint}\"" \
+    "header = \"Purelymail-Api-Token: ${PURELYMAIL_API_TOKEN}\"" \
+    'header = "Content-Type: application/json"' \
+    "data-binary = \"@${body_file}\"" \
+    'write-out = "\n%{http_code}"' \
+    | curl --config -)"
+
+  http_status="${response##*$'\n'}"
+  payload="${response%$'\n'*}"
+
+  if [[ "$http_status" -lt 200 || "$http_status" -ge 300 ]]; then
+    echo "pmctl: HTTP $http_status from $endpoint" >&2
+    echo "$payload" >&2
+    exit 1
+  fi
+
+  if ! grep -q '"result"' <<<"$payload"; then
+    echo "pmctl: response for $endpoint has no 'result' key (unrecognized error shape — see references/api.md)" >&2
+    echo "$payload" >&2
+    exit 1
+  fi
+
+  if [[ "$endpoint" == "createAppPassword" ]]; then
+    umask 077
+    printf '%s\n' "$payload" >"$secret_output_file"
+    chmod 600 "$secret_output_file"
+    echo "pmctl: $endpoint succeeded; response written mode 0600 to $secret_output_file" >&2
+    exit 0
+  fi
+
+  echo "$payload"
+}
+
+main "$@"
