@@ -23,3 +23,7 @@
 [credential "https://gist.github.com"]
 	helper = 
 	helper = !/usr/bin/gh auth git-credential
+[user]
+	email = tnunamak@gmail.com
+	name = Tim Nunamaker
+	signingkey = /home/tnunamak/.ssh/id_ed25519.pub
