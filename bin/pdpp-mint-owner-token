@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mint a PDPP owner self-export bearer token by driving the AS device flow
-# server-to-server, mirroring apps/web/src/app/dashboard/lib/owner-token.ts
+# server-to-server, mirroring apps/console/src/app/(console)/lib/owner-token.ts
 # (function mintOwnerToken).
 #
 # Defaults BASE_URL and PDPP_OWNER_PASSWORD from the Infisical-hydrated shell

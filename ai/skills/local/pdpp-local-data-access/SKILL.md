@@ -123,6 +123,6 @@ ballooning the agent's context window.
 - **Upstream skill (canonical protocol):**
   `https://pdpp.vivid.fish/.well-known/skills/pdpp-data-access/SKILL.md`
 - **Upstream source:** `~/code/pdpp/docs/agent-skills/pdpp-data-access/`
-- **Owner-token TS reference:** `~/code/pdpp/apps/web/src/app/dashboard/lib/owner-token.ts`
+- **Owner-token TS reference:** `~/code/pdpp/apps/console/src/app/(console)/lib/owner-token.ts`
   (`mintOwnerToken`)
 - **Schema discovery:** `$PDPP_BASE_URL/.well-known/oauth-protected-resource`
