@@ -187,6 +187,25 @@ def add_gemini(name, cfg):
     run(cmd)
 
 
+def sync_daisy():
+    defaults = agent_defaults.get("daisy", {})
+    reconciler = defaults.get("reconciler")
+    target = defaults.get("target")
+    if not reconciler or not target:
+        raise ValueError("Daisy MCP sync requires agents.daisy.reconciler and agents.daisy.target")
+
+    reconciler = os.path.expandvars(os.path.expanduser(reconciler))
+    target = os.path.expandvars(os.path.expanduser(target))
+    if not os.path.isfile(reconciler):
+        print(
+            f"Skipping Daisy MCP sync: reconciler not found at {reconciler}",
+            file=sys.stderr,
+        )
+        return
+
+    run([reconciler, manifest_path, target])
+
+
 if shutil.which("codex"):
     remove_all_known("codex")
     for name, cfg in selected_servers("codex"):
@@ -213,4 +232,7 @@ if shutil.which("gemini"):
         add_gemini(name, cfg)
 else:
     print("Skipping Gemini MCP sync: gemini not found", file=sys.stderr)
+
+if "daisy" in agent_defaults:
+    sync_daisy()
 PY

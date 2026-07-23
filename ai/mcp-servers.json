@@ -6,6 +6,10 @@
     },
     "gemini": {
       "scope": "user"
+    },
+    "daisy": {
+      "reconciler": "~/applications/daisy/scripts/reconcile-pi-mcp",
+      "target": "~/applications/daisy/.pi/mcp.json"
     }
   },
   "legacyServerNames": [
@@ -79,7 +83,8 @@
       "agents": [
         "codex",
         "claude",
-        "gemini"
+        "gemini",
+        "daisy"
       ]
     },
     "vana-knowledge-base": {

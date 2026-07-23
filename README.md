@@ -65,13 +65,13 @@ To update the devcontainer config from upstream:
 # Review the diff, then commit if happy
 ```
 
-To apply the dotfiles-managed MCP definitions to Codex, Claude, and Gemini:
+To apply the dotfiles-managed MCP definitions to Codex, Claude, Gemini, and Daisy:
 
 ```bash
 ./sync-mcps.sh
 ```
 
-The shared MCP definitions live in `ai/mcp-servers.json` as one canonical server list with per-agent availability. `sync-mcps.sh` renders that list for Codex, Claude, and Gemini. It keeps the repo free of secrets: Codex reads token env vars at runtime, while Claude/Gemini write current bearer headers into local config, so rerun the sync after rotating those keys.
+The shared MCP definitions live in `ai/mcp-servers.json` as one canonical server list with per-agent availability. `sync-mcps.sh` renders that list for Codex, Claude, and Gemini. When Daisy's own Pi reconciler is installed, the same command also reconciles Daisy's managed `.pi/mcp.json`; otherwise it reports the optional skip and continues. The sync keeps the repo free of secrets: Codex reads token env vars at runtime, while Claude/Gemini write current bearer headers into local config, so rerun it after rotating those keys.
 
 Headroom is registered MCP-only. Its compression/retrieval tools are available to all agents, but `headroom wrap` is not the default until it is benchmarked against rtk/context-mode.
 
