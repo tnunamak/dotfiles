@@ -32,8 +32,8 @@
       "status": "workaround-applied",
       "severity": "low",
       "created": "2026-06-22",
-      "updated": "2026-06-22",
-      "description": "Kubuntu ships no OOM daemon (kubuntu-desktop seed omits systemd-oomd; oomd is unworkable on KDE user cgroups anyway). Installed earlyoom -M 2097152,1048576 -s 100 (2GiB/1GiB floors sized vs 100ms poll x 6GiB/s fill, covers LLM mmap bursts). Bumped vm.swappiness 60->80 from this host refault data.",
+      "updated": "2026-06-29",
+      "description": "Kubuntu ships no OOM daemon (kubuntu-desktop seed omits systemd-oomd; oomd is unworkable on KDE user cgroups anyway). Installed earlyoom -M 6291456,4194304 -s 100,100 (6GiB/4GiB floors raised after 2026-06-28 pressure/OOM incidents; swap ignored because full swap is normal when mostly cold). Bumped vm.swappiness 60->80 from this host refault data.",
       "workaround": "earlyoom + /etc/default/earlyoom + /etc/sysctl.d/99-vm-swappiness.conf, reproduced by dotfiles hosts/peregrine/host.sh. REVISIT swappiness ~2026-07-13 vs ~/.cache/swap-tuning-baseline/.",
       "upstream": [],
       "tags": [

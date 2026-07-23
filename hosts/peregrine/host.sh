@@ -37,22 +37,23 @@ apply_sudo_steps() {
   apt-get install -y earlyoom >/dev/null
 
   echo "  [earlyoom] /etc/default/earlyoom"
-  # -M 2097152,1048576 : SIGTERM at 2GiB, SIGKILL at 1GiB free. On 124GB the
-  #   absolute floors govern (lower-of -m/-M wins, per manpage). The 1GiB SIGKILL
-  #   floor is sized from earlyoom's 100ms poll + 6 GiB/s measured fill rate:
-  #   break-even 10.2 GiB/s, above any single-process committed rate, covers the
-  #   mmap(MAP_POPULATE) burst of loading large LLM weights. 512MiB (the -M/2
-  #   default of a 1GiB floor) would be outrun by earlyoom's own benchmark.
-  # -m 4               : percentage backstop if RAM ever grows (absolute dominates now)
-  # -s 100             : ignore swap trigger (swap chronically ~full of cold pages)
+  # -M 6291456,4194304 : SIGTERM at 6GiB, SIGKILL at 4GiB free. The earlier
+  #   2GiB/1GiB floor was too late for the 2026-06-28 pressure/OOM incidents:
+  #   this workstation was already in severe reclaim/PSI trouble above 4GiB
+  #   available memory. Keep this as an absolute host-sized floor, not a broad
+  #   percentage threshold.
+  # -s 100,100         : ignore swap for both TERM and KILL decisions. Full swap
+  #   is normal here when it is mostly cold anonymous pages; memory pressure is
+  #   the signal we want earlyoom to act on.
+  # -r 60              : log enough state for postmortems without being noisy.
   # --prefer only, NO --avoid (kernel oom_score already protects the KDE session)
   cat > /etc/default/earlyoom <<'EOF'
 # OOM safety net for this KDE/Wayland workstation (124GB RAM, NVMe disk swap).
-# Tracked in dotfiles hosts/peregrine/host.sh. -M 2097152,1048576 = SIGTERM at
-# 2GiB / SIGKILL at 1GiB free (1GiB floor beats earlyoom's 100ms-poll x 6GiB/s
-# fill rate, covers LLM-weight mmap bursts); -s 100 ignores full swap; -m 4 is a
-# percentage backstop; --prefer only, no avoid-list (oom_score protects session).
-EARLYOOM_ARGS="-r 3600 -m 4 -M 2097152,1048576 -s 100 --prefer '(brave|chrome|chromium|firefox|electron|node|llama-server|python|Discord)$'"
+# Tracked in dotfiles hosts/peregrine/host.sh. -M 6291456,4194304 = SIGTERM at
+# 6GiB / SIGKILL at 4GiB free; -s 100,100 ignores swap for both TERM and KILL
+# because full swap is expected on this box; --prefer only, no avoid-list
+# (oom_score protects the desktop session).
+EARLYOOM_ARGS="-r 60 -M 6291456,4194304 -s 100,100 --prefer '^(brave|chrome|chromium|firefox|electron|node|node-MainThread|claude|codex|npm exec codex-|llama-server|python|python3|Discord)$'"
 EOF
 
   echo "  [sysctl] vm.swappiness=80"
