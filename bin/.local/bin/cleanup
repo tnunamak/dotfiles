@@ -9,10 +9,11 @@
 
 set -euo pipefail
 
-CACHE_VERSION=5
+CACHE_VERSION=6
 CACHE_FILE="/tmp/.cleanup-cache-$(id -u)"
 CACHE_MAX_AGE=3600  # 1h — safety net only; state-changing actions (--clean,
                     # shell startup) refresh the cache proactively.
+REFRESH_CACHE_AFTER_CLEANUP="${REFRESH_CACHE_AFTER_CLEANUP:-true}"
 
 # Colors
 RED='\033[0;31m'
@@ -54,6 +55,10 @@ THRESH_TORCH_EXT=209715200  # 200M (compiled PyTorch CUDA extensions)
 THRESH_TSC_CACHE=104857600  # 100M (TypeScript compiler cache)
 THRESH_BUN_CACHE=536870912  # 512M (bun install cache)
 THRESH_SNAP_REVS=1073741824 # 1G (tier-2 — disabled snap revisions; needs sudo)
+THRESH_ELIXIR_BUILD=524288000  # 500M (tier-2 — _build/; `mix compile` rebuilds, no network)
+THRESH_ELIXIR_DEPS=524288000   # 500M (tier-2 — deps/; `mix deps.get` needs network)
+THRESH_UNITY_LIBRARY=2147483648 # 2G (tier-2 — Library/; Unity reimports on reopen, slow)
+THRESH_PYCACHE=52428800     # 50M (tier-1 — __pycache__/.pytest_cache/.mypy_cache/.ruff_cache; instant regen, numerous)
 
 # Code roots to scan for build artifacts (.next, target, venv). Kept narrow to
 # avoid trawling unrelated mounts. CODE_ROOT can be overridden via env for tests.
@@ -79,6 +84,10 @@ CATEGORIES=(
     docker_volumes
     rust_target
     python_venvs
+    elixir_build
+    elixir_deps
+    unity_library
+    pycache
     claude_cli
     go_build
     drkonqi
@@ -257,7 +266,7 @@ find_stale_node_modules() {
             wait -n 2>/dev/null || true
             inflight=$((inflight-1))
         fi
-    done < <(find ~/code -maxdepth 4 -name node_modules -type d -print0 2>/dev/null)
+    done < <(find "$CODE_ROOT" -maxdepth 5 -name node_modules -type d -prune -print0 2>/dev/null)
     wait 2>/dev/null || true
 
     # Concatenate NUL-separated outputs in stable order.
@@ -380,8 +389,11 @@ probe_snap_revs() {
 }
 
 # Sum sizes of dirs matching a name under CODE_ROOT. Args: <name> [<name>...].
-# Walks at most 5 levels deep, prunes at each match (don't descend into them).
-# Emits "count|bytes".
+# Prunes at each match (don't descend into them). Used for per-package caches
+# (__pycache__ et al.) which nest at every package level, so it walks deeper
+# than the depth-5 project-level probes — NESTED_ARTIFACT_MAXDEPTH (default 8,
+# env-overridable for tests). Emits "count|bytes".
+NESTED_ARTIFACT_MAXDEPTH="${NESTED_ARTIFACT_MAXDEPTH:-8}"
 probe_named_dirs_total() {
     local names=("$@")
     local find_args=()
@@ -396,7 +408,7 @@ probe_named_dirs_total() {
     while IFS= read -r -d '' p; do
         [[ -z "$p" ]] && continue
         paths+=("$p")
-    done < <(find "$CODE_ROOT" -maxdepth 5 -type d \( "${find_args[@]}" \) -prune -print0 2>/dev/null)
+    done < <(find "$CODE_ROOT" -maxdepth "$NESTED_ARTIFACT_MAXDEPTH" -type d \( "${find_args[@]}" \) -prune -print0 2>/dev/null)
 
     if (( ${#paths[@]} == 0 )); then
         echo "0|0"
@@ -535,6 +547,136 @@ probe_python_venvs_total() {
     echo "${#paths[@]}|${total}"
 }
 
+# Classify a single project-level build artifact (e.g. _build/, deps/, Library/)
+# as stale, mirroring classify_venv: stale iff the parent project has no relevant
+# source edit since the threshold. This is the active-project spare guard required
+# for every artifact type — a project edited recently keeps its artifacts.
+#
+# Args: <artifact_path> <stale_thresh_epoch>. Every project file counts as
+# activity: destructive cleanup must prefer a false negative over deleting an
+# artifact after an edit whose file type was missing from an allowlist. The
+# known generated artifact roots, .git, and node_modules are pruned from the
+# walk so one freshly generated sibling cannot make another look active.
+classify_project_artifact() {
+    local artifact="$1" stale_thresh="$2"
+    local project
+    project=$(dirname "$artifact")
+    local newest
+    newest=$({ find "$project" \
+        -path "$artifact" -prune -o \
+        -path "$project/_build" -prune -o \
+        -path "$project/deps" -prune -o \
+        -path "$project/Library" -prune -o \
+        -path "$project/.git" -prune -o \
+        -path "$project/node_modules" -prune -o \
+        -type f \
+        -printf '%T@\n' 2>/dev/null; } | sort -nr 2>/dev/null | head -1 | cut -d. -f1)
+    if [[ -z "$newest" || "$newest" == "0" ]]; then
+        newest=$(stat -c %Y "$artifact" 2>/dev/null || echo 0)
+    fi
+    if (( newest < stale_thresh )); then
+        printf '%s\0' "$artifact"
+    fi
+}
+
+# Find stale project-level artifacts under CODE_ROOT, validated by a sibling
+# manifest so we never eat an unrelated dir of the same name. Mirrors
+# find_stale_venvs (90d staleness, bounded parallel classification).
+#
+# Args:
+#   $1 = artifact dir name (e.g. _build, deps, Library)
+#   $2 = manifest predicate: a function name taking <project_dir>, returns 0 if
+#        the sibling manifest validates this as the expected project type
+# Outputs NUL-terminated stale artifact paths.
+find_stale_project_artifacts() {
+    local art_name="$1" manifest_fn="$2"
+    local now_s
+    now_s=$(date +%s)
+    local stale_thresh=$((now_s - 90*86400))
+
+    local max_jobs
+    max_jobs=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    (( max_jobs < 8 )) && max_jobs=8
+
+    local tmp
+    tmp=$(mktemp -d)
+    local i=0 inflight=0 parent
+    while IFS= read -r -d '' a; do
+        parent=$(dirname "$a")
+        # Sibling-manifest validation: skip dirs that aren't the project type.
+        "$manifest_fn" "$parent" || continue
+        classify_project_artifact "$a" "$stale_thresh" \
+            > "$tmp/a-$i" 2>/dev/null &
+        i=$((i+1))
+        inflight=$((inflight+1))
+        if (( inflight >= max_jobs )); then
+            wait -n 2>/dev/null || true
+            inflight=$((inflight-1))
+        fi
+    done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name "$art_name" -prune -print0 2>/dev/null)
+    wait 2>/dev/null || true
+
+    for ((j=0; j<i; j++)); do
+        [[ -s "$tmp/a-$j" ]] && cat "$tmp/a-$j"
+    done
+    rm -rf "$tmp"
+}
+
+# Sum the on-disk size of NUL-separated artifact paths. Emits "count|bytes".
+# Shared tail for the project-artifact probes below.
+_sum_artifact_paths() {
+    local paths=()
+    local p
+    while IFS= read -r -d '' p; do
+        [[ -z "$p" ]] && continue
+        paths+=("$p")
+    done
+    if (( ${#paths[@]} == 0 )); then
+        echo "0|0"
+        return
+    fi
+    local total
+    total=$(printf '%s\0' "${paths[@]}" \
+        | xargs -0 -n 32 -P "$(nproc 2>/dev/null || echo 4)" du -sb 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')
+    : "${total:=0}"
+    echo "${#paths[@]}|${total}"
+}
+
+# Manifest predicates for sibling validation.
+_is_elixir_project() { [[ -f "$1/mix.exs" ]]; }
+_is_unity_project()  { [[ -d "$1/Assets" && -d "$1/ProjectSettings" ]]; }
+
+# Probe stale Elixir _build/ dirs (sibling mix.exs; parent inactive >90d).
+# tier-2: `mix compile` rebuilds locally (no network) but a large umbrella
+# (e.g. Blockscout) is not instant. Emits "count|bytes".
+probe_elixir_build_total() {
+    find_stale_project_artifacts _build _is_elixir_project | _sum_artifact_paths
+}
+
+# Probe stale Elixir deps/ dirs (sibling mix.exs; parent inactive >90d).
+# tier-2: `mix deps.get` needs network. Emits "count|bytes".
+probe_elixir_deps_total() {
+    find_stale_project_artifacts deps _is_elixir_project | _sum_artifact_paths
+}
+
+# Probe stale Unity Library/ dirs (sibling Assets/ + ProjectSettings/; parent
+# inactive >90d). tier-2: Unity reimports the whole asset DB on reopen — slow
+# for a 10G+ project. Emits "count|bytes".
+probe_unity_library_total() {
+    find_stale_project_artifacts Library _is_unity_project | _sum_artifact_paths
+}
+
+# Probe Python bytecode/test/lint caches under CODE_ROOT. tier-1: each is
+# trivially regenerable on next run, tiny individually but numerous (1000s of
+# __pycache__ on a Python-heavy machine). Dir names are unambiguous and never
+# hold user data, so no sibling-manifest validation is needed. Not recency-
+# gated for the same reason .next/cache isn't — regen is instant and per-run.
+# Emits "count|bytes".
+probe_pycache_total() {
+    probe_named_dirs_total __pycache__ .pytest_cache .mypy_cache .ruff_cache
+}
+
 # Probe the pnpm content-addressed store. Located via `pnpm config get store-dir`,
 # falling back to CODE_ROOT/.pnpm-store (the layout dotfiles uses). Probe is a
 # size check only — actual prune happens via `pnpm store prune`.
@@ -657,6 +799,20 @@ check_cleanup() {
     ( probe_python_venvs_total > "$TMPDIR_PARALLEL/python_venvs" 2>/dev/null ) &
     pids+=($!)
 
+    # --- Stale Elixir _build/ + deps/ (tier-2: recency-aware, sibling mix.exs) ---
+    ( probe_elixir_build_total > "$TMPDIR_PARALLEL/elixir_build" 2>/dev/null ) &
+    pids+=($!)
+    ( probe_elixir_deps_total > "$TMPDIR_PARALLEL/elixir_deps" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Stale Unity Library/ (tier-2: recency-aware, sibling Assets/+ProjectSettings/) ---
+    ( probe_unity_library_total > "$TMPDIR_PARALLEL/unity_library" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Python __pycache__/.pytest_cache/.mypy_cache/.ruff_cache (tier-1) ---
+    ( probe_pycache_total > "$TMPDIR_PARALLEL/pycache" 2>/dev/null ) &
+    pids+=($!)
+
     # --- pnpm content-addressed store ---
     ( probe_pnpm_store > "$TMPDIR_PARALLEL/pnpm_store" 2>/dev/null ) &
     pids+=($!)
@@ -732,6 +888,47 @@ check_cleanup() {
     : "${pv_count:=0}" "${pv_size:=0}"
     if (( pv_size > THRESH_VENV )); then
         items+=("python_venvs:$pv_count:$pv_size")
+    fi
+
+    # elixir_build — tier-2: stale _build/ (sibling mix.exs, parent inactive >90d)
+    local eb_raw eb_count eb_size
+    eb_raw=$(cat "$TMPDIR_PARALLEL/elixir_build" 2>/dev/null || echo "0|0")
+    eb_count="${eb_raw%%|*}"
+    eb_size="${eb_raw#*|}"
+    : "${eb_count:=0}" "${eb_size:=0}"
+    if (( eb_size > THRESH_ELIXIR_BUILD )); then
+        items+=("elixir_build:$eb_count:$eb_size")
+    fi
+
+    # elixir_deps — tier-2: stale deps/ (sibling mix.exs, parent inactive >90d; network refetch)
+    local ed_raw ed_count ed_size
+    ed_raw=$(cat "$TMPDIR_PARALLEL/elixir_deps" 2>/dev/null || echo "0|0")
+    ed_count="${ed_raw%%|*}"
+    ed_size="${ed_raw#*|}"
+    : "${ed_count:=0}" "${ed_size:=0}"
+    if (( ed_size > THRESH_ELIXIR_DEPS )); then
+        items+=("elixir_deps:$ed_count:$ed_size")
+    fi
+
+    # unity_library — tier-2: stale Library/ (sibling Assets/+ProjectSettings/, parent inactive >90d)
+    local ul_raw ul_count ul_size
+    ul_raw=$(cat "$TMPDIR_PARALLEL/unity_library" 2>/dev/null || echo "0|0")
+    ul_count="${ul_raw%%|*}"
+    ul_size="${ul_raw#*|}"
+    : "${ul_count:=0}" "${ul_size:=0}"
+    if (( ul_size > THRESH_UNITY_LIBRARY )); then
+        items+=("unity_library:$ul_count:$ul_size")
+    fi
+
+    # pycache — tier-1: Python bytecode/test/lint caches; instant regen, safe.
+    local pc_raw pc_count pc_size
+    pc_raw=$(cat "$TMPDIR_PARALLEL/pycache" 2>/dev/null || echo "0|0")
+    pc_count="${pc_raw%%|*}"
+    pc_size="${pc_raw#*|}"
+    : "${pc_count:=0}" "${pc_size:=0}"
+    if (( pc_size > THRESH_PYCACHE )); then
+        items+=("pycache:$pc_count:$pc_size")
+        total_cleanable=$((total_cleanable + pc_size))
     fi
 
     # snap_revs — tier-2: disabled revisions (drops rollback; sudo); don't add to tier-1
@@ -1059,6 +1256,18 @@ show_suggestions() {
             python_venvs)
                 other_lines+=("  ${YELLOW}tier 2${NC} rm $count stale .venv/venv dirs:       $(human_size "$size")  ${DIM}(parent inactive >90d)${NC}")
                 ;;
+            elixir_build)
+                other_lines+=("  ${YELLOW}tier 2${NC} rm $count stale Elixir _build/ dirs:    $(human_size "$size")  ${DIM}(mix compile; parent inactive >90d)${NC}")
+                ;;
+            elixir_deps)
+                other_lines+=("  ${YELLOW}tier 2${NC} rm $count stale Elixir deps/ dirs:      $(human_size "$size")  ${DIM}(mix deps.get; needs network)${NC}")
+                ;;
+            unity_library)
+                other_lines+=("  ${YELLOW}tier 2${NC} rm $count stale Unity Library/ dirs:    $(human_size "$size")  ${DIM}(reimports on reopen; parent inactive >90d)${NC}")
+                ;;
+            pycache)
+                other_lines+=("    rm $count Python caches: $(human_size "$size")  ${DIM}(__pycache__/.pytest_cache/.mypy_cache/.ruff_cache)${NC}")
+                ;;
             snap_revs)
                 other_lines+=("  ${YELLOW}tier 2${NC} snap remove $count disabled revisions:   $(human_size "$size")  ${DIM}(drops rollback; needs sudo)${NC}")
                 ;;
@@ -1335,6 +1544,46 @@ do_cleanup() {
                     done
                     echo -e "  ${GREEN}done${NC}"
                     freed=$((freed + nc_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- Python __pycache__/.pytest_cache/.mypy_cache/.ruff_cache (tier-1) -----
+    if is_enabled pycache; then
+        local pyc_size
+        pyc_size=$(cache_size_for pycache)
+        if (( pyc_size > 0 )); then
+            local pyc_paths=()
+            # Re-derive at run time (same dir-name set + depth as the probe).
+            while IFS= read -r -d '' p; do
+                pyc_paths+=("$p")
+            done < <(find "$CODE_ROOT" -maxdepth "$NESTED_ARTIFACT_MAXDEPTH" -type d \
+                \( -name __pycache__ -o -name .pytest_cache -o -name .mypy_cache \
+                   -o -name .ruff_cache \) -prune -print0 2>/dev/null)
+
+            if (( ${#pyc_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Python caches${NC}  (${YELLOW}$(human_size "$pyc_size")${NC}, ${#pyc_paths[@]} dirs)"
+                local shown=0
+                for p in "${pyc_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#pyc_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
+                    freed=$((freed + pyc_size))
+                elif confirm "  Delete all Python caches?"; then
+                    for p in "${pyc_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + pyc_size))
                 fi
             fi
         fi
@@ -1746,6 +1995,117 @@ do_cleanup() {
         fi
     fi
 
+    # ----- Stale Elixir _build/ (tier-2) -----
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled elixir_build; then
+        local eb_size
+        eb_size=$(cache_size_for elixir_build)
+        if (( eb_size > 0 )); then
+            local eb_paths=()
+            while IFS= read -r -d '' p; do
+                eb_paths+=("$p")
+            done < <(find_stale_project_artifacts _build _is_elixir_project)
+
+            if (( ${#eb_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Stale Elixir _build/ dirs${NC}  (${YELLOW}$(human_size "$eb_size")${NC}, ${#eb_paths[@]} dirs)"
+                local shown=0
+                for p in "${eb_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#eb_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}  ${DIM}(mix compile rebuilds)${NC}"
+                    freed=$((freed + eb_size))
+                elif confirm "  Delete all stale Elixir _build/ dirs?"; then
+                    for p in "${eb_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + eb_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- Stale Elixir deps/ (tier-2; needs network to refetch) -----
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled elixir_deps; then
+        local ed_size
+        ed_size=$(cache_size_for elixir_deps)
+        if (( ed_size > 0 )); then
+            local ed_paths=()
+            while IFS= read -r -d '' p; do
+                ed_paths+=("$p")
+            done < <(find_stale_project_artifacts deps _is_elixir_project)
+
+            if (( ${#ed_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Stale Elixir deps/ dirs${NC}  (${YELLOW}$(human_size "$ed_size")${NC}, ${#ed_paths[@]} dirs)"
+                local shown=0
+                for p in "${ed_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#ed_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}  ${DIM}(mix deps.get refetches; needs network)${NC}"
+                    freed=$((freed + ed_size))
+                elif confirm "  Delete all stale Elixir deps/ dirs?"; then
+                    for p in "${ed_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + ed_size))
+                fi
+            fi
+        fi
+    fi
+
+    # ----- Stale Unity Library/ (tier-2) -----
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled unity_library; then
+        local ul_size
+        ul_size=$(cache_size_for unity_library)
+        if (( ul_size > 0 )); then
+            local ul_paths=()
+            while IFS= read -r -d '' p; do
+                ul_paths+=("$p")
+            done < <(find_stale_project_artifacts Library _is_unity_project)
+
+            if (( ${#ul_paths[@]} > 0 )); then
+                echo ""
+                echo -e "${BOLD}Stale Unity Library/ dirs${NC}  (${YELLOW}$(human_size "$ul_size")${NC}, ${#ul_paths[@]} dirs)"
+                local shown=0
+                for p in "${ul_paths[@]}"; do
+                    echo -e "  ${DIM}$p${NC}"
+                    shown=$((shown+1))
+                    if (( shown >= 5 )); then
+                        local remaining=$(( ${#ul_paths[@]} - 5 ))
+                        (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                        break
+                    fi
+                done
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    echo -e "  ${CYAN}[preview] would rm -rf each${NC}  ${DIM}(Unity reimports on reopen)${NC}"
+                    freed=$((freed + ul_size))
+                elif confirm "  Delete all stale Unity Library/ dirs?"; then
+                    for p in "${ul_paths[@]}"; do
+                        rm -rf "$p" 2>/dev/null || true
+                    done
+                    echo -e "  ${GREEN}done${NC}"
+                    freed=$((freed + ul_size))
+                fi
+            fi
+        fi
+    fi
+
     # ----- Disabled snap revisions (tier-2) -----
     # Removal needs root; `snap remove` re-derives the list live so it stays
     # correct even if revisions changed since the cache was built.
@@ -1793,7 +2153,7 @@ do_cleanup() {
         # Repopulate cache synchronously — same pattern as `updates --apply`.
         # Cheap (sub-second after `freed > 0` removed paths from the walk),
         # and guarantees the next bare invocation reflects post-cleanup state.
-        if (( freed > 0 )); then
+        if (( freed > 0 )) && [[ "$REFRESH_CACHE_AFTER_CLEANUP" == "true" ]]; then
             echo "Refreshing cache..."
             ensure_cache true
         fi
@@ -2173,7 +2533,8 @@ CLEAN FLAGS:
   --dry-run                 Same as --preview when combined with --clean
   --preview                 Dry-run regardless of other flags
   --include-tier-2          Also run tier-2 actions: unused docker images,
-                            Rust target/ dirs, stale Python venvs
+                            Rust target/ dirs, stale Python venvs, stale Elixir
+                            _build/ + deps/, stale Unity Library/
   --include-tier-3          Also run 'docker volume prune'    (DESTRUCTIVE)
   --skip-CATEGORY           Exclude a category (repeatable)
   --only-CATEGORY           Restrict to listed categories (repeatable)
@@ -2187,6 +2548,7 @@ DEDUPE FLAGS:
 CATEGORIES:
   node_modules        Stale project node_modules (parent inactive >180d)
   next_cache          .next/cache/ dirs under ~/code  (tier 1, safe)
+  pycache             __pycache__/.pytest_cache/.mypy_cache/.ruff_cache (tier 1)
   pnpm_store          pnpm content-addressed store    (via 'pnpm store prune')
   pip_cache           ~/.cache/pip
   uv_cache            ~/.cache/uv  (via 'uv cache clean')
@@ -2215,6 +2577,9 @@ CATEGORIES:
   docker_volumes      tier 3, destructive  (docker volume prune -f)
   rust_target         tier 2, opt-in       (rm target/ dirs; rebuild expensive)
   python_venvs        tier 2, opt-in       (stale .venv; parent inactive >90d)
+  elixir_build        tier 2, opt-in       (stale _build/; sibling mix.exs; mix compile)
+  elixir_deps         tier 2, opt-in       (stale deps/; sibling mix.exs; needs network)
+  unity_library       tier 2, opt-in       (stale Library/; sibling Assets/+ProjectSettings/)
 
 EXAMPLES:
   cleanup --preview
@@ -2295,4 +2660,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
