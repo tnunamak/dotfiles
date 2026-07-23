@@ -10,7 +10,6 @@
 @playwright/mcp
 @posthog/cli
 @sentry/cli
-context-mode
 neonctl
 pnpm
 prisma
