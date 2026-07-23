@@ -219,7 +219,7 @@ fi
 
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux bee-watchdog-systemd llama-bee-systemd)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
@@ -227,9 +227,10 @@ echo "Stowing packages: ${PACKAGES[*]}"
 # - bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
 # - tmux: systemd drop-in dirs (e.g. tmux.service.d) must be real dirs,
 #   not symlinks — systemd does not follow directory symlinks for drop-ins.
-# - bee-*-systemd: keep the user-unit parents real while linking only their
-#   dedicated units and drop-ins, which avoids claiming unrelated user units.
-NO_FOLD_PKGS=(bin nvim claude tmux bee-watchdog-systemd llama-bee-systemd)
+# - *-systemd facade packages: keep the user-unit parents real while linking
+#   only their dedicated units and drop-ins, which avoids claiming unrelated
+#   user units.
+NO_FOLD_PKGS=(bin nvim claude tmux playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
 # The Bee units used to be stowed from the broad `systemd` package. They now
 # live behind dedicated facade packages, but Stow will not transfer ownership
@@ -304,13 +305,15 @@ if [[ -x "$PATCH_SCRIPT" ]]; then
 fi
 
 # Enable tmux and desktop-layout restore units (Linux only — stowed by the
-# `tmux` package). Desktop restore self-gates when kitty is already present.
+# `tmux` package) plus the host Playwright MCP server. Desktop restore
+# self-gates when kitty is already present.
 # Replaces tmux-continuum's boot-time restore, which races against its own
 # auto-save and the first kitty attach. See CLAUDE.md for the debugging
 # history that led to this decision.
 if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   systemctl --user daemon-reload
   systemctl --user enable tmux-restore.service desktop-layout-restore.service desktop-layout-snapshot.timer 2>/dev/null || true
+  systemctl --user enable playwright-mcp.service 2>/dev/null || true
 fi
 
 # Codex: disable alternate-screen mode so the TUI runs inline and kitty's

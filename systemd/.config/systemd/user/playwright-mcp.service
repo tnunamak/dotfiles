@@ -1,0 +1,14 @@
+[Unit]
+Description=Playwright MCP Server (headed browser for devcontainers)
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/playwright-mcp-server
+# The npx wrapper can exit successfully even though this long-lived service
+# should remain available to agent clients.
+Restart=always
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=graphical-session.target
