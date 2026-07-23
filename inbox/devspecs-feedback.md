@@ -157,3 +157,364 @@ This is Tim reading `ds map` + `ds find` output cold, as a human. The friction i
   `/usr/local/bin` via devspecs' own `install.sh`), so there was no dotfiles update
   flow to fold it into. To check for a newer `ds`, run its `install.sh` again.
 - The dogfooding feedback path (`dogfood-feedback-nudge` + this ledger) stays.
+
+2026-07-23 — PDPP shared release-matrix lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a three-slice `ds task "implement shared release matrix authority for CLI and read-core candidates" --slice ...`; attempted `ds task status` and `ds task list`.
+- **Worked / didn't:** the explicit multi-slice command produced an inspectable task tree, but creation emitted only index progress, so the task id had to be recovered from `devspecs/tasks`. Both no-argument status and list were non-obvious (status rejected missing id; list created an unrelated `list` task). The generated context had no ranked implementation/test files for an explicit package/runtime request and left an unignored `devspecs/` tree in the clean worktree; direct package reports, scripts, and tests were authoritative.
+- **Maintainer-facing note:** print the task id/path after creation, make list read-only and status discover the sole active task, preserve exact package paths from the request, and keep generated task state outside or ignored by source worktrees.
+
+2026-07-22 — Context Gateway x402 escrow-read lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "Implement x402 escrow payments for Personal Server reads" --slice` and `ds task status`.
+- **Worked / didn't:** `tldr` documented the slice workflow, but task creation rejected the initially supplied bare `--slice` flag and a follow-up status call rejected the no-argument form. Task creation also emitted only indexing progress, so no task id or usable receipt was available to checkpoint.
+- **Maintainer-facing note:** show a compact example for required repeatable flags, print the created task id/path after indexing, and let `status` select a sole current task.
+
+2026-07-22 — waspflow-fedgui-e2e Wave H lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, then `ds task "Implement Federation Wave H ..." --slice ...`.
+- **Worked / didn't:** `ds task` created a usable task directory and slices, but its scan simultaneously failed with `database is locked (5) (SQLITE_BUSY)`. The partial task context was useful; the success-like artifact plus failed scan is ambiguous and required direct source/test inspection.
+- **Maintainer-facing note:** retry or clearly distinguish an incomplete index from a successfully packed task, with a concrete lock-recovery hint.
+
+2026-07-22 — Pramana incomplete-result ingest gate (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "fix: prevent incomplete and needs-human Pramana reports from being ingested"`.
+- **Worked / didn't:** `tldr` made the intended hotfix flow clear, but task creation reported `scan failed ... database is locked (5) (SQLITE_BUSY)` while still leaving an unignored `devspecs/` task tree in the clean worktree. The partial artifacts were not trustworthy for source discovery, so direct source/test inspection supplied the implementation boundary and evidence.
+- **Maintainer-facing note:** on a scan lock, either retry or create no task artifacts; if partial artifacts are intentionally retained, label them incomplete and make them ignored by default.
+
+2026-07-16 — remote-surface capabilities R4/R2 lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then two `ds task quick "Make remote-surface backend capabilities honest and backend-symmetric"` invocations and `ds task prompt`.
+- **Worked / didn't:** the second task produced a usable id and plan, but each `task quick` initially printed only `Task index updated ...` while creating an unignored `devspecs/` tree. The generated plan proposed client/adapters outside the task’s explicit allowed surface and missed the named CDP/neko descriptors plus protocol capability type; direct `rg`, source reads, and tests found the real implementation boundary. A no-argument `ds task status` also failed because the previously undisclosed task id is mandatory.
+- **vs. doing it by hand:** negative for discovery on this precise, named-file capability correction; direct inspection was authoritative. The plan receipt did make the retrieval miss easy to document.
+- **Would use again here?:** only for a final checkpoint after the implementation, if generated state is outside the worktree or ignored.
+- **Maintainer-facing note:** elevate exact file paths and symbols from a task brief over inferred client surfaces, always print the new task id/path, provide a current-task status default, and prevent task artifacts from dirtying or lint-breaking a clean worktree.
+
+2026-07-16 — ephemeral browser runtime-health implementation lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task status`, and `ds task refresh`.
+- **Worked / didn't:** `ds task refresh` produced useful slice receipts, but `ds task status` without an id failed instead of selecting the only current task. The tool also created an unignored `devspecs/` artifact directory in the implementation worktree.
+- **vs. doing it by hand:** useful as a compact checkpoint receipt; direct source/test inspection remained the authority for cross-lane Luna contracts and owner steering.
+- **Maintainer-facing note:** default status to the active/sole task and ensure generated task state is ignored or can be directed outside the source worktree.
+
+2026-07-16 — mobile overlay clipping implementation lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, `ds task status`, and `ds task checkpoint`.
+- **Worked / didn't:** task creation and the validated checkpoint were useful receipts, but `task quick` initially printed only the index update rather than the new task id, `task status` without that id failed, and every artifact was left in an unignored `devspecs/` directory in the source worktree.
+- **vs. doing it by hand:** useful only for the final evidence receipt; direct source, geometry-hook, and test inspection found the actual renderer boundary.
+- **Maintainer-facing note:** print the new task id immediately, make status default to the sole active task, and keep generated artifacts outside or ignored by the implementation worktree.
+
+2026-07-16 — remote-surface mobile UAT lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, `ds task checkpoint`, and `ds task finish`.
+- **Worked / didn't:** checkpoint and finish recorded the implementation evidence cleanly. `task quick` again printed only `Task index updated` even though it created a task, so the id was not available for `status`; a no-argument `status` then failed. Its unignored `devspecs/` directory also had to be removed before handoff.
+- **vs. doing it by hand:** useful for the final receipt only; source inspection and the live WebSocket probe supplied the actual evidence.
+- **Maintainer-facing note:** print the task id from `task quick`, let `status` select a sole active task, and default generated task state outside or ignored by source worktrees.
+
+2026-07-16 — local-ingest throughput replacement gate (ds v1.1.x)
+
+- **Command(s):** `ds task status` and `ds task checkpoint` across a five-slice implementation/verification task.
+- **Worked / didn't:** status and the final A04 checkpoint are useful compact receipts. Checkpoint rejected an intuitive `--evidence` flag, then rejected descriptive text passed to `--next-decision`; discovering that evidence belongs in `--description` and that next-decision is an enum took two failed invocations. Generated state again remained as an unignored `devspecs/` directory.
+- **vs. doing it by hand:** the slice ledger helped preserve the long-running gate sequence, but direct test output and immutable Git commits remained the correctness authority.
+- **Maintainer-facing note:** add `--evidence` as an alias for `--description`, clarify in the error that `--next-decision` is an enum while prose belongs in `--note`, and keep generated state outside or ignored by source worktrees.
+
+2026-07-18 — ChatGPT idle-session repair classification lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, `ds task show`, then a validated `ds task checkpoint`.
+- **Worked / didn't:** the checkpoint captured the source files and test commands, but `task quick` initially printed only indexing progress while creating an unignored `devspecs/` tree. Its plan named no primary implementation or test files, so direct inspection found `connection-health.ts`, `ref-control.ts`, and their tests. The follow-up `ds task finish ... --decision promote` failed with `all task targets are terminal` immediately after a checkpoint with that same promote decision.
+- **vs. doing it by hand:** the final receipt was useful; source/test discovery was not, and the generated task directory dirtied the worktree.
+- **Would use again here?:** only for an end-of-task receipt if artifacts are ignored or stored outside the worktree.
+- **Maintainer-facing note:** print the task id/path from `task quick`, rank exact source/test files for a named defect, make `finish` idempotent after a terminal checkpoint, and keep generated artifacts out of tracked worktrees.
+
+2026-07-18 — my-little-psychosis ingest hotfix lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "fix approval-to-ingest double status read"`.
+- **Worked / didn't:** the task indexed the relevant ingest route and controller, but again printed only `Task index updated` instead of the created task id/path, left an unignored `devspecs/` tree in the clean hotfix worktree, and ranked an unrelated pipeline tool as an expected implementation surface. The production incident evidence already named the authoritative boundary, so direct regression tests and source inspection were faster and safer.
+- **Maintainer-facing note:** print the task id/path, keep generated state outside or ignored by source worktrees, and weight exact incident-named files above broad lexical matches.
+
+2026-07-18 — pramana connector-matrix lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds map`.
+- **Worked / didn't:** `tldr` was useful, but `ds map` reported a SQLite `database is locked` scan failure before producing a partial stale map. No task receipt was created, so direct source/workflow/identity reads and deterministic tests supplied the evidence.
+- **Maintainer-facing note:** make the SQLite index transaction retry or report the lock owner/repair step before emitting a partial map; a failed refresh should not make the map look current.
+
+2026-07-18 — my-little-psychosis OOM/status integration lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick "integrate production ingest hotfix with single Vana status snapshot while preserving OOM bounds"`, then a validated `ds task checkpoint`.
+- **Worked / didn't:** the checkpoint captured the five status files and full unit/bench/typecheck/build/E2E evidence, but `task quick` again printed only `Task index updated` while creating an unignored `devspecs/` tree. The generated plan ranked `app/machine/MachineClient.tsx` and several unrelated Vana routes as expected change surfaces even though the incident brief explicitly prohibited MachineClient changes and named the authoritative five-file status surface.
+- **vs. doing it by hand:** useful as a final receipt, negative for discovery on an exact production-hotfix integration; direct source-worktree diffing, installed-SDK inspection, and the deterministic route regression found the safe boundary.
+- **Maintainer-facing note:** print the new task id/path, keep generated state outside or ignored by implementation worktrees, and treat explicit allowed/prohibited paths in the task brief as hard retrieval constraints rather than lexical hints.
+
+2026-07-18 — Pramana full-docs reliability coverage lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, and task/slice discovery during initial repository orientation.
+- **Worked / didn't:** `tldr` was useful, but the index repeatedly failed with `database is locked` / scan-transaction errors. The tool also created an unignored `devspecs/` tree in Pramana; it broke the repository Biome gate and had to be moved recoverably to `~/.tmp/pramana-agent-artifacts/` before verification. Direct document/source reads and deterministic tests supplied the actual evidence.
+- **Maintainer-facing note:** make locking retryable or name the lock owner/repair command, and never emit generated state into a tracked worktree unless it is ignored by default.
+
+2026-07-20 — Pramana BUI-739 desktop + developer-journey implementation lane (ds v1.1.x)
+
+- **Command(s):** `ds init --yes`, then `ds task "Land BUI-739 desktop CI and per-run build-app coverage" --slice ...`.
+- **Worked / didn't:** initialization created the Codex helper files successfully, but the first multi-slice task failed before a receipt with `database is locked (5)` while beginning its scan transaction. It left an unignored `.agents/` directory in the otherwise clean Pramana worktree.
+- **vs. doing it by hand:** negative for this implementation start; the existing design brief, research index, scenarios, workflow, and tests were immediately inspectable and authoritative.
+- **Maintainer-facing note:** retry/serialize the scan transaction (or print lock owner and safe recovery action) and keep generated Codex helpers outside the project or ignored by default.
+
+2026-07-19 — PDPP Remote Surface causal hotfix lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, and a validated `ds task checkpoint`.
+- **Worked / didn't:** the checkpoint made a compact receipt, but task creation produced no task id in output, wrote an unignored `devspecs/` tree into the clean worktree, and its inferred primary file was an unrelated allocator server. Direct commit-range tracing plus an isolated n.eko reproduction found the actual adapter/settle seam.
+- **Maintainer-facing note:** for an incident brief with explicit commits and source paths, rank those constraints above lexical expansion; keep generated state outside or ignored by the source worktree.
+
+2026-07-19 — PDPP desktop stream session-identity lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick` for the bounded viewer regression.
+- **Worked / didn't:** the tool created a task receipt, but `task quick` printed only an index update instead of the task id and left an unignored `devspecs/` directory in an otherwise clean isolated worktree. The supplied evidence already named the viewer/session seam, so direct source and focused tests were the reliable path.
+- **Maintainer-facing note:** always print the created task id/path and keep generated task state outside the source worktree or ignored by default.
+
+2026-07-21 — PDPP historical read-authority slice (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, then attempted `ds task status`.
+- **Worked / didn't:** `task quick` created a useful bounded receipt but printed only indexing progress, so the task id had to be recovered by searching the new unignored `devspecs/` tree. `ds task status` then rejected the no-argument form despite there being one new task; the usage string showed that an id was required.
+- **Maintainer-facing note:** print the created task id/path from `task quick`, allow `task status` to select the sole active task, and keep generated task state out of source worktrees by default.
+
+2026-07-21 — PDPP historical-evidence integration lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task ... --slice`, then attempted `ds task status`.
+- **Worked / didn't:** the slice task produced a bounded task tree, but creation printed indexing progress rather than the task id/path and left that tree unignored in the clean integration worktree. `ds task status` without an id rejected the command, so direct commit, diff, and test evidence remained the authoritative integration record.
+- **Maintainer-facing note:** always print the new task id/path, let status choose a sole active task, and default generated task artifacts outside or ignored by the source worktree.
+
+2026-07-21 — Pramana Attempt Envelope / fail-latch lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "Implement TIER-2 immutable Attempt Envelope and ingest fail-latch for BUI-739" --slice ...` and `ds task status <recovered-id>`.
+- **Worked / didn't:** task creation only printed indexing progress and left an empty, unignored task directory; the recovered id had no `task.json`, so status and the required validation checkpoint could not run. Direct spec/source review and deterministic tests supplied the implementation evidence.
+- **Maintainer-facing note:** do not create a task directory until its manifest is durable; print the task id/path on creation and make the error explain an incomplete task receipt rather than leaving an unrecoverable empty directory.
+
+2026-07-21 — Unity Pramana Tier-1 viewer lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, checkpoint, and finish.
+- **Worked / didn't:** the checkpoint recorded the final files and gates, but task creation printed only indexing progress and left an unignored `devspecs/` tree. Broad lexical retrieval also ranked unrelated Desktop and data-request files despite the task naming the Pramana viewer path.
+- **Maintainer-facing note:** print the task id/path, keep task artifacts outside source worktrees or ignored, and treat an explicit path boundary as a hard retrieval constraint.
+
+2026-07-21 — Waspflow Federation sbx-preflight lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "Implement Federation sbx install preflight doctor and daemon setup_required state"`.
+- **Worked / didn't:** `tldr` gave the expected bounded-task workflow, but task creation failed during its automatic scan with `database is locked (5)` before producing a usable receipt. It still left an unignored `devspecs/` directory in the clean Waspflow worktree.
+- **vs. doing it by hand:** negative for this named, source-directed implementation; direct backend/CLI/daemon/test reads were immediately authoritative.
+- **Maintainer-facing note:** retry or serialize the SQLite scan transaction, and do not create task artifacts in a source worktree until the task receipt is durable (or ignore them by default).
+
+2026-07-21 — Waspflow Federation task-discovery lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, `ds task "build federation task discovery and contributor-selected claims" --slice ...`, then three validation checkpoints.
+- **Worked / didn't:** the task and checkpoints were usable after creation, but both `ds map` and task creation reported `database is locked (5)` during automatic scanning. Creation still wrote an unignored `devspecs/` directory into the clean worktree, and the output omitted the task id/path; it had to be recovered from the generated directory. Direct source/test inspection supplied the authoritative implementation boundary.
+- **vs. doing it by hand:** checkpoints gave a compact receipt; discovery was negative for this explicitly path-directed change because the partial map was stale and the lock error gave no owner or safe retry guidance.
+- **Maintainer-facing note:** serialize/retry SQLite scans or report the lock owner and a recovery command, print the created task id/path, and store generated task state outside source worktrees (or ignore it by default).
+
+2026-07-21 — Waspflow Federation browser-auth correction lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, checkpoint, and finish.
+- **Worked / didn't:** the checkpoint successfully recorded the exact task slice and validation evidence, but task creation emitted no task id/path and wrote an unignored `devspecs/` tree into the clean worktree. `ds task finish` also returned no visible confirmation and left task status as `packed`, so the receipt had to be inspected directly; the generated tree was removed before the requested code commit.
+- **vs. doing it by hand:** compact checkpoint was useful after discovering the id; direct source/test tracing remained the reliable implementation record for the explicitly named auth files.
+- **Maintainer-facing note:** print created/finished task state, transition the task status on finish, and keep generated receipts outside or ignored by source worktrees.
+
+2026-07-21 — Waspflow Federation packaging lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds init --yes`, then `ds task "Build isolated federation packaging artifacts" --slice ...`.
+- **Worked / didn't:** `tldr` gave the intended slice/checkpoint workflow, but initialization/task creation produced no usable task receipt or visible task id and wrote an unignored `devspecs/` directory into an otherwise clean package worktree. It had to be moved to trash before the packaging diff could be handed off.
+- **vs. doing it by hand:** negative for this bounded, source-directed packaging task; direct design/source inspection and deterministic package smoke checks supplied the evidence.
+- **Maintainer-facing note:** print the created task id/path or a clear failure, and do not create unignored worktree artifacts until a durable task receipt exists.
+
+2026-07-21 — Waspflow Federation Windows portability lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "Audit and fix Windows portability for Federation Node daemon and Go tray; document and verify"`.
+- **Worked / didn't:** `tldr` described the intended bounded workflow, but task creation reported `database is locked (5)` during automatic scanning while still writing an unignored `devspecs/` tree in the clean worktree. The generated receipt was not needed for this explicitly named, source-directed change; direct source/test reads and deterministic Node/Go checks supplied the evidence.
+- **Maintainer-facing note:** serialize or retry the SQLite scan before creating worktree artifacts, and keep generated receipts outside the source worktree or ignore them by default.
+
+2026-07-21 — Pramana desktop DCR-handoff diagnosis lane (ds v1.1.x)
+
+- **Command(s):** `ds task quick "diagnose and fix F desktop-required DCR scope setup"`, then `ds task status`.
+- **Worked / didn't:** task creation did produce a bounded receipt, but it printed only automatic-index progress and no task ID or path. It also wrote an unignored `devspecs/` tree into the clean worktree, which then broke the repository-wide Biome gate. The no-argument status command did not provide a usable task status. Direct source tracing, an evidence-timing check, and focused unit tests supplied the actionable diagnosis.
+- **Maintainer-facing note:** print a durable task ID/path from `task quick`, make the single active task discoverable by `task status`, and keep generated receipts outside a source worktree or ignored by default.
+
+2026-07-22 — Waspflow Federation Wave C evidence gate (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task "Fix Federation Wave C evidence gate..." --slice ...`, then `ds task list` and `ds task status <recovered-id>`.
+- **Worked / didn't:** the multi-slice task did create usable C01–C04 receipts, but creation printed only automatic-index progress and no task id/path. Two diagnostic `list` commands also created separate unignored task directories, and one scan hit `database is locked (5)`. The durable receipt was useful after recovery; direct source, live daemon, browser, and full-suite evidence remained authoritative.
+- **Maintainer-facing note:** print the created task id/path, make diagnostic commands read-only, and retry/report SQLite scan ownership before emitting unignored task directories.
+
+2026-07-21 — Pramana F HITL classification lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`.
+- **Worked / didn't:** `tldr` gave the expected bounded-task guidance. I did not create a task because the prior Pramana use had left unignored generated state and this lane already had exact source paths, a confirmed production failure, and clear focused tests.
+- **vs. doing it by hand:** useful only as a short workflow reminder; direct source, controller, fixture, and live-run evidence were authoritative.
+- **Maintainer-facing note:** preserve the useful short guide, but make task creation safe for clean worktrees before it becomes the default for narrowly scoped incident fixes.
+
+2026-07-22 — Waspflow Federation Wave E visual/copy lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task "Ship Federation Wave E..." --slice ...`, attempted `ds task status`, then `ds task checkpoint`.
+- **Worked / didn't:** task creation generated useful D01–D03 plan/result receipts and the final checkpoint accepted source/test evidence. Creation printed only indexing progress instead of the task id, so `status` first failed without an id; recovering the generated directory showed a usable manifest. The unignored `devspecs/` task directory dirtied the requested implementation worktree and had to be removed after checkpointing.
+- **vs. doing it by hand:** the final checkpoint is a useful compact receipt; direct source, headless screenshot, and test evidence remained authoritative for this exact UI defect.
+- **Maintainer-facing note:** print the durable task id/path immediately after creation, let `status` select the sole recent task, and keep task artifacts outside or ignored by source worktrees.
+
+2026-07-22 — Remote Surface retained-surface repair lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick`, attempted `ds task status`, then checkpoint and finish.
+- **Worked / didn't:** task creation made a useful bounded receipt and the checkpoint captured the exact source/test evidence, but creation printed no task id/path, so recovery required searching the new unignored `devspecs/` tree. `status` without an id errored, and `finish --decision promote --stage done` returned no confirmation and left the task-level status as `packed` despite the slice checkpoint being promoted.
+- **vs. doing it by hand:** the final checkpoint is a compact handoff record; direct code history, source/test tracing, and `pnpm verify` were the authoritative proof for this narrow port.
+- **Maintainer-facing note:** print the task id/path and finish state, let `status` select a sole active task, update the top-level task status on finish, and keep generated task state outside or ignored by the source worktree.
+
+2026-07-22 — Pramana connector-session transplant lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "build connector-session transplant ..." --slice ...`, followed by `ds task status` and `ds task list`.
+- **Worked / didn't:** `tldr` explained the multi-slice workflow, but task creation printed only automatic index progress instead of a task id/path. The no-argument status command failed, while the diagnostic list command unexpectedly created another unignored `devspecs/` task tree. That tree made the repository-wide Biome check fail and had to be moved to trash before validation. Direct runner/source/test inspection remained the implementation authority.
+- **Maintainer-facing note:** make diagnostic listing read-only, print a durable task id/path after task creation, let `status` select a sole active task, and keep generated artifacts outside or ignored by a clean source worktree.
+
+2026-07-22 — Waspflow Federation Wave G lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task ... --slice ...`, then a validated `ds task checkpoint`.
+- **Worked / didn't:** the multi-slice task eventually created a useful receipt and the checkpoint captured the implementation evidence. Its automatic scan first failed with `database is locked (5)` while still creating an unignored `devspecs/` task tree in the implementation worktree; direct source/test inspection was required to continue safely.
+- **vs. doing it by hand:** useful for the checkpoint, negative for initial discovery on this exact owner-directed Federation change.
+- **Maintainer-facing note:** retry/serialize the SQLite scan before reporting task creation success, and keep task artifacts outside or ignored by the source worktree.
+
+2026-07-22 — Context Gateway Stripe escrow wiring lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "wire successful Stripe subscription payment events to manual escrow funding requests"`.
+- **Worked / didn't:** `tldr` gave the intended bounded-task workflow, but task creation failed before producing a usable receipt with `scan failed ... database is locked (5) (SQLITE_BUSY)`. It still created an unignored `devspecs/` directory in the requested worktree; direct source, migration, and focused-test inspection supplied the implementation boundary and evidence.
+- **Maintainer-facing note:** on an index lock, retry or emit no worktree artifacts; if a partial receipt is retained, mark it incomplete and print a concrete lock-recovery command.
+
+2026-07-22 — Waspflow Federation Git task-access lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, `ds find`, then a three-slice `ds task`.
+- **Worked / didn't:** `tldr` clarified the intended bounded-slice workflow, but both discovery/task indexing encountered `database is locked (5) (SQLITE_BUSY)`. The task directory was still created, leaving an ambiguous partial receipt; direct source/test/document inspection was required to establish the actual schema, daemon, kit, and runner seams.
+- **Maintainer-facing note:** make a locked scan retryable or fail before creating task artifacts, and label any partial receipt/index as incomplete with a concrete recovery command.
+
+2026-07-23 — PDPP Gmail re-quarantine accounting investigation (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, then `ds task quick "triage connector-neutral recovery accounting regression..."`.
+- **Worked / didn't:** `tldr` gave a useful incident workflow, but both map/task indexing hit `database is locked (5) (SQLITE_BUSY)`. The attempted task still left an unignored `devspecs/` directory in the clean worktree and yielded no usable task id or evidence receipt, so direct source/spec/test tracing was required.
+- **Maintainer-facing note:** serialize or retry the index transaction before creating worktree artifacts; on failure, emit no task tree or clearly mark it incomplete and print a safe lock-recovery command.
+
+2026-07-22 — PDPP systemic connector-test timeout lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick "close systemic polyfill-connectors node:test hosted aggregate timeout"`, then `ds task status`.
+- **Worked / didn't:** `tldr` described the intended incident workflow, but `task quick` emitted only automatic-index progress and no durable task id/path; `status` without an id errored. Direct package-script, CI-history, Node-runner, and focused-file evidence was necessary to define the bounded runner change.
+- **Maintainer-facing note:** print a task id/path after `task quick`, and let `task status` resolve a single active task rather than requiring a hidden id.
+
+2026-07-22 — Waspflow Federation Wave I lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task ... --slice ...`, then `ds task checkpoint` and `ds task finish`.
+- **Worked / didn't:** task creation first hit `database is locked (5) (SQLITE_BUSY)` while creating the unignored Wave I task directory. A later checkpoint succeeded and captured the exact suite and browser evidence, but `finish --decision promote` returned no confirmation and left the task status as `packed` with only G01/G04 explicitly advanced.
+- **Maintainer-facing note:** retry or fail closed before writing task artifacts when SQLite is locked; make finish report its actual transition and advance all completed slices or explain why it did not.
+
+2026-07-22 — Context Gateway escrow-funding lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, then `ds task "implement escrow funding for per-app Moksha escrow deposits" --slice ...`.
+- **Worked / didn't:** the task command first reported `database is locked (5) (SQLITE_BUSY)` and printed no task identifier, while later leaving an unignored `devspecs/` task tree in the implementation worktree. Direct source, migration, and focused Vitest evidence were required to continue; the generated receipts were not needed for the requested implementation.
+- **Maintainer-facing note:** retry or fail before creating worktree artifacts on SQLite contention, print the durable task path when it succeeds, and keep generated task state outside or ignored by the source worktree.
+
+2026-07-22 — PDPP Next 16.3 canary / TypeScript 7 upgrade lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "upgrade Next.js 16.3 canary and TypeScript 7" --slice ...`; attempted `ds task status`.
+- **Worked / didn't:** `tldr` clearly described the bounded multi-slice workflow. Task creation printed only automatic-index progress and no task id/path or completion receipt; `task status` without an id then errored with its usage message. Direct dependency/config inspection and the required build/type/test gates remained the usable evidence.
+- **Maintainer-facing note:** print the durable task id/path when task creation completes, and let `task status` select a sole active task or point directly to the recoverable receipt.
+
+2026-07-22 — PDPP Biome 2.5 / Ultracite 7.9 migration lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a four-slice `ds task "full Biome 2.5.5 and Ultracite 7.9.4 migration"`.
+- **Worked / didn't:** `tldr` made the staged workflow clear, but task creation stopped during automatic scanning with `database is locked (5) (SQLITE_BUSY)` and supplied neither a durable task identifier nor a safe lock-recovery action. Direct repository/config inspection is the usable evidence path for this migration.
+- **Maintainer-facing note:** serialize or retry the SQLite scan before reporting task creation, and on contention print the lock-recovery command plus whether any task artifact was retained.
+
+2026-07-22 — Pramana thin managed-run coordinator (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "build thin managed-run coordinator" --slice ...`, attempted `ds task status`, then checkpoint.
+- **Worked / didn't:** the generated slices and checkpoint made a useful compact receipt, but task creation printed only indexing progress rather than the task id/path. `status` without the hidden id errored, and the unignored generated `devspecs/` files made the repository-wide Biome check fail until removed. Direct runner, preflight, registry, and targeted-test evidence remained authoritative.
+- **Maintainer-facing note:** print the new task id/path, let `status` select a sole current task, and put generated task state outside or inside an ignored worktree path.
+
+2026-07-22 — Pramana honest redaction wire-contract fix (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "fix honest redaction wire value"`.
+- **Worked / didn't:** `tldr` clearly described the focused-task workflow, but task creation first failed during automatic scanning with `database is locked (5) (SQLITE_BUSY)` and still left an unignored `devspecs/` directory in the clean implementation worktree. The task command also emitted no usable task id before its failure.
+- **vs. doing it by hand:** direct producer/consumer source and contract tests were the reliable path for this urgent cross-repo correctness fix.
+- **Maintainer-facing note:** on an index lock, fail before writing task artifacts (or mark/print the partial task path) and give a concrete safe retry/recovery command.
+
+2026-07-22 — Pramana real F OS-handoff lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds map`, then `ds task "build real F web-to-desktop OS custom-scheme handoff" --slice ...`.
+- **Worked / didn't:** map and the generated A01–A03 receipts were useful orientation, but task creation printed only scan progress rather than the durable task id/path. It created an unignored `devspecs/` directory in the clean implementation worktree, which made the repository-wide Biome gate fail even though product sources were formatted.
+- **Maintainer-facing note:** print the task path on creation and place generated task state outside source worktrees or under an ignored directory; a clean requested worktree should remain lintable after normal task creation.
+
+2026-07-22 — PDPP Biome judgment-rule lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "Clear the five specified Biome judgment rules only" --slice ...`.
+- **Worked / didn't:** `tldr` provided a clear bounded-slice workflow, but task creation failed its automatic scan with `database is locked (5) (SQLITE_BUSY)` while still writing an unignored `devspecs/` task directory into the clean implementation worktree. The directory had to be removed before the repository-wide Biome gate could be trusted; direct Biome diagnostics and focused tests supplied the actual evidence.
+- **Maintainer-facing note:** when the index is locked, retry or fail before creating worktree artifacts; if a partial receipt is retained, print its durable path and mark it incomplete.
+
+2026-07-22 — PDPP Biome shared-file cleanup lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, `ds task quick "repair Biome regressions merged from parallel lanes; achieve zero Biome errors and prescribed validation"`, status, checkpoint, and finish.
+- **Worked / didn't:** the task receipt and lifecycle commands worked after discovering the generated task id from `task.json`, but creation printed only indexing progress rather than that durable id/path. It also created unignored `devspecs/` files inside the fresh worktree; Biome then linted the generated `task.json`, producing a false gate failure until the task artifact was removed.
+- **Maintainer-facing note:** always print the completed task id/path, and write generated task state outside the repository scan or under an ignored path so `ds task quick` cannot make a clean worktree fail its own lint gate.
+
+2026-07-22 — Pramana K desktop visual-capture hotfix (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "fix K desktop visual replay capture on attach and authenticated-oracle path"`.
+- **Worked / didn't:** `tldr` described the focused hotfix flow, but task creation failed its automatic scan with `database is locked (5) (SQLITE_BUSY)` while still creating an unignored `devspecs/` task tree in a clean worktree. The generated receipt was not reliable for discovery; direct source and focused regression inspection supplied the implementation boundary.
+- **Maintainer-facing note:** retry/serialize the scan or fail before writing worktree artifacts; on contention, identify the partial receipt and give a concrete safe recovery command.
+
+2026-07-23 — PDPP Gmail recovery throughput discriminator (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "add aggregate-only Gmail attachment recovery throughput discriminator"` twice.
+- **Worked / didn't:** `tldr` correctly described a bounded hotfix workflow. Both task-creation attempts stopped during automatic scanning with `database is locked (5) (SQLITE_BUSY)` and emitted no usable task id or completion receipt, while still leaving two unignored `devspecs/` task trees in the clean worktree. Direct OpenSpec/source/test tracing provided the reliable implementation boundary.
+- **Maintainer-facing note:** serialize or retry the index transaction before creating any worktree artifact; on a lock, print a concrete recovery command and either no receipt or one explicitly marked partial.
+
+2026-07-23 — PDPP Gmail adaptive recovery throughput lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "implement bounded Gmail attachment recovery byte-batch throughput" --slice ...`, followed by `ds task status` and `ds task list`.
+- **Worked / didn't:** `tldr` clarified the intended multi-slice flow, but task creation printed only automatic-index progress and no receipt id/path. The no-argument status command failed, and the diagnostic list command unexpectedly created a second unignored task tree. Both generated trees had to be removed before validation; direct OpenSpec, source, and deterministic Gmail tests supplied the authoritative boundary and evidence.
+- **Maintainer-facing note:** make list/status read-only diagnostics, print the durable task id/path after creation, let status resolve a sole active task, and keep generated task state outside or ignored by a source worktree.
+
+2026-07-23 — Context Gateway isolated ERC-20 funding lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "add manual asset-aware ERC-20 escrow funding with local mock-contract integration coverage"` from a clean detached worktree.
+- **Worked / didn't:** `tldr` defined the bounded workflow, but task creation stopped while scanning the focused worktree with `database is locked (5) (SQLITE_BUSY)` and returned no task id/path or recovery command. Direct escrow source, SDK ABI, gateway decoder, and focused integration tests remained the usable evidence path.
+- **Maintainer-facing note:** retry or serialize the index transaction for concurrent worktrees; on contention, say whether any task artifact was retained and print a safe focused-path retry command.
+
+2026-07-23 — Context Gateway data_access signing counterpart (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "implement feature-gated standalone data_access x402 signing while preserving grant behavior"` from a clean detached worktree; followed the TLDR's suggested focused-path recovery with `--path`.
+- **Worked / didn't:** task creation stopped during automatic scanning with `database is locked (5) (SQLITE_BUSY)` and returned no task id/path. The documented `--path` recovery is not accepted by `ds task quick` (`unknown flag: --path`), so direct protocol/source/test inspection supplied the implementation boundary.
+- **Maintainer-facing note:** make the TLDR's focused-path recovery command valid for `task quick` (or document the supported equivalent), and retry/serialize the index before emitting task artifacts.
+
+2026-07-23 — Pramana producer-causality lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task "implement Pramana producer causality and evidence-honesty" --slice ...`.
+- **Worked / didn't:** the task created plan/result artifacts but automatic indexing failed with `database is locked (5) (SQLITE_BUSY)`. The resulting unignored `devspecs/` tree had to be removed before the repository's formatter and test gates could be trusted; direct artifact/source/test inspection provided the implementation boundary.
+- **Maintainer-facing note:** on a locked scan, either retry before creating the task tree or clearly mark it incomplete and ignore it by default.
+
+2026-07-23 — Pramana Sol Gate 2 terminal-schema lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a four-slice `ds task ... --slice ...`, followed by `ds task status` and a validated `ds task checkpoint`.
+- **Worked / didn't:** `tldr` was useful and the task produced a usable A02 receipt, but creation printed only automatic-index progress, so the task ID had to be recovered from the generated tree. `ds task status` without that ID failed. The unignored `devspecs/` directory was included by the repository-wide Biome check and had to be formatted during validation, then removed before the requested code commit. Direct gate-report/source/test inspection remained authoritative for the named P1/P4 boundaries.
+- **Maintainer-facing note:** print the durable task ID/path on creation, let `status` resolve a sole active task, and keep generated task state outside or ignored by implementation worktrees so it cannot affect lint or commits.
+
+2026-07-23 — Data Gateway PR58 settlement-proof outbox lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a three-slice `ds task "implement PR58 F01 and F04 durable settlement proof fixes" --slice ...`.
+- **Worked / didn't:** `tldr` clearly described the multi-slice workflow, but task creation reported `database is locked (5) (SQLITE_BUSY)`, printed no task ID/path, and then hung until interrupted after roughly 90 seconds. Despite the reported scan failure and interruption, it left a complete-looking unignored `devspecs/` task tree in the isolated worktree, so the caller cannot tell whether the receipt is authoritative or partial.
+- **Maintainer-facing note:** fail promptly on SQLite contention, state whether a task was durably created, print its path if so, and keep generated task state outside or ignored by implementation worktrees.
+
+2026-07-23 — Data Gateway PR58 grant-authorization hardening lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a three-slice `ds task "harden PR58 grant-authorized standalone access settlement" --slice ...`.
+- **Worked / didn't:** `tldr` supplied a useful gated workflow, but automatic indexing failed with `database is locked (5) (SQLITE_BUSY)` and returned no task ID. It nevertheless left a complete-looking unignored `devspecs/` task tree in the primary PR worktree, so the generated artifacts could not be treated as an authoritative receipt and had to be removed before validation.
+- **Maintainer-facing note:** serialize or retry the shared index before writing task artifacts; if task creation cannot complete, identify any partial path explicitly and keep it outside or ignored by the implementation worktree.
+
+2026-07-23 — Data Gateway PR58 F02 balance-lock lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then `ds task quick "implement Data Gateway red-team F02 balance-row authorization lock"` from the isolated PR-head worktree.
+- **Worked / didn't:** `tldr` clearly bounded the focused workflow, but task creation reported `database is locked (5) (SQLITE_BUSY)`, printed no task ID/path, and then hung until interrupted. It left an unignored, complete-looking `devspecs/` task tree even though the scan failed, so direct source and real-PostgreSQL concurrency tests remain the authoritative evidence.
+- **Maintainer-facing note:** fail promptly on index contention, state whether the generated receipt is partial or usable, print its path when retained, and keep task state outside or ignored by implementation worktrees.
+
+2026-07-23 — Data Gateway PR58 F06 legacy-payee lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a three-slice `ds task "implement Data Gateway red-team F06 legacy payee migration gate" --slice ...` from the isolated PR-head worktree.
+- **Worked / didn't:** `tldr` described a useful migration-oriented workflow, but task creation reported `database is locked (5) (SQLITE_BUSY)`, emitted no task ID/path or safe recovery command, and hung until interrupted. It still left an unignored, complete-looking `devspecs/` tree whose receipts could not be trusted after the failed scan.
+- **Maintainer-facing note:** fail promptly and before writing task artifacts on index contention; if any receipt survives, print its exact path and whether it is partial, and keep it outside or ignored by implementation worktrees.
