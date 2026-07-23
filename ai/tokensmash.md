@@ -103,8 +103,8 @@ tokensmash-ab table ~/.local/state/tokensmash/ab-runs/<run-id>/results.json
 ```
 
 `run` is dry-run by default. Add `--live` only when intentionally spending
-quota. The suite defaults to `gpt-5.5` with low reasoning and `workspace-write`
-sandboxing in a scratch clone.
+quota. The suite defaults to `gpt-5.6-terra` with low reasoning and
+`workspace-write` sandboxing in a scratch clone.
 
 Add a new tool by adding a `variants[]` entry to the suite JSON:
 

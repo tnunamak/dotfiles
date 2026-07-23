@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "clawmeter-codex-all-tools",
   "baseline": "baseline_no_user_config",
-  "model": "gpt-5.5",
+  "model": "gpt-5.6-terra",
   "reasoning": "low",
   "sandbox": "workspace-write",
   "env": {

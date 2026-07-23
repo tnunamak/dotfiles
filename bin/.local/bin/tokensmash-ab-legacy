@@ -139,7 +139,7 @@ def csv_ids(value: str | None) -> list[str]:
 def print_plan(suite: dict[str, Any], selection: dict[str, Any]) -> None:
     print(f"suite: {suite.get('name', Path(suite['_suite_path']).name)}")
     print(
-        f"model: {suite.get('model', 'gpt-5.5')} "
+        f"model: {suite.get('model', 'gpt-5.6-terra')} "
         f"reasoning={suite.get('reasoning', 'low')} "
         f"sandbox={suite.get('sandbox', 'workspace-write')}"
     )
@@ -194,7 +194,7 @@ def run_suite(suite: dict[str, Any], selection: dict[str, Any], args: argparse.N
         "suite_path": suite["_suite_path"],
         "suite": scrub_suite(suite),
         "baseline": suite["baseline"],
-        "model": suite.get("model", "gpt-5.5"),
+        "model": suite.get("model", "gpt-5.6-terra"),
         "reasoning": suite.get("reasoning", "low"),
         "replicates": selection["replicates"],
         "runs": [],
@@ -404,7 +404,7 @@ def run_codex(
     stderr_path = case_dir / "codex.stderr"
     last_message_path = case_dir / "last-message.md"
     timeout = timeout_override or float(suite.get("timeout_seconds") or 1800)
-    model = str(suite.get("model") or "gpt-5.5")
+    model = str(suite.get("model") or "gpt-5.6-terra")
     reasoning = str(suite.get("reasoning") or "low")
     sandbox = str(suite.get("sandbox") or "workspace-write")
     cmd = [
