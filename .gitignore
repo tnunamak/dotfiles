@@ -4,6 +4,10 @@
 !/.claude/skills/
 .nvimlog
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Playwright MCP logs
 .playwright-mcp/
 
