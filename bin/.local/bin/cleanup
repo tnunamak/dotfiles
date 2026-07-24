@@ -519,7 +519,9 @@ find_stale_venvs() {
             wait -n 2>/dev/null || true
             inflight=$((inflight-1))
         fi
-    done < <(find "$CODE_ROOT" -maxdepth 5 -type d \( -name .venv -o -name venv \) -prune -print0 2>/dev/null)
+    # Discover by the pyvenv.cfg marker (present in every venv regardless of
+    # dir name) — name-based matching missed e.g. rdatadao-shitposting/env (5.4G).
+    done < <(find "$CODE_ROOT" -maxdepth 6 -name pyvenv.cfg -printf '%h\0' 2>/dev/null)
     wait 2>/dev/null || true
 
     for ((j=0; j<i; j++)); do
