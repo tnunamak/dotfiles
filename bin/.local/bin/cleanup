@@ -61,6 +61,22 @@ THRESH_ELIXIR_DEPS=524288000   # 500M (tier-2 — deps/; `mix deps.get` needs ne
 THRESH_UNITY_LIBRARY=2147483648 # 2G (tier-2 — Library/; Unity reimports on reopen, slow)
 THRESH_PYCACHE=52428800     # 50M (tier-1 — __pycache__/.pytest_cache/.mypy_cache/.ruff_cache; instant regen, numerous)
 
+# Volumes tier-3 must NEVER offer for deletion, even when dangling — "dangling"
+# only means no container references them right now; these hold real data
+# (triaged 2026-07-24). Add names here before running --include-tier-3 on
+# anything you care about.
+PROTECTED_VOLUMES=(
+    mind-dao_db
+    connect_vana-connect-local-pgdata
+    docker_db_data
+    vana-vibes-2_postgres_data
+    pdpp_pdpp-data
+    vana-stats-server_caddy_config
+    vana-stats-server_caddy_data
+    99195c4980073a43e68315fc7987cd26c9f7765db7414696c9fcc0dbcb36477d
+    c3cf16c3516f11b65807b76fb2a178113a69676bf3ff310f519fd27dab780e85
+)
+
 # Code roots to scan for build artifacts (.next, target, venv). Kept narrow to
 # avoid trawling unrelated mounts. CODE_ROOT can be overridden via env for tests.
 CODE_ROOT="${CODE_ROOT:-$HOME/code}"
@@ -1352,7 +1368,7 @@ show_suggestions() {
                 docker_t2+=("  ${YELLOW}tier 2${NC} docker image prune -af   (all unused images): $(human_size "$size")")
                 ;;
             docker_volumes)
-                docker_t3+=("  ${RED}tier 3${NC} docker volume prune       (unused volumes):    $(human_size "$size")")
+                docker_t3+=("  ${RED}tier 3${NC} docker volume rm         (unused, protected excluded):    $(human_size "$size")")
                 ;;
         esac
     done < <(tail -n +4 "$CACHE_FILE")
@@ -1930,8 +1946,12 @@ do_cleanup() {
             local dv; dv=$(cache_size_for docker_volumes)
             if (( dv > 0 )); then
                 echo ""
-                echo -e "${RED}${BOLD}DESTRUCTIVE: docker volume prune permanently deletes unreferenced volumes.${NC}"
-                if maybe_run "Docker tier 3: unused volumes" "$dv" "docker volume prune -f"; then
+                echo -e "${RED}${BOLD}DESTRUCTIVE: deletes unreferenced volumes (except the protected list).${NC}"
+                # Per-volume rm instead of blanket prune so PROTECTED_VOLUMES
+                # (defined near the thresholds) are never offered. Estimate $dv
+                # still includes protected volumes; the delta is small.
+                local vol_cmd="{ docker volume ls -qf dangling=true | grep -vxF -f <(printf '%s\n' \"\${PROTECTED_VOLUMES[@]}\") || true; } | xargs -r docker volume rm"
+                if maybe_run "Docker tier 3: unused volumes (protected list excluded)" "$dv" "$vol_cmd"; then
                     freed=$((freed + dv))
                 fi
             fi
