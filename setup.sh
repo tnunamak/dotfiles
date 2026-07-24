@@ -135,6 +135,23 @@ if ! [[ -x "$HOME/.local/bin/claude" ]]; then
   curl -fsSL https://claude.ai/install.sh | bash
 fi
 
+# kitty (upstream installer — Ubuntu's archive freezes each release at its
+# snapshot version (26.04 = 0.45 forever) and the only PPA died in 2022;
+# sw.kovidgoyal.net is the supported channel for current releases). Installs
+# to ~/.local/kitty.app; apt's kitty is shadowed by ~/.local/bin PATH
+# precedence. Upgrading = delete ~/.local/kitty.app and re-run setup.sh.
+if ! [[ -x "$HOME/.local/kitty.app/bin/kitty" ]]; then
+  curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin launch=n
+fi
+ln -sfn "$HOME/.local/kitty.app/bin/kitty" "$HOME/.local/bin/kitty"
+ln -sfn "$HOME/.local/kitty.app/bin/kitten" "$HOME/.local/bin/kitten"
+# Desktop integration per https://sw.kovidgoyal.net/kitty/binary/ — patched
+# copies into ~/.local/share/applications are runtime state, not stowed.
+mkdir -p "$HOME/.local/share/applications"
+cp "$HOME/.local/kitty.app/share/applications/kitty.desktop" "$HOME/.local/share/applications/"
+cp "$HOME/.local/kitty.app/share/applications/kitty-open.desktop" "$HOME/.local/share/applications/" 2>/dev/null || true
+sed -i "s|Icon=kitty|Icon=$HOME/.local/kitty.app/share/icons/hicolor/256x256/apps/kitty.png|g; s|Exec=kitty|Exec=$HOME/.local/bin/kitty|g" "$HOME/.local/share/applications/kitty"*.desktop
+
 # Antigravity CLI. Google does not publish the standalone `agy` CLI through
 # its APT repository; the official installer is the supported CLI channel.
 # Stage it under a temporary HOME so its shell-profile setup cannot modify
