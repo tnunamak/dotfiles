@@ -34,6 +34,13 @@ Template:
 
 <!-- newest first; append above this comment is fine, or just add to the bottom -->
 
+### 2026-07-23 — Pramana PNG-cancellation gate (ds version not checked)
+- **Command(s):** `ds tldr`, then `ds task quick "Make Desktop PNG normalization bounded and AbortSignal-cancellable"` in an isolated Pramana worktree.
+- **Worked / didn't:** `tldr` gave the intended bounded-hotfix workflow. Task creation failed its automatic scan with `ensure repo: database is locked (5) (SQLITE_BUSY); try running DevSpecs from one focused project root or pass --path <repo-dir> to narrow the scan`, yet still created an unignored `devspecs/` directory in the otherwise clean worktree. I used direct source/test inspection instead and removed the generated state before commit.
+- **vs. doing it by hand:** Cost effort for this focused reliability fix; `rg`, source reads, and the reviewer’s exact counterexample were sufficient and more trustworthy after the degraded scan.
+- **Would use again here?:** only-if the scan lock is repaired or task state is clearly labeled incomplete and kept outside the worktree.
+- **Maintainer-facing note:** A SQLite lock should either retry with a backoff or fail without creating source-tree artifacts. If partial task state is retained, report its exact path and degraded-trust status explicitly; the current “auto-index skipped” wording plus an unignored directory is easy to miss and leaves a dirty tree.
+
 ### 2026-06-15 — orient in pdpp (ds v1.0.1): map / find / context as a grep alternative
 - **Command(s):** `ds version`, `ds map`, `ds find "grant-scoped bearer token limits every result"`, `ds context e5439fbb1` — run in `~/code/pdpp` (already `ds init`'d). Compared against `rg -l` for the same question.
 - **Worked / didn't:**
@@ -518,3 +525,9 @@ This is Tim reading `ds map` + `ds find` output cold, as a human. The friction i
 - **Command(s):** `ds tldr`, then a three-slice `ds task "implement Data Gateway red-team F06 legacy payee migration gate" --slice ...` from the isolated PR-head worktree.
 - **Worked / didn't:** `tldr` described a useful migration-oriented workflow, but task creation reported `database is locked (5) (SQLITE_BUSY)`, emitted no task ID/path or safe recovery command, and hung until interrupted. It still left an unignored, complete-looking `devspecs/` tree whose receipts could not be trusted after the failed scan.
 - **Maintainer-facing note:** fail promptly and before writing task artifacts on index contention; if any receipt survives, print its exact path and whether it is partial, and keep it outside or ignored by implementation worktrees.
+
+2026-07-23 — PDPP release-matrix replay hardening lane (ds v1.1.x)
+
+- **Command(s):** `ds tldr`, then a three-slice `ds task "harden CLI/read-core release-matrix deterministic replay on current baseline" --slice ...`.
+- **Worked / didn't:** `tldr` gave a useful bounded-loop outline and task creation completed after indexing, but emitted only scan progress—not the durable task ID/path. It left an unignored `devspecs/` tree in the implementation worktree, so the generated planning artifacts could not remain while producing a clean release commit.
+- **Maintainer-facing note:** print the created task ID/path after successful indexing and keep generated task state outside or ignored by the target worktree.
