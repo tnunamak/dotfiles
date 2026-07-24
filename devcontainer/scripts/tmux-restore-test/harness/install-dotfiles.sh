@@ -105,6 +105,11 @@ if [[ -f "$ATTACH_SCRIPT_SRC" ]]; then
   echo "[install] installed tmux-local-attach-main from $ATTACH_SCRIPT_SRC"
 fi
 
+# The post-restore hook records deferred agents and first-client attendance
+# consumes that inventory through this lease-aware CLI.
+cp "$DOTFILES/bin/.local/bin/tmux-agent-resume" "$HOME/.local/bin/tmux-agent-resume"
+chmod +x "$HOME/.local/bin/tmux-agent-resume"
+
 # --- The user's personal tmux-assistant-resurrect plugin ---
 # Lives under tmux/.config/tmux/plugins/tmux-assistant-resurrect/ in dotfiles.
 # It's gitignored at runtime via plugins/, but for the test we want it present.

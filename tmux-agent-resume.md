@@ -1,5 +1,17 @@
 # tmux agent resume leases
 
+## Attended full-fidelity boot restore
+
+A cold boot restores layout and records every valid sidecar entry as deferred;
+it starts no agents while no human terminal is attached. The post-restore hook
+also writes a one-shot boot marker. On the first `client-attached` event, the
+marker grants every entry an automatic `--allow-headless --owner boot-restore`
+lease and runs `apply --execute-auto`. This includes panes in unattached worker
+sessions: the sidecar is the fidelity source of truth.
+
+The marker is retained if grant/apply fails, so a later human attachment can
+retry. On success it becomes an attended receipt and cannot replay twice.
+
 ## Boundary
 
 `tmux-resurrect` remains the layout-recovery mechanism. It recreates panes and

@@ -11,6 +11,7 @@ RESURRECT_DIR="${TMUX_AGENT_RESUME_RESURRECT_DIR:-${HOME}/.tmux/resurrect}"
 SIDECAR_FILE="${TMUX_AGENT_RESUME_SIDECAR_FILE:-${RESURRECT_DIR}/assistant-sessions.json}"
 STATE_DIR="${TMUX_AGENT_RESUME_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/tmux-agent-resume}"
 STATE_FILE="${TMUX_AGENT_RESUME_STATE_FILE:-${STATE_DIR}/state.json}"
+BOOT_RESTORE_FILE="${STATE_DIR}/boot-restore-pending.json"
 TMUX_BIN="${TMUX_AGENT_RESUME_TMUX:-tmux}"
 DEFAULT_TTL=900
 MAX_TTL=3600
@@ -21,10 +22,14 @@ Usage: tmux-agent-resume <command> [options]
 
 Commands:
   record-deferred          Record every saved entry as deferred; runs after layout restore.
+  mark-boot-restore        Mark the just-recorded sidecar for one attended replay.
+  attend-boot-restore      On the first attached client, grant and apply all marked entries.
   status --json            Inspect saved entries, leases, panes, and attachment gates.
   plan --json              Print the deterministic, non-executing recovery plan.
   grant SELECTOR --auto [--ttl SECONDS] [--allow-headless --owner NAME]
                            Create a short-lived automatic-resume lease only.
+  grant-all --auto [--ttl SECONDS] [--allow-headless --owner NAME]
+                           Create automatic leases for every recorded entry.
   resume SELECTOR [--allow-headless --owner NAME]
                            Explicitly resume one selected entry now.
   apply --execute-auto     Resume only currently eligible automatic leases.
@@ -135,6 +140,55 @@ record_deferred() {
   write_state "$merged"
   unlock_state
   jq -cn --argjson entries "$source" '{recorded: ($entries | length), mode: "deferred"}'
+}
+
+mark_boot_restore() {
+  local source tmp
+  source="$(source_entries)"
+  mkdir -p "$STATE_DIR"
+  tmp="$(mktemp "${BOOT_RESTORE_FILE}.new.XXXXXX")"
+  jq -cn --argjson entries "$source" --arg marked_at "$(now_iso)" '
+    {version: 1, marked_at: $marked_at, entries: $entries}
+  ' >"$tmp"
+  mv "$tmp" "$BOOT_RESTORE_FILE"
+  jq -cn --argjson entries "$source" '{marked: ($entries | length), mode: "awaiting-first-client"}'
+}
+
+grant_entries_auto() {
+  local entries="$1" ttl="$2" allow_headless="$3" owner="$4" entry id granted=()
+  record_deferred >/dev/null
+  while IFS= read -r entry; do
+    id="$(jq -r '.id' <<<"$entry")"
+    put_lease "$id" explicit-auto "$ttl" "$allow_headless" "$owner" >/dev/null
+    granted+=("$id")
+  done < <(jq -c '.[]' <<<"$entries")
+  jq -cn '{granted: $ARGS.positional}' --args "${granted[@]}"
+}
+
+grant_all_auto() {
+  grant_entries_auto "$(source_entries)" "$1" "$2" "$3"
+}
+
+attend_boot_restore() {
+  local marker_lock marker claimed grants applied
+  mkdir -p "$STATE_DIR"
+  marker_lock="${BOOT_RESTORE_FILE}.lock"
+  exec {BOOT_RESTORE_LOCK_FD}>"$marker_lock"
+  flock -n "$BOOT_RESTORE_LOCK_FD" || exit 0
+  [[ -f "$BOOT_RESTORE_FILE" ]] || exit 0
+
+  # Keep the marker until both operations succeed. A crash or transient tmux
+  # error leaves it pending for a later human attach; a successful run renames
+  # it to an audit receipt, making the trigger exactly-once per restore.
+  marker="$(cat "$BOOT_RESTORE_FILE")"
+  jq -e '.version == 1 and (.entries | type == "array")' <<<"$marker" >/dev/null \
+    || die "invalid boot restore marker: $BOOT_RESTORE_FILE"
+  grants="$(grant_entries_auto "$(jq -c '.entries' <<<"$marker")" "$DEFAULT_TTL" true boot-restore)"
+  applied="$("$0" apply --execute-auto)"
+  claimed="${BOOT_RESTORE_FILE%.json}.attended-$(date -u +%Y%m%dT%H%M%SZ).json"
+  mv "$BOOT_RESTORE_FILE" "$claimed"
+  jq -cn --argjson grants "$grants" --argjson applied "$applied" \
+    '{mode: "attended-boot-restore", grants: $grants, applied: $applied}'
 }
 
 live_tmux_state() {
@@ -419,6 +473,19 @@ case "$command" in
     entry="$(select_entry "$selector")"
     lease="$(put_lease "$(jq -r '.id' <<<"$entry")" explicit-auto "$TTL" "$ALLOW_HEADLESS" "$OWNER")"
     jq -cn --argjson lease "$lease" '{granted: $lease}'
+    ;;
+  grant-all)
+    [[ "${2:-}" == --auto ]] || die 'grant-all requires --auto'
+    parse_lease_options "${@:3}"
+    grant_all_auto "$TTL" "$ALLOW_HEADLESS" "$OWNER"
+    ;;
+  mark-boot-restore)
+    [[ $# -eq 1 ]] || die 'mark-boot-restore takes no options'
+    mark_boot_restore
+    ;;
+  attend-boot-restore)
+    [[ $# -eq 1 ]] || die 'attend-boot-restore takes no options'
+    attend_boot_restore
     ;;
   resume)
     selector="${2:-}"; [[ -n "$selector" ]] || die 'usage: resume SELECTOR [options]'

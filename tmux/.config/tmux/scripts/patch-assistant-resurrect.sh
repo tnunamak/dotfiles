@@ -30,6 +30,7 @@ log() {
 if [[ ! -f "$ASSISTANT_SAVE" ]]; then
   # Plugin not installed yet (first-boot, fresh setup). Nothing to patch.
   log "no plugin file at $ASSISTANT_SAVE — skipping (first run before TPM)"
+  log "ran, 0 applied"
   exit 0
 fi
 
@@ -260,9 +261,4 @@ if [[ -f "$ASSISTANT_SAVE" ]] &&
   fi
 fi
 
-if (( applied == 0 )); then
-  # Nothing to do; all patches already in place. Don't spam the log.
-  exit 0
-fi
-
-log "patches applied this run: $applied"
+log "ran, $applied applied"

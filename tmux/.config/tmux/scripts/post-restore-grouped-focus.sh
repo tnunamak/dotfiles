@@ -79,4 +79,5 @@ done
 # exposes status/plan for an explicit later decision.
 if [[ -x "$RESUME_CLI" ]]; then
   "$RESUME_CLI" record-deferred >>"${RESURRECT_DIR}/agent-resume.log" 2>&1 || true
+  "$RESUME_CLI" mark-boot-restore >>"${RESURRECT_DIR}/agent-resume.log" 2>&1 || true
 fi

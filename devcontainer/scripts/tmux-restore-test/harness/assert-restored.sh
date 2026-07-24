@@ -23,6 +23,8 @@ CHECK_CAPTURE_SKIP="${CHECK_CAPTURE_SKIP:-0}"
 CHECK_DOUBLE_SAVE="${CHECK_DOUBLE_SAVE:-0}"
 CHECK_KEEP_LAST="${CHECK_KEEP_LAST:-0}"
 CHECK_EMPTY_LAST_FALLBACK="${CHECK_EMPTY_LAST_FALLBACK:-0}"
+CHECK_ZERO_CLIENT="${CHECK_ZERO_CLIENT:-0}"
+CHECK_ATTENDED_RESTORE="${CHECK_ATTENDED_RESTORE:-0}"
 RESURRECT_DIR="$HOME/.tmux/resurrect"
 PASS=0
 FAIL=0
@@ -158,7 +160,45 @@ if (( EXPECTED_ASSISTANTS > 0 )); then
       fail "assistant-restore log has no recognizable outcome"
     fi
   else
-    fail "assistant-restore.log missing"
+    # Attended restore deliberately defers agents until a human client attaches.
+    # The sidecar and canonical pane checks above prove the inventory is ready;
+    # require the lease boundary to have recorded that same inventory rather
+    # than treating absence of the retired third-party replay log as a failure.
+    resume_status="$($HOME/.local/bin/tmux-agent-resume status --json 2>/dev/null || true)"
+    if jq -e --argjson expected "$EXPECTED_ASSISTANTS" '.entries | length >= $expected' <<<"$resume_status" >/dev/null; then
+      pass "assistant inventory deferred for attended replay"
+    else
+      fail "assistant replay log missing and deferred inventory unavailable: $resume_status"
+    fi
+  fi
+fi
+
+# --- Check 6b (optional): true cold boot with no tmux client attached ---
+if (( CHECK_ZERO_CLIENT )); then
+  SUMMARY="$RESURRECT_DIR/cold-boot-zero-client-summary"
+  if [[ ! -f "$SUMMARY" ]]; then
+    fail "cold-boot inert-state summary missing"
+  elif grep -qx 'clients=0' "$SUMMARY" && grep -qx 'pending_marker=yes' "$SUMMARY" && grep -qx 'selected_resume_lines=0' "$SUMMARY"; then
+    pass "zero-client cold boot stayed inert with a pending attended marker"
+  else
+    fail "cold boot was not inert before first attach: $(tr "\n" " " < "$SUMMARY")"
+  fi
+fi
+
+if (( CHECK_ATTENDED_RESTORE )); then
+  state="$HOME/.local/state/tmux-agent-resume"
+  if [[ -f "$state/boot-restore-pending.json" ]]; then
+    fail "first human attach did not consume boot restore marker"
+  elif find "$state" -maxdepth 1 -name 'boot-restore-pending.attended-*.json' | grep -q .; then
+    pass "first human attach wrote an attended restore receipt"
+  else
+    fail "attended restore receipt missing"
+  fi
+  status="$($HOME/.local/bin/tmux-agent-resume status --json 2>/dev/null || true)"
+  if jq -e '.entries | length == 3 and all(.[]; .lease.owner == "boot-restore" and .lease.allow_headless == true and .lease.consumed_at != null)' <<<"$status" >/dev/null; then
+    pass "first attach bulk-granted and consumed all sidecar entries exactly once"
+  else
+    fail "attended restore leases were not fully consumed: $status"
   fi
 fi
 

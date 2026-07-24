@@ -210,4 +210,21 @@ plan="$($CLI plan --json)"
 assert_json '.entries[] | select(.pane == "main:1.0") | .state == "eligible" and .lease.allow_headless == true and .lease.owner == "waspflow"' <<<"$plan"
 assert_json '.mode == "report-only" and (.candidates | length == 1) and .candidates[0].pane == "main:0.0"' <<<"$($CLI orphans --json)"
 
+# Cold boot stays inert until the first human client attaches. That attendance
+# consumes a one-shot marker and uses headless boot-restore leases for every
+# sidecar entry, including worker sessions without their own client.
+$CLI record-deferred >/dev/null
+$CLI mark-boot-restore >/dev/null
+[[ -f "${HOME_DIR}/.local/state/tmux-agent-resume/boot-restore-pending.json" ]] || fail 'boot restore marker was not written'
+[[ "$(wc -l <"$AGENT_LOG")" == 2 ]] || fail 'marking boot restore launched an agent'
+attach_client
+attended="$($CLI attend-boot-restore)"
+assert_json '.mode == "attended-boot-restore" and (.grants.granted | length == 3) and (.applied.applied | length == 2)' <<<"$attended"
+wait_for_file_lines "$AGENT_LOG" 4
+wait_for_file_lines "$MCP_LOG" 4
+[[ ! -f "${HOME_DIR}/.local/state/tmux-agent-resume/boot-restore-pending.json" ]] || fail 'attended restore marker was not consumed'
+second_attended="$($CLI attend-boot-restore)"
+[[ -z "$second_attended" ]] || fail 'attended restore triggered more than once'
+[[ "$(wc -l <"$AGENT_LOG")" == 4 && "$(wc -l <"$MCP_LOG")" == 4 ]] || fail 'attended restore dispatched more than once'
+
 printf 'PASS: tmux agent resume leases use deferred-by-default recovery on isolated socket %s\n' "$SOCKET"

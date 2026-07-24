@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Wraps tmux-assistant-resurrect's save script with two safety guards:
 #
-# 1. Never-shrink: if the new save has 0 sessions but the previous save had
-#    >0, refuse to overwrite. This defends against the post-crash scenario
-#    where all assistant processes are gone and the save would wipe the
-#    record of what was running.
+# 1. Cliff guard: refuse a zero save or a sudden >=80% drop from the previous
+#    sidecar. This defends against a partially restored boot clobbering a
+#    complete assistant inventory while still allowing gradual real shrinkage.
 #
 # 2. Rotate a sidecar backup alongside each tmux-resurrect save — so if a
 #    bad save slips through (e.g. a legit "no assistants running" moment
@@ -19,6 +18,7 @@ OUTPUT_FILE="${RESURRECT_DIR}/assistant-sessions.json"
 BACKUP_DIR="${RESURRECT_DIR}/backups"
 LOG_FILE="${RESURRECT_DIR}/assistant-save.log"
 UPSTREAM_SCRIPT="${HOME}/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
+CLIFF_THRESHOLD_PCT=20
 
 log() {
   local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [guard] $*"
@@ -55,14 +55,15 @@ if [[ -f "$OUTPUT_FILE" ]]; then
   new_count=$(jq -r '.sessions | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
 fi
 
-# Guard: refuse to overwrite >0 with 0. This is the dominant failure mode:
-# after a crash/reboot, assistant processes are gone, tmux-resurrect saves
-# the broken state, and the sidecar JSON gets overwritten with []. The
-# post-save-backup.sh layer handles the tmux save; we do the same for JSON.
-if (( old_count > 0 && new_count == 0 )); then
-  log "REFUSING shrink from $old_count to 0 sessions — restoring snapshot"
+# Guard: reject sudden cliffs, including the original populated-to-zero case.
+# Mirror post-save-backup.sh: a new sidecar below 20% of the previous count is
+# not trusted, but ordinary decreases (for example 50 -> 40) remain valid.
+if (( old_count > 0 && new_count * 100 < old_count * CLIFF_THRESHOLD_PCT )); then
+  log "CLIFF GUARD: REFUSING shrink from $old_count to $new_count sessions (below ${CLIFF_THRESHOLD_PCT}% of previous) — restoring snapshot"
   if [[ -s "$snapshot" ]]; then
     mv "$snapshot" "$OUTPUT_FILE"
+  else
+    log "CLIFF GUARD ERROR: snapshot missing; cannot restore previous sidecar"
   fi
 else
   rm -f "$snapshot"
@@ -91,7 +92,7 @@ if (( new_count > 0 )) || (( old_count > 0 && new_count == 0 )); then
   fi
 
   # Keep only the last 10 timestamped backups
-  ls -t "${BACKUP_DIR}"/assistant-sessions-2*.json 2>/dev/null | tail -n +11 | xargs -r rm -f
+  ls -t "${BACKUP_DIR}"/assistant-sessions-2*.json 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 fi
 
 exit "$rc"

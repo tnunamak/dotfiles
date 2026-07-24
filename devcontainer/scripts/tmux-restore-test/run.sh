@@ -157,6 +157,8 @@ CHECK_CAPTURE_SKIP=0
 CHECK_DOUBLE_SAVE=0
 CHECK_KEEP_LAST=0
 CHECK_EMPTY_LAST_FALLBACK=0
+CHECK_ZERO_CLIENT=0
+CHECK_ATTENDED_RESTORE=0
 case "$SCENARIO" in
   pane-capture-skip)
     # Validates Patch 3: assistant panes are skipped when tmux-resurrect captures
@@ -250,6 +252,14 @@ case "$SCENARIO" in
     # restore-time lookup of 'main-N' fails, yielding "restored 0 of N".
     SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2)
     EXPECTED_ASSISTANTS=3 ;;
+  cold-boot-zero-client)
+    # Regression for AR-Patch7: no tmux client is attached anywhere during
+    # the restore. The server-wide fallback must wait only once, then replay
+    # all assistants rather than aborting on "no current client".
+    SCENARIO_VARS+=(-e SAVES_BEFORE=2 -e DELETE_LIVE_LAST=0 -e LAUNCH_ASSISTANTS=3 -e GROUPED_CLONES=2)
+    CHECK_ZERO_CLIENT=1
+    CHECK_ATTENDED_RESTORE=1
+    EXPECTED_WINDOWS=5 ;;
   assistant-grouped-naming-unpatched)
     # Same as assistant-grouped-naming but with PATCH_PLUGIN=0 set in
     # INSTALL_VARS. Proves the bug exists in vanilla upstream — assertion
@@ -407,6 +417,41 @@ user_exec "$CONTAINER_NAME" systemctl --user start tmux.service tmux-restore.ser
 # Give tmux-restore.service time to run (it has internal waits)
 sleep 6
 
+if (( CHECK_ATTENDED_RESTORE )); then
+  echo ">>> cold-boot-zero-client: record inert state before first human attach"
+  user_exec "$CONTAINER_NAME" bash -lc '
+    set -euo pipefail
+    state="$HOME/.local/state/tmux-agent-resume"
+    selected_resume_lines=0
+    if [[ -f "$HOME/.tmux/resurrect/agent-resume.log" ]]; then
+      selected_resume_lines="$(grep -c " selected resume " "$HOME/.tmux/resurrect/agent-resume.log" || true)"
+    fi
+    {
+      printf "clients=%s\n" "$(tmux list-clients 2>/dev/null | wc -l)"
+      printf "pending_marker=%s\n" "$([[ -f "$state/boot-restore-pending.json" ]] && echo yes || echo no)"
+      printf "selected_resume_lines=%s\n" "$selected_resume_lines"
+    } > "$HOME/.tmux/resurrect/cold-boot-zero-client-summary"
+  '
+  echo ">>> cold-boot-zero-client: attach twice; only the first may consume the marker"
+  user_exec "$CONTAINER_NAME" bash -lc '
+    set -euo pipefail
+    for _ in 1 2; do
+      fifo="/tmp/cold-boot-attend-$RANDOM"
+      mkfifo "$fifo"
+      sleep 2 > "$fifo" & input_pid=$!
+      tmux -C attach-session -t =main < "$fifo" >/tmp/cold-boot-attend.log 2>&1 & client_pid=$!
+      for _ in $(seq 1 20); do
+        [[ -n "$(tmux list-clients -t =main 2>/dev/null || true)" ]] && break
+        sleep .1
+      done
+      kill "$client_pid" "$input_pid" 2>/dev/null || true
+      wait "$client_pid" "$input_pid" 2>/dev/null || true
+      rm -f "$fifo"
+      sleep 1
+    done
+  '
+fi
+
 if (( DOUBLE_CRASH )); then
   echo ""
   echo ">>> phase 2b: second populate (shrink to 1 window) + second crash"
@@ -475,6 +520,8 @@ ASSERT_VARS=(
   -e CHECK_DOUBLE_SAVE="$CHECK_DOUBLE_SAVE"
   -e CHECK_KEEP_LAST="$CHECK_KEEP_LAST"
   -e CHECK_EMPTY_LAST_FALLBACK="$CHECK_EMPTY_LAST_FALLBACK"
+  -e CHECK_ZERO_CLIENT="$CHECK_ZERO_CLIENT"
+  -e CHECK_ATTENDED_RESTORE="$CHECK_ATTENDED_RESTORE"
 )
 user_exec "${ASSERT_VARS[@]}" "$CONTAINER_NAME" bash /opt/harness/assert-restored.sh
 exit_code=$?

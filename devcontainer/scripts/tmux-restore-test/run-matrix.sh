@@ -18,6 +18,7 @@ SCENARIOS=(
   prev-target-only-in-backups
   double-crash
   assistant-grouped-naming
+  cold-boot-zero-client
   assistant-grouped-naming-unpatched
   assistant-empty-group-race
   assistant-empty-group-race-unpatched
