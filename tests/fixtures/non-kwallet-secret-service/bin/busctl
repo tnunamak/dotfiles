@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-} ${2:-}" in
+  "--user call")
+    exit 0
+    ;;
+  "--user status")
+    printf '%s\n' \
+      'PID=4242' \
+      'Exe=/usr/bin/gnome-keyring-daemon' \
+      'CommandLine=/usr/bin/gnome-keyring-daemon --foreground --components=secrets'
+    ;;
+  *)
+    echo "fake busctl: unexpected arguments: $*" >&2
+    exit 64
+    ;;
+esac

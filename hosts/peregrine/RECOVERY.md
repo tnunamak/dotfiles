@@ -83,11 +83,17 @@ Current: OOM safety net (earlyoom `-M 6291456,4194304 -s 100,100`) +
 - SSH for `tnunamak` requires an authorized key and the account password via
   `AuthenticationMethods publickey,password`; PAM unlocks KWallet with
   `force_run`, and `.shell_config` completes the handoff before tmux attaches.
-- The per-user D-Bus activation override at
-  `~/.local/share/dbus-1/services/org.freedesktop.secrets.service` makes
-  KDE's `ksecretd` the standard Secret Service provider. This prevents
+- The `bin` Stow package makes KDE's `ksecretd` the standard Secret Service
+  provider in three complementary places: its per-user D-Bus activation
+  override, a systemd drop-in that retains GNOME Keyring's independent PKCS#11
+  component but removes its `secrets` component, and a user autostart override
+  that hides GNOME's separate Secret Service entry. The D-Bus override alone
+  cannot beat an already-running GNOME Keyring process. This prevents
   applications such as Infisical from silently creating a second credential
-  store in GNOME Keyring. The file is managed by the `bin` Stow package.
+  store in GNOME Keyring.
+- After `./setup.sh`, start a new user session (log out/in or reboot) before
+  testing. `secret-service-provider` performs a value-blind D-Bus Ping and
+  confirms that `/usr/bin/ksecretd` owns `org.freedesktop.secrets`.
 - Infisical uses its `auto` vault backend, so its login credential lives behind
   KWallet while its encrypted project-secret cache remains available offline.
   `auto` is not fail-closed: Infisical can recreate its encrypted file vault
