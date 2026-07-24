@@ -219,7 +219,7 @@ fi
 
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
@@ -230,7 +230,7 @@ echo "Stowing packages: ${PACKAGES[*]}"
 # - *-systemd facade packages: keep the user-unit parents real while linking
 #   only their dedicated units and drop-ins, which avoids claiming unrelated
 #   user units.
-NO_FOLD_PKGS=(bin nvim claude tmux playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
+NO_FOLD_PKGS=(bin nvim claude tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
 # The Bee units used to be stowed from the broad `systemd` package. They now
 # live behind dedicated facade packages, but Stow will not transfer ownership

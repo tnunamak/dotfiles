@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Give the Daisy watchdog one unambiguous tmux window after a layout restore.
+#
+# tmux-resurrect can restore duplicate windows named "daisy".  A target such
+# as main:daisy is ambiguous in that state, and Daisy's watchdog must not
+# guess.  This command chooses one stable owner, renames the other restored
+# copies without destroying them, and records ownership as a window option.
+# It is deliberately safe to run before every Daisy service start.
+set -euo pipefail
+
+TMUX_BIN="${DAISY_TMUX_BIN:-tmux}"
+TMUX_SOCKET="${DAISY_TMUX_SOCKET:-}"
+SESSION="${DAISY_PARENT_TMUX_SESSION:-main}"
+WINDOW_NAME="${DAISY_TMUX_WINDOW:-daisy}"
+OWNER_OPTION='@daisy_owner'
+
+tmux_args=("$TMUX_BIN")
+[[ -n "$TMUX_SOCKET" ]] && tmux_args+=(-L "$TMUX_SOCKET")
+tmux_call() { "${tmux_args[@]}" "$@"; }
+
+window_rows() {
+  tmux_call list-windows -t "=$SESSION" \
+    -F $'#{window_id}\t#{window_index}\t#{window_name}\t#{@daisy_owner}'
+}
+
+lowest_index_row() {
+  local row candidate_index selected='' selected_index=''
+  for row in "$@"; do
+    IFS=$'\t' read -r _ candidate_index _ _ <<<"$row"
+    if [[ -z "$selected" ]] || (( 10#$candidate_index < 10#$selected_index )); then
+      selected="$row"
+      selected_index="$candidate_index"
+    fi
+  done
+  printf '%s\n' "$selected"
+}
+
+if ! tmux_call has-session -t "=$SESSION" >/dev/null 2>&1; then
+  printf 'daisy-tmux-window-claim: tmux session %q is not ready\n' "$SESSION" >&2
+  exit 1
+fi
+
+rows_text="$(window_rows)" || exit 1
+if [[ -n "$rows_text" ]]; then
+  mapfile -t rows <<<"$rows_text"
+else
+  rows=()
+fi
+owner_rows=()
+name_rows=()
+for row in "${rows[@]}"; do
+  IFS=$'\t' read -r window_id _ name owner <<<"$row"
+  if [[ -n "$owner" && "$name" != "$WINDOW_NAME" ]]; then
+    tmux_call set-window-option -u -t "$window_id" "$OWNER_OPTION" || exit 1
+    owner=''
+  fi
+  [[ "$owner" == '1' && "$name" == "$WINDOW_NAME" ]] && owner_rows+=("$row")
+  [[ "$name" == "$WINDOW_NAME" ]] && name_rows+=("$row")
+done
+
+# Prefer an explicit owner only while it is still named Daisy.  A stale marker
+# on an unrelated renamed window is cleared above, never treated as authority
+# to rename that window.  If resurrect copied a valid marker too, choose its
+# lowest index; otherwise choose the lowest-index restored Daisy window.  The
+# index is part of the restored layout, so this is deterministic and does not
+# depend on list order or a transient current client.
+selected=''
+if (( ${#owner_rows[@]} > 0 )); then
+  selected="$(lowest_index_row "${owner_rows[@]}")"
+elif (( ${#name_rows[@]} > 0 )); then
+  selected="$(lowest_index_row "${name_rows[@]}")"
+else
+  # No Daisy window exists yet.  Daisy's own watchdog will create one; there
+  # is no ambiguous target to repair in this pass.  Any stale owner markers
+  # on unrelated windows were still cleared above.
+  exit 0
+fi
+
+IFS=$'\t' read -r selected_id selected_index _ _ <<<"$selected"
+
+# Preserve duplicate restored windows for inspection, but make the name Daisy
+# unique before Daisy's existing main:daisy-targeted watchdog executes.
+for row in "${rows[@]}"; do
+  IFS=$'\t' read -r window_id window_index window_name _ <<<"$row"
+  [[ "$window_id" == "$selected_id" ]] && continue
+  if [[ "$window_name" == "$WINDOW_NAME" ]]; then
+    tmux_call rename-window -t "$window_id" \
+      "${WINDOW_NAME}-restored-${window_index}-${window_id#@}" || exit 1
+  fi
+  tmux_call set-window-option -u -t "$window_id" "$OWNER_OPTION" || exit 1
+done
+
+tmux_call rename-window -t "$selected_id" "$WINDOW_NAME" || exit 1
+tmux_call set-window-option -t "$selected_id" "$OWNER_OPTION" 1 || exit 1
+
+final_rows_text="$(window_rows)" || exit 1
+if [[ -n "$final_rows_text" ]]; then
+  mapfile -t final_rows <<<"$final_rows_text"
+else
+  final_rows=()
+fi
+final_names=0
+final_owners=0
+for row in "${final_rows[@]}"; do
+  IFS=$'\t' read -r window_id _ window_name owner <<<"$row"
+  if [[ "$window_name" == "$WINDOW_NAME" ]]; then
+    ((final_names += 1))
+  fi
+  if [[ "$owner" == '1' && "$window_id" == "$selected_id" ]]; then
+    ((final_owners += 1))
+  fi
+done
+
+if (( final_names != 1 || final_owners != 1 )); then
+  printf 'daisy-tmux-window-claim: ownership verification failed (daisy=%d selected-owner=%d)\n' \
+    "$final_names" "$final_owners" >&2
+  exit 1
+fi
+
+printf 'daisy-tmux-window-claim: selected main:%s (window %s)\n' \
+  "$WINDOW_NAME" "$selected_index"
