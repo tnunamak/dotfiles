@@ -1,20 +1,55 @@
 #!/usr/bin/env bash
-# Save compositor geometry plus kitty/tmux identity. Remote control is used
-# first, because one kitty process may own several OS windows.
+# Save compositor geometry plus kitty/tmux identity. Kitty 0.48+ instances
+# also get a native session dump; the manifest remains the KWin/tmux join.
 set -euo pipefail
-state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="$state/manifest.json"
-mkdir -p "$state"; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 0
+state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="$state/manifest.json"; sessions="$state/kitty-sessions"
+mkdir -p "$state" "$sessions"; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 0
 mapfile -t windows < <(kdotool search --class kitty 2>/dev/null || true); ((${#windows[@]})) || exit 0
-screen="$(kscreen-doctor -o 2>/dev/null | awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{printf "{\"width\":%d,\"height\":%d}",w,h}')"
-clients="$(tmux -N list-clients -F '#{client_tty}|#{session_name}|#{window_index}|#{window_name}' 2>/dev/null || true)"
+screen="${DESKTOP_LAYOUT_SCREEN_JSON:-$(kscreen-doctor -o 2>/dev/null | awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{printf "{\"width\":%d,\"height\":%d}",w,h}')}"
+# Tests can inject an empty client map, avoiding any interaction with the
+# user's tmux server while still exercising the kitty/KWin persistence path.
+if [[ -v DESKTOP_LAYOUT_TMUX_CLIENTS ]]; then
+  clients="$DESKTOP_LAYOUT_TMUX_CLIENTS"
+else
+  clients="$(tmux -N list-clients -F '#{client_tty}|#{session_name}|#{window_index}|#{window_name}' 2>/dev/null || true)"
+fi
 rows="$(mktemp "$state/rows.XXXXXX")"; trap 'rm -f "$rows" "$manifest.tmp.$$"' EXIT
+kitty_supports_native_sessions() {
+  local pid="$1" executable version
+  executable="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+  [[ -x "$executable" ]] || return 1
+  version="$("$executable" --version 2>/dev/null | awk 'NR==1 {print $2}')"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+ ]] || return 1
+  awk -v version="$version" 'BEGIN { split(version, v, "."); exit !(v[1] > 0 || v[2] >= 48) }'
+}
+
+# save_as_session saves every OS window in a kitty process. The desktop fleet
+# intentionally uses one process per OS window, so decline a multi-window
+# instance rather than producing duplicate restores.
+dump_native_session() {
+  local pid="$1" socket="$2" kwin_id="$3" tree session tmp
+  kitty_supports_native_sessions "$pid" || return 0
+  [[ -S "$socket" ]] || return 0
+  tree="$(kitten @ --to "unix:$socket" ls 2>/dev/null)" || return 0
+  # On this Wayland build kitty reports platform_window_id as null. The earlier
+  # per-window lookup already proved the association; one root is the safety
+  # condition required because save_as_session serializes the whole process.
+  jq -e 'length == 1' <<< "$tree" >/dev/null || return 0
+  session="$sessions/kitty-$pid.kitty-session"; tmp="$session.tmp.$$"
+  rm -f "$tmp"
+  kitten @ --to "unix:$socket" action "save_as_session --save-only $tmp" >/dev/null 2>&1 || return 0
+  [[ -s "$tmp" ]] || return 0
+  mv -f "$tmp" "$session"
+  printf '%s' "$session"
+}
+
 for id in "${windows[@]}"; do
   pid="$(kdotool getwindowpid "$id" 2>/dev/null || true)"; desk="$(kdotool get_desktop_for_window "$id" 2>/dev/null || true)"
   geo="$(kdotool getwindowgeometry "$id" 2>/dev/null || true)"; title="$(kdotool getwindowname "$id" 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ && "$desk" =~ ^[0-9]+$ ]] || continue
   read -r x y w h < <(awk -F'[:, x]+' '/Position:/{x=$3;y=$4}/Geometry:/{w=$3;h=$4}END{print x,y,w,h}' <<< "$geo")
   [[ "$x" && "$y" && "$w" && "$h" ]] || continue
-  source=pid_tty; cwd="$HOME"; tty="$(ps -o tty= -p "$pid" 2>/dev/null|tr -d ' ')"; remote=""
+  source=pid_tty; cwd="$HOME"; tty="$(ps -o tty= -p "$pid" 2>/dev/null|tr -d ' ')"; remote=""; native_session=""
   if [[ -S "/tmp/kitty-$pid" ]]; then
     remote="$(kitten @ --to "unix:/tmp/kitty-$pid" ls 2>/dev/null | jq -ce --arg id "$id" --arg t "$title" '[.[]|select((.platform_window_id|tostring)==$id)] as $p|if ($p|length)==1 then $p[0] else [.[]|select(any(.tabs[]?;.is_active and .title==$t))] as $m|if ($m|length)==1 then $m[0] else empty end end' 2>/dev/null || true)"
   fi
@@ -22,6 +57,8 @@ for id in "${windows[@]}"; do
     source=kitty_remote; cwd="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].cwd // empty' <<< "$remote")"
     child="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].pid // empty' <<< "$remote")"
     [[ "$child" =~ ^[0-9]+$ ]] && tty="$(ps -o tty= -p "$child" 2>/dev/null|tr -d ' ')"
+    native_session="$(dump_native_session "$pid" "/tmp/kitty-$pid" "$id")"
+    [[ -n "$native_session" ]] && source=kitty_native_session
   fi
   info=""; [[ -n "$tty" && "$tty" != '?' ]] && info="$(awk -F'|' -v t="/dev/$tty" '$1==t{print;exit}' <<< "$clients")"
   # kitty's compositor process has no tty; its direct tmux-client child does.
@@ -32,10 +69,10 @@ for id in "${windows[@]}"; do
     if ((${#child_ttys[@]} == 1)); then info="$(awk -F'|' -v t="${child_ttys[0]}" '$1==t{print;exit}' <<< "$clients")"; fi
   fi
   session=""; index=""; name=""; [[ -n "$info" ]] && IFS='|' read -r _ session index name <<< "$info"
-  jq -cn --arg id "$id" --argjson d "$desk" --argjson x "$x" --argjson y "$y" --argjson w "$w" --argjson h "$h" --arg cwd "${cwd:-$HOME}" --arg s "$session" --arg i "$index" --arg n "$name" --arg source "$source" '{kwin_window_id:$id,virtual_desktop:$d,position:{x:$x,y:$y},size:{width:$w,height:$h},cwd:$cwd,is_tmux:($s!=""),tmux_session:($s|if .=="" then null else . end),tmux_window_index:($i|if .=="" then null else tonumber end),tmux_window_name:($n|if .=="" then null else . end),identity_source:$source}' >> "$rows"
+  jq -cn --arg id "$id" --argjson d "$desk" --argjson x "$x" --argjson y "$y" --argjson w "$w" --argjson h "$h" --arg cwd "${cwd:-$HOME}" --arg s "$session" --arg i "$index" --arg n "$name" --arg source "$source" --arg native_session "$native_session" '{kwin_window_id:$id,virtual_desktop:$d,position:{x:$x,y:$y},size:{width:$w,height:$h},cwd:$cwd,is_tmux:($s!=""),tmux_session:($s|if .=="" then null else . end),tmux_window_index:($i|if .=="" then null else tonumber end),tmux_window_name:($n|if .=="" then null else . end),native_session:(if $native_session=="" then null else $native_session end),identity_source:$source}' >> "$rows"
 done
 [[ -s "$rows" ]] || exit 0
 for n in 5 4 3 2; do [[ -f "$manifest.$((n-1))" ]] && mv -f "$manifest.$((n-1))" "$manifest.$n"; done
 [[ -f "$manifest" ]] && mv -f "$manifest" "$manifest.1"
-jq -s --argjson screen "$screen" '{version:1,captured_at:(now|todateiso8601),screen:$screen,windows:.}' "$rows" > "$manifest.tmp.$$"
+jq -s --argjson screen "$screen" '{version:2,captured_at:(now|todateiso8601),screen:$screen,windows:.}' "$rows" > "$manifest.tmp.$$"
 mv -f "$manifest.tmp.$$" "$manifest"
