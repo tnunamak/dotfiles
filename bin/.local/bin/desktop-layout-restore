@@ -1,10 +1,56 @@
 #!/usr/bin/env bash
 # Recreate only an absent kitty fleet; every placement uses a newly-created ID.
 set -euo pipefail
+LOG_TAG="desktop-layout-restore"
+GRAPHICAL_WAIT_SECONDS="${DESKTOP_LAYOUT_WAIT_SECONDS:-120}"
+log() { printf '%s: %s\n' "$LOG_TAG" "$*" >&2; }
+env_presence() {
+  printf 'WAYLAND_DISPLAY=%s DISPLAY=%s DBUS_SESSION_BUS_ADDRESS=%s XDG_RUNTIME_DIR=%s' \
+    "${WAYLAND_DISPLAY:+set}" "${DISPLAY:+set}" "${DBUS_SESSION_BUS_ADDRESS:+set}" "${XDG_RUNTIME_DIR:+set}"
+}
+on_error() {
+  local rc=$?
+  log "ERROR rc=$rc command=$BASH_COMMAND env: $(env_presence)"
+  exit "$rc"
+}
+trap on_error ERR
+
+# The user manager may receive the Plasma display environment after this unit
+# is ordered. Import only the variables this process needs; do not `eval` its
+# arbitrary environment dump.
+import_graphical_environment() {
+  local entry name value
+  while IFS= read -r entry; do
+    name="${entry%%=*}"; value="${entry#*=}"
+    case "$name" in
+      WAYLAND_DISPLAY|DISPLAY|DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR)
+        [[ "$entry" == *=* ]] && export "$name=$value"
+        ;;
+    esac
+  done < <(systemctl --user show-environment 2>/dev/null || true)
+}
+
+wait_for_graphical_session() {
+  local elapsed=0
+  while (( elapsed < GRAPHICAL_WAIT_SECONDS )); do
+    import_graphical_environment
+    if [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]] &&
+       kdotool getactivewindow >/dev/null 2>&1; then
+      log "graphical session ready after ${elapsed}s; $(env_presence)"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  log "ERROR graphical session not ready after ${GRAPHICAL_WAIT_SECONDS}s; $(env_presence)"
+  return 1
+}
+
 state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="${DESKTOP_LAYOUT_MANIFEST:-$state/manifest.json}"; dry=0; force=0
 created_set="${DESKTOP_LAYOUT_CREATED_SET:-}"; test_socket_dir="${DESKTOP_LAYOUT_TEST_SOCKET_DIR:-}"; spawn_number=0
 while (($#)); do case "$1" in --dry-run) dry=1;;--force) force=1;;--manifest) manifest="$2";shift;;*) echo 'usage: desktop-layout-restore [--dry-run] [--force] [--manifest FILE]' >&2;exit 2;;esac;shift;done
 [[ -s "$manifest" ]] || exit 0; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 1
+wait_for_graphical_session
 mapfile -t existing < <(kdotool search --class kitty 2>/dev/null || true); if (( !force && ${#existing[@]}>2 )); then echo "desktop-layout-restore: ${#existing[@]} kitty windows already exist; skipping";exit 0;fi
 screen(){ kscreen-doctor -o 2>/dev/null|awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{print w,h}'; }
 read -r cw ch < <(screen); sw="$(jq -r '.screen.width // 0' "$manifest")";sh="$(jq -r '.screen.height // 0' "$manifest")"; ((sw>0))||sw=$cw;((sh>0))||sh=$ch

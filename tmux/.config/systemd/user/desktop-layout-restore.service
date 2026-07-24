@@ -1,11 +1,14 @@
 [Unit]
 Description=Restore kitty/KWin desktop layout after tmux restore
 After=graphical-session.target tmux.service tmux-restore.service
-Wants=tmux.service tmux-restore.service
+Wants=graphical-session.target tmux.service tmux-restore.service
 
 [Service]
 Type=oneshot
 TimeoutStartSec=5min
+# kdotool is installed with Cargo. systemd --user does not inherit the login
+# shell's PATH, so keep this dependency explicit at the unit boundary.
+Environment="PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart=/home/tnunamak/.local/bin/desktop-layout-restore
 
 [Install]
