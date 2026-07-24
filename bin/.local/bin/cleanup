@@ -1201,10 +1201,14 @@ ensure_cache() {
         (
             exec 9>"$lock_file"
             if flock -n 9; then
+                run_log "PROBE start"
+                local _p0=$SECONDS
                 if check_cleanup > "$tmp_file"; then
                     mv -f "$tmp_file" "$CACHE_FILE"
+                    run_log "PROBE end (ok, $((SECONDS - _p0))s)"
                 else
                     rm -f "$tmp_file"
+                    run_log "PROBE end (failed, $((SECONDS - _p0))s)"
                 fi
             else
                 rm -f "$tmp_file"
@@ -1451,9 +1455,17 @@ confirm() {
 }
 
 # Wraps an action with confirmation + dry-run. Echoes the command in dry-run mode.
+# Timing log: one line per action/phase so a future runaway names its category
+# (2026-07-24: a --clean --include-tier-2 run pegged one core ~4h; the process
+# died with a reboot and left no evidence of WHICH step was spinning).
+RUN_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cleanup"
+run_log() { mkdir -p "$RUN_LOG_DIR"; printf '[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$*" >> "$RUN_LOG_DIR/run.log"; }
+
 maybe_run() {
     local label="$1" est_size="$2"
     shift 2
+    local _t0=$SECONDS
+    run_log "START $label"
     # Remaining args = the command to run (executed via eval to allow pipes/glob).
     local cmd="$*"
 
@@ -1463,15 +1475,20 @@ maybe_run() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         echo -e "  ${CYAN}[preview] would run${NC}"
+        run_log "END $label (preview, $((SECONDS - _t0))s)"
         return 0
     fi
 
     if ! confirm "  Proceed?"; then
         echo -e "  ${DIM}skipped${NC}"
+        run_log "END $label (declined, $((SECONDS - _t0))s)"
         return 1
     fi
 
-    eval "$cmd"
+    local _rc=0
+    eval "$cmd" || _rc=$?
+    run_log "END $label (rc=$_rc, $((SECONDS - _t0))s)"
+    return "$_rc"
 }
 
 # Read a value from the cache by type key (returns size bytes for tier items).
