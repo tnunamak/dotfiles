@@ -1663,6 +1663,17 @@ do_cleanup() {
             command -v npm >/dev/null || cmd="rm -rf ~/.npm"
             if maybe_run "npm cache" "$s" "$cmd"; then
                 freed=$((freed + s))
+            elif [[ "$DRY_RUN" != "true" ]]; then
+                # npm exits ENOTEMPTY when live npm/npx processes (e.g. agent
+                # MCP servers) write into _cacache mid-clean. If the cache
+                # still shrank substantially, count the partial clean as
+                # success instead of surfacing npm's scary stderr. A declined
+                # prompt leaves the size unchanged and takes neither branch.
+                local after; after=$(du -sb "$HOME/.npm/_cacache" 2>/dev/null | cut -f1); : "${after:=0}"
+                if (( after < s / 2 )); then
+                    echo -e "  ${DIM}npm raced live npm processes (ENOTEMPTY) but cache shrank $(human_size "$s") → $(human_size "$after"); counting as cleaned${NC}"
+                    freed=$((freed + s - after))
+                fi
             fi
         fi
     fi
