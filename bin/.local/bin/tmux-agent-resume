@@ -114,13 +114,21 @@ source_entries() {
 }
 
 record_deferred() {
-  local state source merged
+  local state source merged state_f source_f
   lock_state
   state="$(read_state)"
   source="$(source_entries)"
+  # Large fleets overflow argv via --argjson; pass through temp files
+  # instead (2026-07-24, first observed at 169 entries — this is why the
+  # boot-restore lease state silently stopped updating on real reboots).
+  state_f="$(mktemp)"; source_f="$(mktemp)"
+  trap 'rm -f "$state_f" "$source_f"' RETURN
+  printf '%s' "$state" > "$state_f"
+  printf '%s' "$source" > "$source_f"
   merged="$(jq -cn \
-    --argjson old "$state" --argjson source "$source" --arg timestamp "$(now_iso)" '
-      ($old.entries // []) as $old_entries
+    --slurpfile old "$state_f" --slurpfile source "$source_f" --arg timestamp "$(now_iso)" '
+      ($old[0]) as $old | ($source[0]) as $source
+      | ($old.entries // []) as $old_entries
       | ($source | map(.id)) as $source_ids
       | {
           version: 1,
@@ -139,19 +147,22 @@ record_deferred() {
     ')"
   write_state "$merged"
   unlock_state
-  jq -cn --argjson entries "$source" '{recorded: ($entries | length), mode: "deferred"}'
+  jq -cn --argjson count "$(jq -c length <<<"$source")" '{recorded: $count, mode: "deferred"}'
 }
 
 mark_boot_restore() {
-  local source tmp
+  local source tmp source_f
   source="$(source_entries)"
   mkdir -p "$STATE_DIR"
   tmp="$(mktemp "${BOOT_RESTORE_FILE}.new.XXXXXX")"
-  jq -cn --argjson entries "$source" --arg marked_at "$(now_iso)" '
-    {version: 1, marked_at: $marked_at, entries: $entries}
+  source_f="$(mktemp)"
+  trap 'rm -f "$source_f"' RETURN
+  printf '%s' "$source" > "$source_f"
+  jq -cn --slurpfile entries "$source_f" --arg marked_at "$(now_iso)" '
+    {version: 1, marked_at: $marked_at, entries: $entries[0]}
   ' >"$tmp"
   mv "$tmp" "$BOOT_RESTORE_FILE"
-  jq -cn --argjson entries "$source" '{marked: ($entries | length), mode: "awaiting-first-client"}'
+  jq -cn --argjson count "$(jq -c length <<<"$source")" '{marked: $count, mode: "awaiting-first-client"}'
 }
 
 grant_entries_auto() {
@@ -170,7 +181,7 @@ grant_all_auto() {
 }
 
 attend_boot_restore() {
-  local marker_lock marker claimed grants applied
+  local marker_lock marker claimed grants applied grants_f applied_f
   mkdir -p "$STATE_DIR"
   marker_lock="${BOOT_RESTORE_FILE}.lock"
   exec {BOOT_RESTORE_LOCK_FD}>"$marker_lock"
@@ -187,8 +198,11 @@ attend_boot_restore() {
   applied="$("$0" apply --execute-auto)"
   claimed="${BOOT_RESTORE_FILE%.json}.attended-$(date -u +%Y%m%dT%H%M%SZ).json"
   mv "$BOOT_RESTORE_FILE" "$claimed"
-  jq -cn --argjson grants "$grants" --argjson applied "$applied" \
-    '{mode: "attended-boot-restore", grants: $grants, applied: $applied}'
+  { grants_f="$(mktemp)"; applied_f="$(mktemp)"; trap 'rm -f "$grants_f" "$applied_f"' RETURN; }
+  printf '%s' "$grants" > "$grants_f"
+  printf '%s' "$applied" > "$applied_f"
+  jq -cn --slurpfile grants "$grants_f" --slurpfile applied "$applied_f" \
+    '{mode: "attended-boot-restore", grants: $grants[0], applied: $applied[0]}'
 }
 
 live_tmux_state() {
@@ -210,13 +224,21 @@ session_has_client() {
 }
 
 status_json() {
-  local state source live now
+  local state source live now state_f source_f live_f
   state="$(read_state)"
   source="$(source_entries)"
   live="$(live_tmux_state)"
   now="$(now_epoch)"
-  jq -cn --argjson stored "$state" --argjson source "$source" --argjson live "$live" --argjson now "$now" '
-    ($stored.entries // []) as $stored_entries
+  # Large fleets (150+ sidecar entries) overflow argv via --argjson; pass
+  # through temp files instead (2026-07-24, first observed at 169 entries).
+  state_f="$(mktemp)"; source_f="$(mktemp)"; live_f="$(mktemp)"
+  trap 'rm -f "$state_f" "$source_f" "$live_f"' RETURN
+  printf '%s' "$state" > "$state_f"
+  printf '%s' "$source" > "$source_f"
+  printf '%s' "$live" > "$live_f"
+  jq -cn --slurpfile stored "$state_f" --slurpfile source "$source_f" --slurpfile live "$live_f" --argjson now "$now" '
+    ($stored[0]) as $stored | ($source[0]) as $source | ($live[0]) as $live
+    | ($stored.entries // []) as $stored_entries
     | [ $source[] as $entry
         | ($stored_entries | map(select(.id == $entry.id)) | .[0]) as $stored
         | $entry + {
@@ -300,16 +322,19 @@ new_owner_token() {
 }
 
 put_lease() {
-  local id="$1" policy="$2" ttl="$3" allow_headless="$4" owner="$5" state now expires token updated
+  local id="$1" policy="$2" ttl="$3" allow_headless="$4" owner="$5" state now expires token updated state_f
   lock_state
   state="$(read_state)"
   now="$(now_epoch)"
   expires=$((now + ttl))
   token="$(new_owner_token)"
-  updated="$(jq -cn --argjson state "$state" --arg id "$id" --arg policy "$policy" \
+  state_f="$(mktemp)"
+  trap 'rm -f "$state_f"' RETURN
+  printf '%s' "$state" > "$state_f"
+  updated="$(jq -cn --slurpfile state_arr "$state_f" --arg id "$id" --arg policy "$policy" \
     --argjson issued_at "$now" --argjson expires_at "$expires" --argjson allow_headless "$allow_headless" \
     --arg owner "$owner" --arg owner_token "$token" '
-      $state | .entries |= map(
+      ($state_arr[0]) as $state | $state | .entries |= map(
         if .id == $id then .lease = {
           policy: $policy,
           issued_at: $issued_at,
