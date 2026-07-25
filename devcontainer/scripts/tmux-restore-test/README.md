@@ -34,6 +34,36 @@ bash run.sh --keep
 docker exec -it -u tester -e XDG_RUNTIME_DIR=/run/user/1000 tmux-restore-test zsh
 ```
 
+## Standalone tool tests (not crash-recovery scenarios)
+
+These don't use `run.sh`'s SIGKILL/reboot cycle — they exercise a specific tool
+at scale in the same container image.
+
+```bash
+bash agent-resume-scale-test.sh                # 200-entry sidecar, 30 windows
+bash agent-resume-scale-test.sh --entries 500   # push further
+bash agent-resume-scale-test.sh --keep          # leave container up for inspection
+```
+
+Guards `bin/.local/bin/tmux-agent-resume` against the 2026-07-24 regression:
+five `jq --argjson "$var"` calls built shell command-lines from full sidecar
+JSON, which worked silently below ~150 entries and hard-crashed
+("Argument list too long") above it — `attend-boot-restore`, the real
+boot-time trigger, was silently non-functional at production scale
+(169 entries) for an unknown period before anyone noticed. See CLAUDE.md
+"2026-07-24" section and commits `45a18ba` / `b287acf`.
+
+Known limitation: the test container has no `claude`/`codex` binaries, so
+`attend-boot-restore`'s launch step (`run_entry`/`resume_command`) fails
+fast for every entry rather than actually resuming an agent. The harness
+therefore only asserts that *some* dispatch happens and that the tool's own
+JSON/lease bookkeeping stays correct — not an exact per-window apply count.
+Under sustained load (200 near-simultaneous failed launches) the container's
+tmux server has been observed to die outright (not reproduced with a smaller
+`--entries`, not tied to any of the JSON-scale bug fixes — separate, unresolved,
+low priority since it does not reflect a real reboot's launch pattern, where
+most reboots restore far fewer live agents than saved sidecar entries).
+
 ## Validated scenarios
 
 | Scenario | What it tests | Why it discriminates fixed vs old |
