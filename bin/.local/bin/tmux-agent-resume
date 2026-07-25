@@ -122,7 +122,6 @@ record_deferred() {
   # instead (2026-07-24, first observed at 169 entries — this is why the
   # boot-restore lease state silently stopped updating on real reboots).
   state_f="$(mktemp)"; source_f="$(mktemp)"
-  trap 'rm -f "$state_f" "$source_f"' RETURN
   printf '%s' "$state" > "$state_f"
   printf '%s' "$source" > "$source_f"
   merged="$(jq -cn \
@@ -145,6 +144,7 @@ record_deferred() {
           )
         }
     ')"
+  rm -f "$state_f" "$source_f"
   write_state "$merged"
   unlock_state
   jq -cn --argjson count "$(jq -c length <<<"$source")" '{recorded: $count, mode: "deferred"}'
@@ -156,11 +156,11 @@ mark_boot_restore() {
   mkdir -p "$STATE_DIR"
   tmp="$(mktemp "${BOOT_RESTORE_FILE}.new.XXXXXX")"
   source_f="$(mktemp)"
-  trap 'rm -f "$source_f"' RETURN
   printf '%s' "$source" > "$source_f"
   jq -cn --slurpfile entries "$source_f" --arg marked_at "$(now_iso)" '
     {version: 1, marked_at: $marked_at, entries: $entries[0]}
   ' >"$tmp"
+  rm -f "$source_f"
   mv "$tmp" "$BOOT_RESTORE_FILE"
   jq -cn --argjson count "$(jq -c length <<<"$source")" '{marked: $count, mode: "awaiting-first-client"}'
 }
@@ -198,11 +198,12 @@ attend_boot_restore() {
   applied="$("$0" apply --execute-auto)"
   claimed="${BOOT_RESTORE_FILE%.json}.attended-$(date -u +%Y%m%dT%H%M%SZ).json"
   mv "$BOOT_RESTORE_FILE" "$claimed"
-  { grants_f="$(mktemp)"; applied_f="$(mktemp)"; trap 'rm -f "$grants_f" "$applied_f"' RETURN; }
+  grants_f="$(mktemp)"; applied_f="$(mktemp)"
   printf '%s' "$grants" > "$grants_f"
   printf '%s' "$applied" > "$applied_f"
   jq -cn --slurpfile grants "$grants_f" --slurpfile applied "$applied_f" \
     '{mode: "attended-boot-restore", grants: $grants[0], applied: $applied[0]}'
+  rm -f "$grants_f" "$applied_f"
 }
 
 live_tmux_state() {
@@ -232,7 +233,6 @@ status_json() {
   # Large fleets (150+ sidecar entries) overflow argv via --argjson; pass
   # through temp files instead (2026-07-24, first observed at 169 entries).
   state_f="$(mktemp)"; source_f="$(mktemp)"; live_f="$(mktemp)"
-  trap 'rm -f "$state_f" "$source_f" "$live_f"' RETURN
   printf '%s' "$state" > "$state_f"
   printf '%s' "$source" > "$source_f"
   printf '%s' "$live" > "$live_f"
@@ -281,6 +281,7 @@ status_json() {
         summary: ($entries | group_by(.state) | map({key: .[0].state, value: length}) | from_entries)
       }
   '
+  rm -f "$state_f" "$source_f" "$live_f"
 }
 
 plan_json() {
@@ -329,7 +330,6 @@ put_lease() {
   expires=$((now + ttl))
   token="$(new_owner_token)"
   state_f="$(mktemp)"
-  trap 'rm -f "$state_f"' RETURN
   printf '%s' "$state" > "$state_f"
   updated="$(jq -cn --slurpfile state_arr "$state_f" --arg id "$id" --arg policy "$policy" \
     --argjson issued_at "$now" --argjson expires_at "$expires" --argjson allow_headless "$allow_headless" \
@@ -346,6 +346,7 @@ put_lease() {
         } else . end
       )
     ')"
+  rm -f "$state_f"
   write_state "$updated"
   unlock_state
   jq -cn --arg id "$id" --arg policy "$policy" --argjson expires_at "$expires" \
