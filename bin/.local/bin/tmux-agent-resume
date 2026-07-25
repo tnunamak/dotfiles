@@ -167,13 +167,20 @@ mark_boot_restore() {
 
 grant_entries_auto() {
   local entries="$1" ttl="$2" allow_headless="$3" owner="$4" entry id granted=()
+  mkdir -p "$RESURRECT_DIR"
   record_deferred >/dev/null
   while IFS= read -r entry; do
     id="$(jq -r '.id' <<<"$entry")"
-    put_lease "$id" explicit-auto "$ttl" "$allow_headless" "$owner" >/dev/null
-    granted+=("$id")
+    # put_lease dies on an already-consumed, unexpired lease (replay guard,
+    # 2026-07-25) — expected on a retry batch that includes entries from a
+    # prior successful partial run. Isolate per-entry so one already-consumed
+    # id doesn't abort granting the rest of the batch (same bug class as the
+    # apply loop fix above).
+    if (put_lease "$id" explicit-auto "$ttl" "$allow_headless" "$owner") >/dev/null 2>>"${RESURRECT_DIR}/agent-resume-errors.log"; then
+      granted+=("$id")
+    fi
   done < <(jq -c '.[]' <<<"$entries")
-  jq -cn '{granted: $ARGS.positional}' --args "${granted[@]}"
+  jq -cn '{granted: $ARGS.positional}' --args "${granted[@]:-}"
 }
 
 grant_all_auto() {
@@ -181,7 +188,7 @@ grant_all_auto() {
 }
 
 attend_boot_restore() {
-  local marker_lock marker claimed grants applied grants_f applied_f
+  local marker_lock marker claimed grants applied grants_f applied_f result
   mkdir -p "$STATE_DIR"
   marker_lock="${BOOT_RESTORE_FILE}.lock"
   exec {BOOT_RESTORE_LOCK_FD}>"$marker_lock"
@@ -201,9 +208,11 @@ attend_boot_restore() {
   grants_f="$(mktemp)"; applied_f="$(mktemp)"
   printf '%s' "$grants" > "$grants_f"
   printf '%s' "$applied" > "$applied_f"
-  jq -cn --slurpfile grants "$grants_f" --slurpfile applied "$applied_f" \
-    '{mode: "attended-boot-restore", grants: $grants[0], applied: $applied[0]}'
+  result="$(jq -cn --slurpfile grants "$grants_f" --slurpfile applied "$applied_f" \
+    '{mode: "attended-boot-restore", grants: $grants[0], applied: $applied[0]}')" \
+    || { rm -f "$grants_f" "$applied_f"; die "attend_boot_restore: jq failed to build summary"; }
   rm -f "$grants_f" "$applied_f"
+  printf '%s' "$result"
 }
 
 live_tmux_state() {
@@ -225,7 +234,7 @@ session_has_client() {
 }
 
 status_json() {
-  local state source live now state_f source_f live_f
+  local state source live now state_f source_f live_f result
   state="$(read_state)"
   source="$(source_entries)"
   live="$(live_tmux_state)"
@@ -236,7 +245,21 @@ status_json() {
   printf '%s' "$state" > "$state_f"
   printf '%s' "$source" > "$source_f"
   printf '%s' "$live" > "$live_f"
-  jq -cn --slurpfile stored "$state_f" --slurpfile source "$source_f" --slurpfile live "$live_f" --argjson now "$now" '
+  # Explicitly capture jq's output and check its exit code. A bare jq
+  # statement as the second-to-last statement in a function, followed by
+  # `rm -f` (which always exits 0), has its failure MASKED when the
+  # function itself is invoked via command substitution ($(...)) — set -e
+  # does not reliably abort on a failing command inside a captured
+  # subshell in that position (independently verified 2026-07-25: a
+  # deliberately failing `jq -e` inside a function, called via
+  # result="$(f)", printed jq's error to stderr but the assignment still
+  # "succeeded" with the wrong/partial output, and the calling script
+  # continued as if nothing were wrong). Every caller of status_json uses
+  # exactly this pattern (status="$(status_json)"), so a malformed state
+  # file or unexpected data shape would previously report as "0 eligible
+  # entries" instead of failing loudly — the same silent-abandonment
+  # failure class as the apply-loop bug, but upstream of it.
+  result="$(jq -cn --slurpfile stored "$state_f" --slurpfile source "$source_f" --slurpfile live "$live_f" --argjson now "$now" '
     ($stored[0]) as $stored | ($source[0]) as $source | ($live[0]) as $live
     | ($stored.entries // []) as $stored_entries
     | [ $source[] as $entry
@@ -280,8 +303,9 @@ status_json() {
         entries: $entries,
         summary: ($entries | group_by(.state) | map({key: .[0].state, value: length}) | from_entries)
       }
-  '
+  ')" || { rm -f "$state_f" "$source_f" "$live_f"; die "status_json: jq failed to build entry state"; }
   rm -f "$state_f" "$source_f" "$live_f"
+  printf '%s' "$result"
 }
 
 plan_json() {
@@ -327,6 +351,23 @@ put_lease() {
   lock_state
   state="$(read_state)"
   now="$(now_epoch)"
+  # Refuse to overwrite an unexpired, already-consumed lease for this id.
+  # put_lease previously always overwrote `.lease` wholesale, erasing
+  # consumed_at — so a retry after a partial attend-boot-restore failure
+  # (dispatch succeeded, but the process died before renaming the boot
+  # marker) would re-grant and re-dispatch every already-resumed entry on
+  # the next client attach, with the "one-dispatch permit" guarantee
+  # providing zero actual protection (independently verified 2026-07-25:
+  # a fresh grant on a consumed entry silently cleared consumed_at). Once
+  # the lease expires (default 900s), a genuinely new grant is allowed —
+  # this only blocks the replay window, not legitimate future resumes.
+  if jq -e --arg id "$id" --argjson now "$now" '
+      .entries[] | select(.id == $id) | .lease
+      | (.consumed_at != null) and ((.expires_at | tonumber) > $now)
+    ' <<<"$state" >/dev/null 2>&1; then
+    unlock_state
+    die "refusing to re-grant already-consumed, unexpired lease for $id"
+  fi
   expires=$((now + ttl))
   token="$(new_owner_token)"
   state_f="$(mktemp)"
@@ -420,6 +461,13 @@ resume_command() {
   # word-splitting inert, never re-parsed as code).
   local -a args=()
   local token
+  # OPEN QUESTION (2026-07-25 audit, not fixed — no evidence either way):
+  # grok is the only tool whose cli_args are unconditionally dropped here.
+  # No comment or commit explains whether that's deliberate (e.g. grok's
+  # CLI rejects extra flags on resume) or an oversight from the original
+  # tool-list additions. If a saved grok session had meaningful cli_args,
+  # they are silently discarded on resume same as the newline-truncation
+  # bug fixed above, but for every grok entry, always.
   if [[ "$tool" != grok ]]; then
     set -f
     args=($cli_args)
