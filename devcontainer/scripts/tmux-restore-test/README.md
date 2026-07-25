@@ -40,8 +40,10 @@ These don't use `run.sh`'s SIGKILL/reboot cycle — they exercise a specific too
 at scale in the same container image.
 
 ```bash
-bash agent-resume-scale-test.sh                # 200-entry sidecar, 30 windows
-bash agent-resume-scale-test.sh --entries 500   # push further
+bash agent-resume-scale-test.sh --fixture       # RECOMMENDED: real crash-time
+                                                 # data, 169 entries — see below
+bash agent-resume-scale-test.sh                 # synthetic, 200-entry sidecar
+bash agent-resume-scale-test.sh --entries 500   # push synthetic scale further
 bash agent-resume-scale-test.sh --keep          # leave container up for inspection
 ```
 
@@ -52,6 +54,20 @@ JSON, which worked silently below ~150 entries and hard-crashed
 boot-time trigger, was silently non-functional at production scale
 (169 entries) for an unknown period before anyone noticed. See CLAUDE.md
 "2026-07-24" section and commits `45a18ba` / `b287acf`.
+
+**`--fixture` vs synthetic data — use `--fixture` unless you need to push past
+169 entries.** The synthetic generator (default) was the first attempt at this
+test and does NOT reliably reproduce the crash: at 200 entries / ~35KB it ran
+clean against the confirmed pre-fix code. Investigation found the trigger
+wasn't entry *count* alone but the size of individual fields (`cli_args` up to
+4.3KB per entry in the real capture) pushing the total argv past the kernel's
+`ARG_MAX`. `fixtures/agent-resume-real-169.json` is a scrubbed copy of the
+actual sidecar that crashed production — cwd/pane/pid/tool/session_id
+structure preserved, `cli_args` replaced with placeholder text AT THE SAME
+LENGTH as the real value (0 to 4,333 chars), no real paths, task content, or
+usernames. Confirmed by direct reproduction: this fixture crashes
+`jq: Argument list too long` at the same line against `tmux-agent-resume` as
+of commit `45a18ba~1`, and runs clean (16/16 assertions) against the fix.
 
 Known limitation: the test container has no `claude`/`codex` binaries, so
 `attend-boot-restore`'s launch step (`run_entry`/`resume_command`) fails

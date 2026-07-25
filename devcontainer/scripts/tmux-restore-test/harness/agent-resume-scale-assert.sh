@@ -13,6 +13,13 @@ export PATH="$HOME/.local/bin:$PATH"
 PASS=0
 FAIL=0
 
+# populate.sh writes the actual entry count here — authoritative over
+# $ENTRY_COUNT, since fixture mode (USE_REAL_FIXTURE=1) ignores the
+# caller's requested count and uses whatever the real capture had (169).
+if [ -f /tmp/agent-resume-scale-entry-count ]; then
+  ENTRY_COUNT="$(cat /tmp/agent-resume-scale-entry-count)"
+fi
+
 check() {
   local desc="$1" cmd="$2"
   if eval "$cmd"; then

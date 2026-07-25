@@ -16,6 +16,13 @@
 #   bash agent-resume-scale-test.sh                  # default: 200 entries / 30 windows
 #   bash agent-resume-scale-test.sh --entries 500
 #   bash agent-resume-scale-test.sh --keep            # leave container running after
+#   bash agent-resume-scale-test.sh --fixture         # use the real 169-entry
+#                                                      # capture that crashed
+#                                                      # production 2026-07-24
+#                                                      # instead of synthetic
+#                                                      # data (recommended —
+#                                                      # see harness/agent-
+#                                                      # resume-scale-populate.sh)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -24,12 +31,14 @@ CONTAINER_NAME="agent-resume-scale-test"
 ENTRY_COUNT=200
 WINDOW_COUNT=30
 KEEP=0
+USE_REAL_FIXTURE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --entries) ENTRY_COUNT="$2"; shift 2 ;;
     --windows) WINDOW_COUNT="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --fixture) USE_REAL_FIXTURE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -85,7 +94,7 @@ for _ in $(seq 1 30); do
 done
 
 echo ">>> populating $ENTRY_COUNT-entry sidecar + $WINDOW_COUNT tmux windows"
-user_exec -e ENTRY_COUNT="$ENTRY_COUNT" -e WINDOW_COUNT="$WINDOW_COUNT" \
+user_exec -e ENTRY_COUNT="$ENTRY_COUNT" -e WINDOW_COUNT="$WINDOW_COUNT" -e USE_REAL_FIXTURE="$USE_REAL_FIXTURE" \
   "$CONTAINER_NAME" bash /workspace/devcontainer/scripts/tmux-restore-test/harness/agent-resume-scale-populate.sh
 
 echo ">>> running assertions"
