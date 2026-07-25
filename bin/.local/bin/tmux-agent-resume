@@ -411,10 +411,19 @@ resume_command() {
 
   # The sidecar is data, not a shell program. Preserve plain captured tokens
   # without evaluating quotes, command substitutions, or glob patterns.
+  # `read -a` only reads one line — a saved cli_args containing a real
+  # newline (e.g. a multi-line prompt, a supported invocation shape) silently
+  # lost everything after the first \n, including any flags after it
+  # (2026-07-25 audit). Unquoted-with-set-f word-splits on ALL whitespace
+  # including newlines while keeping the same no-glob, no-resubstitution
+  # safety property (verified: a stored literal "$(...)" string survives
+  # word-splitting inert, never re-parsed as code).
   local -a args=()
   local token
   if [[ "$tool" != grok ]]; then
-    read -r -a args <<<"$cli_args"
+    set -f
+    args=($cli_args)
+    set +f
     if (( ${#args[@]} > 0 )) && [[ "${args[0]##*/}" == "$tool" ]]; then
       args=("${args[@]:1}")
     fi
@@ -530,18 +539,39 @@ case "$command" in
     ;;
   apply)
     [[ "${2:-}" == --execute-auto && $# -eq 2 ]] || die 'usage: apply --execute-auto'
+    mkdir -p "$RESURRECT_DIR"
     status="$(status_json)"
     applied=()
+    skipped=()
     while IFS= read -r entry; do
-      if consume_auto_lease "$(jq -r '.id' <<<"$entry")" \
+      id="$(jq -r '.id' <<<"$entry")"
+      if consume_auto_lease "$id" \
         "$(jq -r '.lease.owner_token' <<<"$entry")" \
         "$(jq -r '.lease.issued_at' <<<"$entry")" \
         "$(jq -r '.pane' <<<"$entry")"; then
-        run_entry "$entry"
-        applied+=("$(jq -r '.id' <<<"$entry")")
+        # The lease is already consumed above (fail-closed), so a run_entry
+        # failure here just means the dispatch itself didn't happen — it must
+        # not take down the rest of the batch. run_entry calls die() (exit 2)
+        # on routine, expected conditions (e.g. the pane already stopped
+        # being a shell), and under set -e that used to kill this whole loop,
+        # silently abandoning every remaining eligible entry (2026-07-25
+        # audit — found no evidence in agent-resume.log either way, since
+        # run_entry only logs on success; this could have been truncating
+        # every real recovery run silently since the lease system shipped).
+        # Isolate it in a subshell so one bad pane can't end the script.
+        if (run_entry "$entry") 2>>"${RESURRECT_DIR}/agent-resume-errors.log"; then
+          applied+=("$id")
+        else
+          skipped+=("$id")
+        fi
       fi
     done < <(jq -c '.entries[] | select(.state == "eligible" and .lease.policy == "explicit-auto")' <<<"$status")
-    jq -cn '{applied: $ARGS.positional}' --args "${applied[@]}"
+    applied_f="$(mktemp)"; skipped_f="$(mktemp)"
+    printf '%s\n' "${applied[@]:-}" | jq -Rn '[inputs | select(length > 0)]' > "$applied_f"
+    printf '%s\n' "${skipped[@]:-}" | jq -Rn '[inputs | select(length > 0)]' > "$skipped_f"
+    jq -cn --slurpfile applied "$applied_f" --slurpfile skipped "$skipped_f" \
+      '{applied: $applied[0], skipped: $skipped[0]}'
+    rm -f "$applied_f" "$skipped_f"
     ;;
   orphans)
     [[ "${2:-}" == --json && $# -eq 2 ]] || die 'usage: orphans --json'
