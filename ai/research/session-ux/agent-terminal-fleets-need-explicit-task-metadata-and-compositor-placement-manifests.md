@@ -109,3 +109,13 @@ Quote: "Hook-based Claude Code and Codex tracking"
 The durable pattern is to separate semantic task metadata from terminal/window mechanics. Claude Code and Codex now have first-party metadata surfaces; tmux has strong display and switching mechanics; kitty has internal terminal-layout serialization; KWin owns Wayland placement. A robust terminal-agent fleet should therefore store task labels/state in explicit sidecars keyed by agent/tmux identity, render/search those sidecars from tmux, and restore desktop layout through stable kitty/KWin identities rather than relying on process names like `claude`/`node` or raw Wayland app restore alone.
 
 The nearest prior-art shape is a hook-fed tmux dashboard or fzf popup. Generic tmux auto-renamers and cwd-based names help only at the repo level; they do not track live task intent. For full layout resume, the realistic near-term design is a manifest that combines kitty launch/session structure with KWin compositor placement, optionally adapting geometry to current outputs. Protocol-native Wayland session restore is improving but is not yet a complete answer for a terminal fleet with tmux windows and resumed AI-agent conversations.
+
+## Addendum 2026-07-24: xdg-session-management moved faster than the July-6 snapshot
+
+Protocol FINALIZED (merged 2026-03-23, wayland-protocols 1.48). Qt 6.10 ships
+client-side support; Chromium has an ozone/wayland implementation in review with a
+working demo (Electron/Discord inherit when it lands); Firefox still request-only
+(bug 1959841). KWin's shipping support (≤6.6) is the Plasma-6.4 draft protocol;
+final-protocol KWin impl in progress (MR !7475). Practical status unchanged for this
+box (kitty/Discord/Firefox still don't self-place → kdotool layer still required),
+but expect app-by-app retirement of the placement layer over ~6-18 months.

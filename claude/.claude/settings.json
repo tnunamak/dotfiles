@@ -11,7 +11,7 @@
     "pr": ""
   },
   "includeCoAuthoredBy": false,
-  "model": "fable",
+  "model": "opus[1m]",
   "enableAllProjectMcpServers": false,
   "hooks": {
     "SessionStart": [

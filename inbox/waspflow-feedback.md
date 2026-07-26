@@ -65,3 +65,7 @@ Same run, separate lane: `waspflow wait dg58_legacy_payee --reap` successfully a
 unexpected token ')'`. State and artifacts were correct, but the wrapper's post-success parse error made
 the background completion signal falsely red. It repeated on `dg58_outbox_fix` after a successful
 archive/worktree removal/reap, this time as `line 1598: syntax error near unexpected token ';;'`.
+
+## 2026-07-24 — reap blocked on missing runtime receipt (Claude session, pdpp-pg-volumes lane)
+Lane completed its work + report fine, but `waspflow reap` refused: "no current verified Codex runtime receipt (refresh=observed, match=unknown)". Status showed receipt_emitted=false, model fields all empty — the receipt was apparently never emitted rather than drifted, so the operator gets pointed at "inspect an observed drift" that doesn't exist. Worked around with --accept-runtime. Suggestion: distinguish "receipt never emitted" (spawn-time integration gap, probably warn-only) from "receipt mismatch" (real drift, block), and have the error name the actual condition.
+Addendum: accept-runtime then ALSO refused ("no observed runtime mismatch to accept") — so a never-emitted receipt is unreapable by both paths (reap wants a receipt or accepted drift; accept-runtime wants a drift to accept). Fell back to `close --status harvested` + manual kill-window. That deadlock needs an escape hatch.
