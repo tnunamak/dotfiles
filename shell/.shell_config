@@ -142,15 +142,58 @@ if command -v infisical >/dev/null 2>&1; then
   # terminal on 2026-07-23).
   _inf_timeout=timeout
   command -v "$_inf_timeout" >/dev/null 2>&1 || _inf_timeout=gtimeout
-  if command -v "$_inf_timeout" >/dev/null 2>&1 && _inf_secrets="$("$_inf_timeout" 5 infisical export \
-    --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
-    --env=dev --format=dotenv-export \
-    --domain=https://secrets.vivid.fish 2>/dev/null </dev/null)"; then
-    eval "$_inf_secrets"
-  elif [[ $- == *i* ]]; then
+  _inf_ok=0
+  if command -v "$_inf_timeout" >/dev/null 2>&1; then
+    # One immediate retry, no sleep: at boot, many shells start in the same
+    # ~1s window and can race the Secret Service backend
+    # (org.freedesktop.secrets/ksecretd) before it's ready, which crashes
+    # the export outright (SIGABRT seen 2026-07-26 — every shell in that
+    # window got zero secrets, silently, until each one's shell was later
+    # replaced e.g. via `exec zsh`).
+    #
+    # Root cause (confirmed 2026-07-27): the 2026-07-23 KWallet migration
+    # (e9878c8) made ksecretd — a Qt/Wayland GUI binary — the D-Bus
+    # activation target for org.freedesktop.secrets, replacing the headless
+    # gnome-keyring-daemon. Neither service file has systemd ordering, so
+    # the first `infisical export` of a cold boot can D-Bus-activate
+    # ksecretd before plasma-kwin_wayland is up; it aborts on
+    # `Failed to create wl_display` and dbus-daemon respawns it, repeating
+    # (observed 5x, ~3s) until the compositor wins the race. This is a known
+    # upstream KDE bug (kwallet-pam source cites BUG 509680): kwallet-pam's
+    # own `--pam-login` instance is designed to replace a prematurely
+    # D-Bus-activated one via `KDBusService::Replace`, but that recovery
+    # isn't instant, so shells that hit the ~3s crash window still get
+    # nothing. Switching back to gnome-keyring is not the fix — the KWallet
+    # migration was deliberate (see
+    # ai/research/self-hosting/kwallet-auto-unlocks-at-pam-desktop-login-not-an-ssh-key-login.md)
+    # and gnome-keyring has the identical password/PAM-unlock limitation, so
+    # it wouldn't restore headless SSH/TTY secret access either. Retrying
+    # client-side is the correct mitigation for a server-side crash-and-recover
+    # window we don't control.
+    #
+    # No fixed delay: the failure mode was a one-shot startup-order crash,
+    # not a timed recovery, and a wrong guess at "how long to wait" is worse
+    # than just trying again — the retry itself typically lands after
+    # ksecretd has already respawned from the first attempt's crash. This
+    # does not add latency in the common case (first attempt already
+    # succeeds almost always) and costs at most one more bounded 5s timeout
+    # in the failure case.
+    for _inf_attempt in 1 2; do
+      if _inf_secrets="$("$_inf_timeout" 5 infisical export \
+        --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
+        --env=dev --format=dotenv-export \
+        --domain=https://secrets.vivid.fish 2>/dev/null </dev/null)"; then
+        eval "$_inf_secrets"
+        _inf_ok=1
+        break
+      fi
+    done
+    unset _inf_attempt
+  fi
+  if (( ! _inf_ok )) && [[ $- == *i* ]]; then
     printf '%s\n' 'Infisical secrets unavailable. Run: infisical login --domain=https://secrets.vivid.fish'
   fi
-  unset _inf_secrets _inf_timeout
+  unset _inf_secrets _inf_timeout _inf_ok
 elif [[ $- == *i* ]]; then
   printf '%s\n' 'Infisical CLI not installed; managed shell secrets are unavailable.'
 fi
