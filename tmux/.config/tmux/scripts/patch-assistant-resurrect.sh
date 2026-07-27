@@ -20,6 +20,9 @@ RESURRECT_SAVE="$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
 SUBTREE_LIB="$HOME/.config/tmux/scripts/lib-assistant-subtree.sh"
 # The fork's save script still contains the old, leaky strip function (Patch 5
 # removes it). Same file 2a/2b patch.
+RESTORE_ASSISTANT="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/restore-assistant-sessions.sh"
+# Patch 8 bounds codex resume with a timeout so it can't hang the whole
+# restore (see below, near end of file).
 LOG="$HOME/.tmux/resurrect/patch-assistant-resurrect.log"
 
 log() {
@@ -258,6 +261,34 @@ if [[ -f "$ASSISTANT_SAVE" ]] &&
   else
     rm -f "${ASSISTANT_SAVE}.artmp"
     log "warning: patch 5 NOT applied (marker missing or bash -n failed) — file left untouched"
+  fi
+fi
+
+# Patch 8: bound `codex resume` with a timeout so it cannot hang the whole
+# restore. Codex's MCP OAuth-bootstrap path ignores startup_timeout_sec when
+# a server (e.g. pdpp) has saved credentials — a slow/unresponsive server at
+# resume time hangs Codex indefinitely (upstream: openai/codex#22072). On
+# 2026-07-26 this hit 5 panes simultaneously via the mass unattended resume
+# added by tmux-agent-resume's attend-boot-restore, each needing manual
+# SIGINT + `codex mcp logout pdpp` to recover. `timeout` alone is enough: it
+# does NOT log out of anything, so the normal (fast) case is unaffected — only
+# a genuinely hung resume gets killed and dropped to a shell prompt, at which
+# point the existing manual recovery (mcp logout + resume) still works.
+# Marker `# AR-Patch8` makes it idempotent across TPM updates.
+if [[ -f "$RESTORE_ASSISTANT" ]] &&
+   ! grep -qF 'AR-Patch8' "$RESTORE_ASSISTANT" &&
+   grep -qF 'resume_cmd="command codex resume ${safe_sid}"' "$RESTORE_ASSISTANT"; then
+  sed -e 's/resume_cmd="command codex\${safe_cli_args} resume \${safe_sid}"/resume_cmd="command timeout 45 codex${safe_cli_args} resume ${safe_sid}" # AR-Patch8/' \
+      -e 's/resume_cmd="command codex resume \${safe_sid}"/resume_cmd="command timeout 45 codex resume ${safe_sid}" # AR-Patch8/' \
+      "$RESTORE_ASSISTANT" >"${RESTORE_ASSISTANT}.artmp"
+  if grep -qF 'AR-Patch8' "${RESTORE_ASSISTANT}.artmp" && bash -n "${RESTORE_ASSISTANT}.artmp" 2>/dev/null; then
+    cat "${RESTORE_ASSISTANT}.artmp" >"$RESTORE_ASSISTANT"
+    rm -f "${RESTORE_ASSISTANT}.artmp"
+    log "applied patch 8: bounded codex resume with timeout 45"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 8 NOT applied (marker missing or bash -n failed) — file left untouched"
+    rm -f "${RESTORE_ASSISTANT}.artmp"
   fi
 fi
 
