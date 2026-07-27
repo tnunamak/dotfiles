@@ -5,7 +5,15 @@ set -euo pipefail
 state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="$state/manifest.json"; sessions="$state/kitty-sessions"
 mkdir -p "$state" "$sessions"; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 0
 mapfile -t windows < <(kdotool search --class kitty 2>/dev/null || true); ((${#windows[@]})) || exit 0
-screen="${DESKTOP_LAYOUT_SCREEN_JSON:-$(kscreen-doctor -o 2>/dev/null | awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{printf "{\"width\":%d,\"height\":%d}",w,h}')}"
+# kscreen-doctor is a Qt/X11 binary that can abort outright (exit 134,
+# DrKonqi "Service Crash" notification) rather than just failing cleanly when
+# invoked from a systemd unit whose display env isn't fully populated yet
+# (same root cause as the ksecretd boot-race — see shell/.shell_config).
+# `|| true` on the whole substitution keeps that non-fatal under
+# set -euo pipefail; a {0,0} fallback only affects restored-window position
+# scaling (cosmetic), never gates the manifest write, which is what matters.
+screen="${DESKTOP_LAYOUT_SCREEN_JSON:-$(kscreen-doctor -o 2>/dev/null | awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{printf "{\"width\":%d,\"height\":%d}",w,h}' || true)}"
+[[ -n "$screen" ]] || screen='{"width":0,"height":0}'
 # Tests can inject an empty client map, avoiding any interaction with the
 # user's tmux server while still exercising the kitty/KWin persistence path.
 if [[ -v DESKTOP_LAYOUT_TMUX_CLIENTS ]]; then
