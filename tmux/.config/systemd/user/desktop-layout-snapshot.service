@@ -4,4 +4,12 @@ After=graphical-session.target
 
 [Service]
 Type=oneshot
+# kdotool is installed with Cargo. systemd --user does not inherit the login
+# shell's PATH, so keep this dependency explicit at the unit boundary (same
+# fix as desktop-layout-restore.service — this unit was missing it, which
+# made every snapshot since setup a silent no-op: `command -v kdotool` failed
+# and the script's own guard exited 0 before doing anything, with no error
+# logged anywhere. Found 2026-07-28 while checking whether a crash-recovery
+# fix from the previous day actually held).
+Environment="PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart=/home/tnunamak/.local/bin/desktop-layout-snapshot
