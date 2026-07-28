@@ -1,201 +1,111 @@
 #!/usr/bin/env bash
-# Standalone test for Patch 8 (patch-assistant-resurrect.sh): bounds `codex
-# resume` with `timeout 45` so a hung OAuth-bootstrap (openai/codex#22072)
-# can't stall the whole boot-restore. Same Docker+systemd-as-PID-1 image as
-# run.sh (see README) — no SIGKILL/reboot cycle needed, this exercises the
-# real resume-dispatch code path from tmux-assistant-resurrect's
-# restore-assistant-sessions.sh directly against a codex stub that hangs
-# exactly like the real OAuth-bootstrap bug.
+# Regression test for retiring AR-Patch8.
 #
-# Proves, against the ACTUAL upstream dispatch logic (not a reimplementation):
-#   1. UNPATCHED: a hung `codex resume` blocks the caller indefinitely
-#      (bug reproduced — we cap the wait at 12s in the test to keep it fast,
-#      but assert it's STILL hung at that point, which is proof of an
-#      unbounded hang, not a slow-but-finite one).
-#   2. PATCHED (patch-assistant-resurrect.sh applied): the same hang returns
-#      control within timeout(45)'s bound, deterministically, every run.
-#
-# Usage:
-#   bash patch8-resume-timeout-test.sh
-#   bash patch8-resume-timeout-test.sh --keep
+# AR-Patch8 wrapped `codex resume` in `timeout 45`. That cannot time out only
+# OAuth bootstrap: a healthy Codex TUI is the same foreground process and is
+# expected to remain alive, so the wrapper killed every successful restore at
+# 45 seconds. This test runs the real patcher against isolated plugin fixtures
+# and proves:
+#   1. Both exact AR-Patch8 assignment forms are rolled back.
+#   2. Fresh upstream assignments remain untouched.
+#   3. A healthy foreground Codex command remains alive past a short simulated
+#      startup deadline instead of being killed by an inner timeout.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
 
-IMAGE_TAG="tmux-restore-test:latest"
-CONTAINER_NAME="patch8-resume-timeout-test"
-KEEP=0
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PATCHER="$ROOT/tmux/.config/tmux/scripts/patch-assistant-resurrect.sh"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/patch8-retirement-test.XXXXXX")"
+HOME_DIR="$WORK/home"
+PLUGIN_DIR="$HOME_DIR/.tmux/plugins/tmux-assistant-resurrect/scripts"
+RESTORE_ASSISTANT="$PLUGIN_DIR/restore-assistant-sessions.sh"
+ASSISTANT_SAVE="$PLUGIN_DIR/save-assistant-sessions.sh"
+FIXTURE_BIN="$WORK/bin"
+trap 'rm -rf "$WORK"' EXIT
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --keep) KEEP=1; shift ;;
-    *) echo "unknown arg: $1" >&2; exit 2 ;;
-  esac
-done
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-cleanup() {
-  if [[ "$KEEP" -eq 1 ]]; then
-    echo ""
-    echo ">>> --keep set; container left running:"
-    echo "    docker exec -it -u tester -e XDG_RUNTIME_DIR=/run/user/1000 -e HOME=/home/tester $CONTAINER_NAME zsh"
-    echo "    docker rm -f $CONTAINER_NAME   # when done"
-  else
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
+mkdir -p "$PLUGIN_DIR" "$FIXTURE_BIN"
+# The patcher intentionally exits early until the plugin's save script exists.
+printf '#!/usr/bin/env bash\n' >"$ASSISTANT_SAVE"
 
-user_exec() {
-  docker exec -u tester \
-    -e XDG_RUNTIME_DIR=/run/user/1000 \
-    -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-    -e HOME=/home/tester \
-    -e PATH=/home/tester/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    "$@"
-}
-
-echo ">>> building image if needed"
-docker build -q -t "$IMAGE_TAG" . >/dev/null
-
-echo ">>> starting container"
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-docker run -d \
-  --name "$CONTAINER_NAME" \
-  --privileged \
-  --cgroupns=host \
-  --tmpfs /run \
-  --tmpfs /run/lock \
-  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-  -v "$(cd .. && cd .. && cd .. && pwd)":/workspace:ro \
-  "$IMAGE_TAG" >/dev/null
-
-for _ in $(seq 1 30); do
-  if docker exec "$CONTAINER_NAME" systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"; then
-    break
-  fi
-  sleep 0.5
-done
-
-docker exec "$CONTAINER_NAME" loginctl enable-linger tester
-for _ in $(seq 1 30); do
-  if docker exec "$CONTAINER_NAME" systemctl --user -M "tester@" is-system-running 2>/dev/null | grep -qE "running|degraded"; then
-    break
-  fi
-  sleep 0.5
-done
-
-echo ">>> installing dotfiles + plugins"
-# install-dotfiles.sh itself runs patch-assistant-resurrect.sh as one of its
-# steps (matching how a real machine's setup.sh / tmux-restore.service
-# ExecStartPre applies it) — there is no unpatched install path to select.
-# The plugin file that results is already Patch-8-patched.
-user_exec "$CONTAINER_NAME" bash /workspace/devcontainer/scripts/tmux-restore-test/harness/install-dotfiles.sh
-
-echo ">>> replacing codex stub with an OAuth-bootstrap-hang simulator"
-# Real bug: `codex resume <id>` hangs forever when it has saved OAuth creds
-# for an MCP server that's unresponsive at the pre-initialize bootstrap step
-# (openai/codex#22072) — no output, no exit, ever. This stub reproduces
-# exactly that: `resume` hangs unconditionally; any other subcommand (e.g.
-# `mcp`) returns immediately so it doesn't interfere with unrelated calls.
-user_exec "$CONTAINER_NAME" bash -c 'cat > "$HOME/.local/bin/codex" <<'"'"'EOF'"'"'
+cat >"$RESTORE_ASSISTANT" <<'EOF'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "resume" ]]; then
-  echo "ASSISTANT_TUI_SCROLLBACK_codex_marker"
-  exec -a "codex $*" bash -c "while :; do sleep 3600 & wait; done"
-fi
-echo "codex-stub: $* (non-resume, returns immediately)"
-exit 0
+safe_cli_args=
+safe_sid=
+resume_cmd="command timeout 45 codex${safe_cli_args} resume ${safe_sid}" # AR-Patch8
+resume_cmd="command timeout 45 codex resume ${safe_sid}" # AR-Patch8
 EOF
-chmod +x "$HOME/.local/bin/codex"'
 
-# --- Extract the exact resume_cmd this session ID would produce, straight
-# from the live PATCHED plugin file (install-dotfiles.sh always applies
-# Patch 8, matching how a real machine's setup.sh does it — there is no
-# unpatched install path to select). This is the REAL upstream dispatch
-# string, not a reimplementation. The bare "codex resume ${safe_sid}" line
-# (no `command`/no trailing marker comment) is the one Patch 8 rewrites; we
-# grep that exact shape so a change to the plugin's quoting breaks this test
-# loudly instead of silently matching the wrong line.
-extract_resume_line() {
-  user_exec "$CONTAINER_NAME" bash -c '
-    f="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/restore-assistant-sessions.sh"
-    grep -F "resume_cmd=\"command timeout 45 codex resume \${safe_sid}\" # AR-Patch8" "$f" | tail -1
-  '
-}
-build_cmd_from_template() {
-  local tpl="$1"
-  echo "${tpl//\$\{safe_sid\}/test-session-id}"
-}
+HOME="$HOME_DIR" bash "$PATCHER"
+bash -n "$RESTORE_ASSISTANT" || fail 'Patch-8 rollback produced invalid bash'
+grep -qF 'resume_cmd="command codex${safe_cli_args} resume ${safe_sid}"' "$RESTORE_ASSISTANT" ||
+  fail 'did not roll back the safe_cli_args assignment'
+grep -qF 'resume_cmd="command codex resume ${safe_sid}"' "$RESTORE_ASSISTANT" ||
+  fail 'did not roll back the bare assignment'
+if grep -qF 'AR-Patch8' "$RESTORE_ASSISTANT" ||
+   grep -qF 'command timeout 45 codex' "$RESTORE_ASSISTANT"; then
+  fail 'destructive Patch-8 timeout or marker survived rollback'
+fi
+grep -qF 'retired patch 8: removed destructive codex resume timeout' \
+  "$HOME_DIR/.tmux/resurrect/patch-assistant-resurrect.log" ||
+  fail 'rollback was not logged'
 
-echo ">>> [1/2] UNPATCHED (reconstructed): proving codex resume hangs the caller"
-PATCHED_LINE="$(extract_resume_line)"
-if [[ -z "$PATCHED_LINE" ]]; then
-  echo "FAIL: could not find the expected Patch-8 codex resume_cmd line — plugin file shape changed or patch did not apply during install" >&2
-  exit 1
-fi
-# Reconstruct the pre-patch string as the EXACT inverse of Patch 8's own sed
-# substitution (patch-assistant-resurrect.sh): remove "timeout 45 " and the
-# " # AR-Patch8" marker it adds. This is not a guess at what the bug looked
-# like — it is the literal string Patch 8's sed replaces FROM, so testing it
-# proves the bug Patch 8 fixes, not a strawman.
-UNPATCHED_TPL="$(echo "$PATCHED_LINE" | sed -E 's/resume_cmd="command timeout 45 (codex[^"]*)" # AR-Patch8/\1/; s/^\s*//')"
-UNPATCHED_CMD="command $(build_cmd_from_template "$UNPATCHED_TPL")"
-echo "    resume_cmd = $UNPATCHED_CMD"
-if [[ "$UNPATCHED_CMD" == *"timeout"* ]]; then
-  echo "FAIL: reconstructed unpatched command still contains a timeout wrapper — reconstruction is wrong" >&2
-  exit 1
-fi
-# Run it with an outer 12s deadline. If the inner hang is real and unbounded,
-# the outer timeout kills it at 12s and we assert exit code 124 (killed by
-# OUR safety wrapper, not by anything under test) — proof it was still
-# running, i.e. genuinely hung, not just slow.
+# A second run must be a no-op: the retired patch must not be reintroduced.
+HOME="$HOME_DIR" bash "$PATCHER"
+tail -n 1 "$HOME_DIR/.tmux/resurrect/patch-assistant-resurrect.log" |
+  grep -qF 'ran, 0 applied' || fail 'Patch-8 retirement is not idempotent'
+
+# A fresh upstream file has no marker and must remain byte-for-byte unchanged.
+cat >"$RESTORE_ASSISTANT" <<'EOF'
+#!/usr/bin/env bash
+safe_cli_args=
+safe_sid=
+resume_cmd="command codex${safe_cli_args} resume ${safe_sid}"
+resume_cmd="command codex resume ${safe_sid}"
+EOF
+cp "$RESTORE_ASSISTANT" "$WORK/upstream.before"
+HOME="$HOME_DIR" bash "$PATCHER"
+cmp -s "$WORK/upstream.before" "$RESTORE_ASSISTANT" ||
+  fail 'retired patch changed a fresh upstream plugin file'
+
+# A marker-shaped string is not an assignment. The rollback must fail closed
+# and preserve it byte-for-byte rather than rewriting quoted documentation or
+# logging text that happens to contain the old line.
+cat >"$RESTORE_ASSISTANT" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'resume_cmd="command timeout 45 codex resume ${safe_sid}" # AR-Patch8'
+EOF
+cp "$RESTORE_ASSISTANT" "$WORK/near-miss.before"
+HOME="$HOME_DIR" bash "$PATCHER"
+cmp -s "$WORK/near-miss.before" "$RESTORE_ASSISTANT" ||
+  fail 'Patch-8 rollback rewrote a marker-shaped string instead of an assignment'
+
+# Healthy Codex is a foreground interactive process. Emit a readiness marker,
+# then stay alive like a TUI. The outer 2s timeout is test cleanup only: rc=124
+# proves the restored upstream command itself did not kill the healthy process.
+cat >"$FIXTURE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+printf 'READY\n'
+exec sleep 30
+EOF
+chmod +x "$FIXTURE_BIN/codex"
+
+# Reproduce the retired wrapper at a scaled one-second deadline: even after
+# the stub reports READY, timeout kills the healthy foreground process.
 set +e
-user_exec "$CONTAINER_NAME" timeout 12 bash -c "$UNPATCHED_CMD" >/tmp/patch8-unpatched.out 2>&1
-unpatched_rc=$?
+historical_output="$(PATH="$FIXTURE_BIN:/usr/bin:/bin" timeout 1 codex \
+  resume test-session-id 2>&1)"
+historical_rc=$?
 set -e
-echo "    exit code: $unpatched_rc (124 = still hung at 12s outer deadline, as expected)"
-if [[ "$unpatched_rc" -ne 124 ]]; then
-  echo "FAIL: expected the unpatched resume_cmd to still be hung (rc=124) at 12s, got rc=$unpatched_rc" >&2
-  echo "--- output ---"; cat /tmp/patch8-unpatched.out
-  exit 1
-fi
-echo "    PASS: unpatched codex resume is a genuine unbounded hang (bug reproduced)"
+[[ "$historical_rc" -eq 124 && "$historical_output" == READY ]] ||
+  fail "could not reproduce Patch 8 killing a healthy foreground Codex (rc=$historical_rc output=$historical_output)"
 
-echo ">>> confirming patch-assistant-resurrect.sh applied Patch 8 during install"
-user_exec "$CONTAINER_NAME" bash -n "/home/tester/.tmux/plugins/tmux-assistant-resurrect/scripts/restore-assistant-sessions.sh" \
-  || { echo "FAIL: patched restore-assistant-sessions.sh is not valid bash" >&2; exit 1; }
-echo "    already patched at install time, syntax-valid (checked above)"
-
-echo ">>> [2/2] PATCHED: proving codex resume now returns within a bound"
-PATCHED_TPL="$(echo "$PATCHED_LINE" | sed -E 's/^\s*resume_cmd="(.*)" # AR-Patch8/\1/')"
-PATCHED_CMD="$(build_cmd_from_template "$PATCHED_TPL")"
-echo "    resume_cmd = $PATCHED_CMD"
-if [[ "$PATCHED_CMD" != *"timeout 45"* ]]; then
-  echo "FAIL: patched plugin file does not contain the expected 'timeout 45' wrapper" >&2
-  exit 1
-fi
-start_ts=$(date +%s)
 set +e
-# Outer deadline generous (60s) relative to the inner timeout(45) we're
-# proving exists — if the patch is a no-op this still hangs and we correctly
-# fail via the outer kill, distinguishing "patch didn't work" from "patch
-# capped it at 45s as designed".
-user_exec "$CONTAINER_NAME" timeout 60 bash -c "$PATCHED_CMD" >/tmp/patch8-patched.out 2>&1
-patched_rc=$?
+healthy_output="$(PATH="$FIXTURE_BIN:/usr/bin:/bin" timeout 2 bash -c \
+  'command codex resume test-session-id' 2>&1)"
+healthy_rc=$?
 set -e
-end_ts=$(date +%s)
-elapsed=$((end_ts - start_ts))
-echo "    exit code: $patched_rc, elapsed: ${elapsed}s"
-if [[ "$patched_rc" -ne 124 ]]; then
-  echo "FAIL: expected exit 124 from the INNER timeout 45 (not from our 60s outer guard)" >&2
-  echo "--- output ---"; cat /tmp/patch8-patched.out
-  exit 1
-fi
-if (( elapsed < 40 || elapsed > 50 )); then
-  echo "FAIL: expected the patched resume to be killed at ~45s, got ${elapsed}s — timeout value may not be 45 or patch may be misapplied" >&2
-  exit 1
-fi
-echo "    PASS: patched codex resume is bounded to ~45s, not an indefinite hang"
+[[ "$healthy_rc" -eq 124 && "$healthy_output" == READY ]] ||
+  fail "healthy foreground Codex did not survive the simulated startup deadline (rc=$healthy_rc output=$healthy_output)"
 
-echo ""
-echo ">>> RESULT: PASS — Patch 8 converts an unbounded codex-resume hang into a bounded ~45s timeout"
-exit 0
+echo 'PASS: AR-Patch8 is retired idempotently, both marked forms are rolled back, fresh upstream stays untouched, and healthy Codex is not given a destructive inner timeout'

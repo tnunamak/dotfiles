@@ -144,8 +144,8 @@ if command -v infisical >/dev/null 2>&1; then
   command -v "$_inf_timeout" >/dev/null 2>&1 || _inf_timeout=gtimeout
   _inf_ok=0
   if command -v "$_inf_timeout" >/dev/null 2>&1; then
-    # One immediate retry, no sleep: at boot, many shells start in the same
-    # ~1s window and can race the Secret Service backend
+    # At boot, many shells start in the same ~1s window and can race the
+    # Secret Service backend
     # (org.freedesktop.secrets/ksecretd) before it's ready, which crashes
     # the export outright (SIGABRT seen 2026-07-26 — every shell in that
     # window got zero secrets, silently, until each one's shell was later
@@ -171,9 +171,12 @@ if command -v infisical >/dev/null 2>&1; then
     # client-side is the correct mitigation for a server-side crash-and-recover
     # window we don't control.
     #
-    # No fixed delay between attempts: the failure mode is a one-shot
-    # startup-order crash, not a timed recovery, so retrying immediately is
-    # correct — each retry typically lands after ksecretd's latest respawn.
+    # Keep retries prompt, but do not spin without a floor: after the
+    # time-budget rewrite, a fast permanent failure reproduced 10 new
+    # timeout/infisical processes per second PER SHELL. Many boot shells would
+    # amplify that into a D-Bus activation storm. A 200ms failure-only throttle
+    # still recovers the observed crash cascade quickly without betting on a
+    # particular ksecretd recovery delay.
     #
     # Retry against a TIME BUDGET, not a fixed attempt count (changed
     # 2026-07-28, was a flat "2 attempts", briefly "4 attempts" — both were
@@ -186,14 +189,32 @@ if command -v infisical >/dev/null 2>&1; then
     # call fails immediately; dbus-daemon does not retry on the client's
     # behalf, and there is NO DOCUMENTED UPPER BOUND on how many times the
     # target service can crash before it stabilizes. Any fixed attempt count
-    # is therefore a bet, not a guarantee. A wall-clock deadline is the only
+    # is therefore a bet, not a guarantee. An elapsed-time deadline is the only
     # thing that's actually boundable: 20s total covers every crash-cascade
-    # observed so far (worst case ~3s) with real margin, and each attempt is
-    # still individually bounded by `timeout 5` so a single hung attempt
-    # can't blow the whole budget silently.
-    _inf_deadline=$(( $(date +%s) + 20 ))
-    while (( $(date +%s) < _inf_deadline )); do
-      if _inf_secrets="$("$_inf_timeout" 5 infisical export \
+    # observed so far (worst case ~3s) with real margin. Use Linux uptime
+    # rather than wall-clock time so a boot-time clock correction cannot
+    # extend the retry window, and cap the final attempt to the time remaining
+    # so starting a 5s attempt with 1s left cannot turn 20s into 24s.
+    _inf_now_seconds() {
+      local _inf_uptime_seconds
+      if [[ -r /proc/uptime ]] &&
+         IFS='. ' read -r _inf_uptime_seconds _ </proc/uptime; then
+        printf '%s\n' "$_inf_uptime_seconds"
+      else
+        # Shared config also runs on macOS; SECONDS is relative to this shell
+        # in both bash and zsh and is sufficient for a short local deadline.
+        printf '%s\n' "$SECONDS"
+      fi
+    }
+    _inf_deadline=$(( $(_inf_now_seconds) + 20 ))
+    while
+      _inf_remaining=$(( _inf_deadline - $(_inf_now_seconds) ))
+      (( _inf_remaining > 0 ))
+    do
+      _inf_attempt_timeout=5
+      (( _inf_remaining < _inf_attempt_timeout )) &&
+        _inf_attempt_timeout=$_inf_remaining
+      if _inf_secrets="$("$_inf_timeout" "$_inf_attempt_timeout" infisical export \
         --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
         --env=dev --format=dotenv-export \
         --domain=https://secrets.vivid.fish 2>/dev/null </dev/null)"; then
@@ -201,8 +222,10 @@ if command -v infisical >/dev/null 2>&1; then
         _inf_ok=1
         break
       fi
+      sleep 0.2
     done
-    unset _inf_deadline
+    unset -f _inf_now_seconds
+    unset _inf_deadline _inf_remaining _inf_attempt_timeout
   fi
   if (( ! _inf_ok )) && [[ $- == *i* ]]; then
     printf '%s\n' 'Infisical secrets unavailable. Run: infisical login --domain=https://secrets.vivid.fish'

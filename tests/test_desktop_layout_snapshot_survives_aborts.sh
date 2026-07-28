@@ -20,10 +20,11 @@
 # reaches it — a real race (window closing between kdotool enumeration and
 # processing), not a test artifact. Both call sites needed `|| true`.
 #
-# This test proves BOTH: (a) the currently installed script survives a real
-# kscreen-doctor abort and a dead-PID ps query and still writes a manifest,
-# and (b) the pre-fix code (commit a0560e7~1) genuinely crashes under the
-# identical fixture — so this isn't a strawman reproduction.
+# This test proves BOTH fixes independently. The kscreen-doctor control uses
+# pre-a0560e7 code plus an alive PID. The ps-race control uses a0560e7 itself
+# (screen abort already guarded) plus a guaranteed-dead PID and injected
+# screen JSON, so the earlier screen failure cannot hide whether ps was
+# reached.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,14 +45,13 @@ kill -ABRT $$
 EOF
 chmod +x "$FIXTURE_BIN/kscreen-doctor"
 
-# kdotool stub: reports exactly one fake kitty window with a PID that does
-# NOT correspond to any real process, so the ps-race bug (found while
-# building this test) is exercised too, not just the kscreen-doctor abort.
+# kdotool stub: reports exactly one fake kitty window. Tests select an alive
+# or guaranteed-dead PID through DESKTOP_LAYOUT_TEST_PID.
 cat >"$FIXTURE_BIN/kdotool" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   search) echo '{fake-window-1}' ;;
-  getwindowpid) echo 99999 ;;
+  getwindowpid) echo "${DESKTOP_LAYOUT_TEST_PID:?missing test PID}" ;;
   get_desktop_for_window) echo 1 ;;
   getwindowgeometry) printf 'Window {fake-window-1}\n  Position: 0,0\n  Geometry: 100x100\n' ;;
   getwindowname) echo 'fake' ;;
@@ -61,18 +61,27 @@ EOF
 chmod +x "$FIXTURE_BIN/kdotool"
 
 run_isolated() {
-  local script="$1" statedir="$2"
+  local script="$1" statedir="$2" test_pid="$3" screen_json="${4-}"
+  local -a env_args=(
+    HOME="$HOME"
+    PATH="$FIXTURE_BIN:/usr/bin:/bin"
+    XDG_STATE_HOME="$statedir"
+    DESKTOP_LAYOUT_TMUX_CLIENTS=
+    DESKTOP_LAYOUT_TEST_PID="$test_pid"
+  )
   mkdir -p "$statedir"
-  env -i \
-    HOME="$HOME" \
-    PATH="$FIXTURE_BIN:/usr/bin:/bin" \
-    XDG_STATE_HOME="$statedir" \
-    DESKTOP_LAYOUT_TMUX_CLIENTS='' \
-    bash "$script"
+  [[ -n "$screen_json" ]] &&
+    env_args+=(DESKTOP_LAYOUT_SCREEN_JSON="$screen_json")
+  env -i "${env_args[@]}" bash "$script"
 }
 
+pid_max="$(< /proc/sys/kernel/pid_max)"
+dead_pid=$((pid_max + 1))
+ps -p "$dead_pid" >/dev/null 2>&1 &&
+  fail "chosen dead PID unexpectedly exists: $dead_pid"
+
 set +e
-run_isolated "$SNAPSHOT" "$WORK/state-current" >"$WORK/current.log" 2>&1
+run_isolated "$SNAPSHOT" "$WORK/state-current" "$dead_pid" >"$WORK/current.log" 2>&1
 current_rc=$?
 set -e
 current_manifest="$WORK/state-current/desktop-layout/manifest.json"
@@ -87,11 +96,25 @@ git -C "$ROOT" show a0560e7~1:bin/.local/bin/desktop-layout-snapshot >"$OLD_SNAP
 chmod +x "$OLD_SNAPSHOT"
 
 set +e
-run_isolated "$OLD_SNAPSHOT" "$WORK/state-old" >"$WORK/old.log" 2>&1
-old_rc=$?
+run_isolated "$OLD_SNAPSHOT" "$WORK/state-old-screen" "$$" >"$WORK/old-screen.log" 2>&1
+old_screen_rc=$?
 set -e
-old_manifest="$WORK/state-old/desktop-layout/manifest.json"
-[[ "$old_rc" -ne 0 && ! -s "$old_manifest" ]] || \
-  fail "pre-fix script did NOT crash under the identical fixture (rc=$old_rc) — reproduction doesn't isolate the bug"
+old_screen_manifest="$WORK/state-old-screen/desktop-layout/manifest.json"
+[[ "$old_screen_rc" -ne 0 && ! -s "$old_screen_manifest" ]] ||
+  fail "pre-a0560e7 script did not crash on kscreen-doctor abort with an alive PID (rc=$old_screen_rc)"
 
-echo 'PASS: desktop-layout-snapshot survives a kscreen-doctor abort and a dead-PID ps race; pre-fix code genuinely crashes under the same fixture'
+PRE_PS_FIX="$WORK/pre-ps-fix-snapshot"
+git -C "$ROOT" show a0560e7:bin/.local/bin/desktop-layout-snapshot >"$PRE_PS_FIX" 2>/dev/null ||
+  fail "could not read pre-ps-fix desktop-layout-snapshot from git history (a0560e7)"
+chmod +x "$PRE_PS_FIX"
+
+set +e
+run_isolated "$PRE_PS_FIX" "$WORK/state-old-ps" "$dead_pid" \
+  '{"width":1920,"height":1080}' >"$WORK/old-ps.log" 2>&1
+old_ps_rc=$?
+set -e
+old_ps_manifest="$WORK/state-old-ps/desktop-layout/manifest.json"
+[[ "$old_ps_rc" -ne 0 && ! -s "$old_ps_manifest" ]] ||
+  fail "a0560e7 script did not crash on the isolated dead-PID ps race (rc=$old_ps_rc)"
+
+echo 'PASS: desktop-layout-snapshot survives both aborts; independent historical controls reproduce kscreen-doctor failure before a0560e7 and the ps race before 1d93cde'

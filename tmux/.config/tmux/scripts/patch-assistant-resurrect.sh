@@ -21,8 +21,9 @@ SUBTREE_LIB="$HOME/.config/tmux/scripts/lib-assistant-subtree.sh"
 # The fork's save script still contains the old, leaky strip function (Patch 5
 # removes it). Same file 2a/2b patch.
 RESTORE_ASSISTANT="$HOME/.tmux/plugins/tmux-assistant-resurrect/scripts/restore-assistant-sessions.sh"
-# Patch 8 bounds codex resume with a timeout so it can't hang the whole
-# restore (see below, near end of file).
+# Patch 8's timeout was retired after red-team review found that it also
+# kills every healthy foreground Codex TUI at 45s. Existing installs still
+# need the exact marked transform rolled back (see below, near end of file).
 LOG="$HOME/.tmux/resurrect/patch-assistant-resurrect.log"
 
 log() {
@@ -264,30 +265,28 @@ if [[ -f "$ASSISTANT_SAVE" ]] &&
   fi
 fi
 
-# Patch 8: bound `codex resume` with a timeout so it cannot hang the whole
-# restore. Codex's MCP OAuth-bootstrap path ignores startup_timeout_sec when
-# a server (e.g. pdpp) has saved credentials — a slow/unresponsive server at
-# resume time hangs Codex indefinitely (upstream: openai/codex#22072). On
-# 2026-07-26 this hit 5 panes simultaneously via the mass unattended resume
-# added by tmux-agent-resume's attend-boot-restore, each needing manual
-# SIGINT + `codex mcp logout pdpp` to recover. `timeout` alone is enough: it
-# does NOT log out of anything, so the normal (fast) case is unaffected — only
-# a genuinely hung resume gets killed and dropped to a shell prompt, at which
-# point the existing manual recovery (mcp logout + resume) still works.
-# Marker `# AR-Patch8` makes it idempotent across TPM updates.
+# Patch 8 RETIRED (2026-07-28): `timeout 45 codex resume ...` cannot bound
+# only OAuth bootstrap. A healthy Codex TUI is the same foreground process
+# after bootstrap and normally remains alive indefinitely, so the wrapper
+# deterministically killed every successful restored session at 45 seconds.
+# It also only sent SIGTERM on this machine's uutils timeout; a TERM-ignoring
+# Codex stayed hung, while force-killing Codex could orphan MCP descendants.
+# There is no safe local timeout without a Codex readiness signal. Roll back
+# only our exact marked assignments so machines already patched tonight are
+# repaired on the next setup/boot run; fresh upstream files remain untouched.
 if [[ -f "$RESTORE_ASSISTANT" ]] &&
-   ! grep -qF 'AR-Patch8' "$RESTORE_ASSISTANT" &&
-   grep -qF 'resume_cmd="command codex resume ${safe_sid}"' "$RESTORE_ASSISTANT"; then
-  sed -e 's/resume_cmd="command codex\${safe_cli_args} resume \${safe_sid}"/resume_cmd="command timeout 45 codex${safe_cli_args} resume ${safe_sid}" # AR-Patch8/' \
-      -e 's/resume_cmd="command codex resume \${safe_sid}"/resume_cmd="command timeout 45 codex resume ${safe_sid}" # AR-Patch8/' \
+   grep -qF 'AR-Patch8' "$RESTORE_ASSISTANT"; then
+  sed -e 's|^\([[:space:]]*\)resume_cmd="command timeout 45 codex\${safe_cli_args} resume \${safe_sid}" # AR-Patch8$|\1resume_cmd="command codex${safe_cli_args} resume ${safe_sid}"|' \
+      -e 's|^\([[:space:]]*\)resume_cmd="command timeout 45 codex resume \${safe_sid}" # AR-Patch8$|\1resume_cmd="command codex resume ${safe_sid}"|' \
       "$RESTORE_ASSISTANT" >"${RESTORE_ASSISTANT}.artmp"
-  if grep -qF 'AR-Patch8' "${RESTORE_ASSISTANT}.artmp" && bash -n "${RESTORE_ASSISTANT}.artmp" 2>/dev/null; then
+  if ! grep -qF 'AR-Patch8' "${RESTORE_ASSISTANT}.artmp" &&
+     bash -n "${RESTORE_ASSISTANT}.artmp" 2>/dev/null; then
     cat "${RESTORE_ASSISTANT}.artmp" >"$RESTORE_ASSISTANT"
     rm -f "${RESTORE_ASSISTANT}.artmp"
-    log "applied patch 8: bounded codex resume with timeout 45"
+    log "retired patch 8: removed destructive codex resume timeout"
     applied=$((applied + 1))
   else
-    log "warning: patch 8 NOT applied (marker missing or bash -n failed) — file left untouched"
+    log "warning: patch 8 rollback NOT applied cleanly — file left untouched"
     rm -f "${RESTORE_ASSISTANT}.artmp"
   fi
 fi
