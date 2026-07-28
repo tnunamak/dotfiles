@@ -52,12 +52,20 @@ created_set="${DESKTOP_LAYOUT_CREATED_SET:-}"; test_socket_dir="${DESKTOP_LAYOUT
 kitty_config="${DESKTOP_LAYOUT_KITTY_CONFIG:-}"
 while (($#)); do case "$1" in --dry-run) dry=1;;--force) force=1;;--manifest) manifest="$2";shift;;*) echo 'usage: desktop-layout-restore [--dry-run] [--force] [--manifest FILE]' >&2;exit 2;;esac;shift;done
 [[ -s "$manifest" ]] || exit 0; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 1
+if (( ! dry )); then
+  archive_dir="$state/restore-archive"; mkdir -p "$archive_dir"
+  cp -f "$manifest" "$archive_dir/manifest-$(date -u +%Y%m%dT%H%M%SZ).json" 2>/dev/null || true
+  find "$archive_dir" -name 'manifest-*.json' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +31 | cut -d' ' -f2- | xargs -r rm -f
+fi
 wait_for_graphical_session
 mapfile -t existing < <(kdotool search --class kitty 2>/dev/null || true); if (( !force && ${#existing[@]}>2 )); then echo "desktop-layout-restore: ${#existing[@]} kitty windows already exist; skipping";exit 0;fi
 screen(){ [[ -n "${DESKTOP_LAYOUT_SCREEN:-}" ]] && { printf '%s\n' "$DESKTOP_LAYOUT_SCREEN"; return; }; kscreen-doctor -o 2>/dev/null|awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{print w,h}'; }
 read -r cw ch < <(screen); sw="$(jq -r '.screen.width // 0' "$manifest")";sh="$(jq -r '.screen.height // 0' "$manifest")"; ((sw>0))||sw=$cw;((sh>0))||sh=$ch
 if ((dry));then jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '.windows[]|"launch "+(if .is_tmux then "tmux window "+(.tmux_window_index|tostring) else "plain kitty" end)+" desktop "+(.virtual_desktop|tostring)+" at "+((.position.x*$cw/$sw|round)|tostring)+","+((.position.y*$ch/$sh|round)|tostring)' "$manifest";exit 0;fi
 for _ in $(seq 1 240);do [[ "$(systemctl --user is-active tmux-restore.service 2>/dev/null||true)" != activating ]]&&break;sleep .5;done
+outcome_log="$state/restore-archive/outcomes-$(date -u +%Y%m%dT%H%M%SZ).log"
+if (( ! dry )); then mkdir -p "$state/restore-archive"; : > "$outcome_log"; fi
+declare -A spawned_pids=()
 while IFS= read -r row;do
   cwd="$(jq -r '.cwd // env.HOME' <<< "$row")";[[ -d "$cwd" ]]||cwd="$HOME";tmux_row="$(jq -r .is_tmux <<< "$row")";idx="$(jq -r '.tmux_window_index // empty' <<< "$row")";desk="$(jq -r .virtual_desktop <<< "$row")";native_session="$(jq -r '.native_session // empty' <<< "$row")"
   mapfile -t before < <(kdotool search --class kitty 2>/dev/null||true)
@@ -84,7 +92,8 @@ while IFS= read -r row;do
   # which SIGPIPEs printf under `set -euo pipefail` and aborts the script
   # (same bug class fixed 2026-04-25 in systemd-restore.sh's sort|awk pipe).
   for _ in $(seq 1 100);do mapfile -t after < <(kdotool search --class kitty 2>/dev/null||true);for candidate in "${after[@]}";do [[ -n "${before_set[$candidate]:-}" ]]&&continue;[[ "$(kdotool getwindowpid "$candidate" 2>/dev/null||true)" == "$pid" ]]&&{ new="$candidate";break 2;};done;sleep .1;done
-  [[ -n "$new" ]]||{ echo "desktop-layout-restore: unable to identify kitty pid $pid" >&2;continue; }
+  [[ -n "$new" ]]||{ echo "desktop-layout-restore: unable to identify kitty pid $pid" >&2; (( dry )) || printf 'spawn=%d pid=%s cwd=%s tmux=%s tmux_idx=%s outcome=identify_failed\n' "$spawn_number" "$pid" "$cwd" "$tmux_row" "${idx:-}" >> "$outcome_log"; continue; }
+  (( dry )) || { printf 'spawn=%d pid=%s window=%s cwd=%s tmux=%s tmux_idx=%s outcome=identified\n' "$spawn_number" "$pid" "$new" "$cwd" "$tmux_row" "${idx:-}" >> "$outcome_log"; spawned_pids["$pid"]="$spawn_number|$new|$cwd|$tmux_row|${idx:-}"; }
   # Test callers receive only IDs proven absent from the pre-spawn snapshot.
   # Record every inner kitty ID immediately. This script never closes windows;
   # cleanup is deliberately external and must use this socket plus exact IDs.
@@ -103,3 +112,32 @@ while IFS= read -r row;do
   read -r x y w h < <(jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '[.position.x*$cw/$sw,.position.y*$ch/$sh,.size.width*$cw/$sw,.size.height*$ch/$sh]|map(round)|join(" ")' <<< "$row")
   kdotool set_desktop_for_window "$new" "$desk";kdotool windowsize "$new" "$w" "$h";kdotool windowmove "$new" "$x" "$y"
 done < <(jq -c '.windows[]' "$manifest")
+
+# Liveness sweep, a few seconds after every spawn finished: catches windows
+# that were successfully identified above but then closed themselves
+# shortly after (e.g. tmux-local-attach-main exiting because its target
+# window index no longer exists) — the exact gap that made the 2026-07-28
+# incident undiagnosable, since "identified" alone doesn't mean "survived".
+if (( ! dry )) && (( ${#spawned_pids[@]} > 0 )); then
+  sleep 5
+  for pid in "${!spawned_pids[@]}"; do
+    IFS='|' read -r sweep_spawn_number sweep_new sweep_cwd sweep_tmux_row sweep_idx <<< "${spawned_pids[$pid]}"
+    if kill -0 "$pid" 2>/dev/null; then
+      printf 'spawn=%s pid=%s window=%s cwd=%s tmux=%s tmux_idx=%s outcome=alive_after_5s\n' \
+        "$sweep_spawn_number" "$pid" "$sweep_new" "$sweep_cwd" "$sweep_tmux_row" "$sweep_idx" >> "$outcome_log"
+    else
+      printf 'spawn=%s pid=%s window=%s cwd=%s tmux=%s tmux_idx=%s outcome=DIED_within_5s\n' \
+        "$sweep_spawn_number" "$pid" "$sweep_new" "$sweep_cwd" "$sweep_tmux_row" "$sweep_idx" >> "$outcome_log"
+    fi
+  done
+  died=$(grep -c 'outcome=DIED_within_5s' "$outcome_log" || true)
+  # `(( died > 0 ))` alone, as the script's LAST command, makes the whole
+  # script exit 1 whenever nothing died (the common, correct case) — a
+  # false arithmetic test's exit status becomes the script's own exit
+  # status with nothing after it. `|| true` makes the common case exit 0
+  # regardless of whether the warning branch fires.
+  if (( died > 0 )); then
+    log "WARNING: $died of ${#spawned_pids[@]} spawned windows died within 5s — see $outcome_log"
+  fi
+fi
+exit 0
