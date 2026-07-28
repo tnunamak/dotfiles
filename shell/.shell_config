@@ -136,6 +136,18 @@ fi
 # Secrets — hydrate from Infisical (personal-dev/dev). Its encrypted local cache
 # keeps this same export path working during a server outage; there is no
 # plaintext fallback. Live export runs per shell (~100-300ms).
+#
+# Pre-flight: kill ksecretd if it's alive but wedged (a DIFFERENT failure
+# mode than the boot-race crash-loop below — this is ksecretd successfully
+# starting, running fine for a while, then going silently unresponsive to
+# every D-Bus caller; known recurring KDE bug class, see the script's own
+# header for the full citation trail). Without this, the retry loop below
+# would just retry into the same dead end for its whole 20s budget, since
+# retrying a live-but-hung daemon doesn't help the way retrying a
+# crashing-then-recovering one does. Debounced internally (default 30s) and
+# bounded (default 8s Ping timeout) so this can't meaningfully slow shell
+# startup; a missing script or missing gdbus/pgrep is a silent no-op.
+command -v secrets-service-health-check >/dev/null 2>&1 && secrets-service-health-check
 if command -v infisical >/dev/null 2>&1; then
   # timeout + </dev/null guard against infisical's expired-session re-auth: on a
   # tty it spawns a blocking `login --silent` that never returns (hung every new
