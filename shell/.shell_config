@@ -171,14 +171,28 @@ if command -v infisical >/dev/null 2>&1; then
     # client-side is the correct mitigation for a server-side crash-and-recover
     # window we don't control.
     #
-    # No fixed delay: the failure mode was a one-shot startup-order crash,
-    # not a timed recovery, and a wrong guess at "how long to wait" is worse
-    # than just trying again — the retry itself typically lands after
-    # ksecretd has already respawned from the first attempt's crash. This
-    # does not add latency in the common case (first attempt already
-    # succeeds almost always) and costs at most one more bounded 5s timeout
-    # in the failure case.
-    for _inf_attempt in 1 2; do
+    # No fixed delay between attempts: the failure mode is a one-shot
+    # startup-order crash, not a timed recovery, so retrying immediately is
+    # correct — each retry typically lands after ksecretd's latest respawn.
+    #
+    # Retry against a TIME BUDGET, not a fixed attempt count (changed
+    # 2026-07-28, was a flat "2 attempts", briefly "4 attempts" — both were
+    # guesses at the crash-cascade depth and both were proven wrong live: a
+    # 2026-07-28 crash needed 4 dbus-daemon activation attempts to settle
+    # (3 ksecretd crashes), landing inside a 2-attempt retry's window.
+    # D-Bus semantics researched directly from dbus-daemon source
+    # (bus/activation.c, v1.16.2): a single blocking client call gets
+    # EXACTLY ONE activation attempt — if that spawn crashes, the client's
+    # call fails immediately; dbus-daemon does not retry on the client's
+    # behalf, and there is NO DOCUMENTED UPPER BOUND on how many times the
+    # target service can crash before it stabilizes. Any fixed attempt count
+    # is therefore a bet, not a guarantee. A wall-clock deadline is the only
+    # thing that's actually boundable: 20s total covers every crash-cascade
+    # observed so far (worst case ~3s) with real margin, and each attempt is
+    # still individually bounded by `timeout 5` so a single hung attempt
+    # can't blow the whole budget silently.
+    _inf_deadline=$(( $(date +%s) + 20 ))
+    while (( $(date +%s) < _inf_deadline )); do
       if _inf_secrets="$("$_inf_timeout" 5 infisical export \
         --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
         --env=dev --format=dotenv-export \
@@ -188,7 +202,7 @@ if command -v infisical >/dev/null 2>&1; then
         break
       fi
     done
-    unset _inf_attempt
+    unset _inf_deadline
   fi
   if (( ! _inf_ok )) && [[ $- == *i* ]]; then
     printf '%s\n' 'Infisical secrets unavailable. Run: infisical login --domain=https://secrets.vivid.fish'
