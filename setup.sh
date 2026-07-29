@@ -236,7 +236,7 @@ fi
 
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex rtk tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex qwen rtk tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
@@ -247,7 +247,7 @@ echo "Stowing packages: ${PACKAGES[*]}"
 # - *-systemd facade packages: keep the user-unit parents real while linking
 #   only their dedicated units and drop-ins, which avoids claiming unrelated
 #   user units.
-NO_FOLD_PKGS=(bin nvim claude tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
+NO_FOLD_PKGS=(bin nvim claude qwen tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
 # The Bee units used to be stowed from the broad `systemd` package. They now
 # live behind dedicated facade packages, but Stow will not transfer ownership
@@ -285,6 +285,8 @@ fi
 #  also ~/.codex/hooks.json if anything has touched it)
 [[ -f ~/.gemini/settings.json && ! -L ~/.gemini/settings.json ]] && rm ~/.gemini/settings.json
 [[ -f ~/.codex/hooks.json && ! -L ~/.codex/hooks.json ]] && rm ~/.codex/hooks.json
+# (qwen writes ~/.qwen/settings.json as a regular file on first run / /auth)
+[[ -f ~/.qwen/settings.json && ! -L ~/.qwen/settings.json ]] && rm ~/.qwen/settings.json
 
 for pkg in "${PACKAGES[@]}"; do
   extra_flags=()
@@ -488,12 +490,12 @@ UPSTREAM_SKILLS=(
   forrestchang/andrej-karpathy-skills
 )
 for src in "${UPSTREAM_SKILLS[@]}"; do
-  npx -y skills add "$src" -g -a claude-code -a codex -a gemini-cli --skill '*' -y
+  npx -y skills add "$src" -g -a claude-code -a codex -a gemini-cli -a qwen-code --skill '*' -y
 done
 
 echo ""
 echo "Symlinking locally-authored skills..."
-for agent_dir in ~/.claude ~/.codex ~/.gemini; do
+for agent_dir in ~/.claude ~/.codex ~/.gemini ~/.qwen; do
   mkdir -p "$agent_dir/skills"
   for skill in "$DOTFILES_DIR"/ai/skills/local/*/; do
     [[ -d "$skill" ]] || continue
