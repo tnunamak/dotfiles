@@ -4,29 +4,24 @@
 # vs already-covered): the research queries, the sources (URLs), and a short
 # taste of the agent's findings. A worker/judge never reads the raw transcript.
 #
-# MINIMAL-HIGH-CONFIDENCE: the load-bearing signal for "is this durable prior-art
-# or one-off ops?" is (1) the topics researched [queries] and (2) the sources
-# [URLs] — those alone decide durable-vs-ops AND are the dedup key against the
-# corpus. Full synthesis prose is NOT needed for the judgment, only a short
-# sample, so it is capped hard. Default brief ≈ 3-4k tokens (was ~13k).
+# CROSS-HARNESS: auto-detects Claude Code vs OpenAI Codex transcript schemas
+# (they are completely different) and normalizes both to the same brief shape,
+# so Claude and Codex sessions are directly comparable. Codex research is its
+# native `web_search_call`; Claude research is WebSearch/WebFetch/searxng tool_use.
 #
-# Output (plain text) on stdout:
-#   ## Research queries                — every distinct search query/prompt
-#   ## Fetched sources (domains+sample)— distinct domains + a sample of full URLs
-#   ## Findings sample                 — first N chars of assistant synthesis
+# MINIMAL-HIGH-CONFIDENCE: the load-bearing signal for "durable prior-art vs
+# one-off ops?" is the queries (topics) + source URLs (durable-vs-ops + dedup
+# key). Full synthesis prose is capped hard. Default brief ≈ 3-4k tokens.
 #
 # Usage: research-recovery-extract [--full] <transcript.jsonl>
-#   --full  don't cap (fat brief) — for a borderline session a judge wants to
-#           inspect in depth. Default is the tight, judge-sized brief.
+#   --full  don't cap synthesis/URLs (for a borderline session to inspect deep).
 
 set -u
 command -v jq >/dev/null 2>&1 || { echo "jq required" >&2; exit 1; }
 
-# Caps (tight defaults; --full removes them).
-SYN_CAP=1500        # chars of synthesis in the tight brief
-URL_SAMPLE=40       # full URLs to show (beyond the domain list)
+SYN_CAP=1500
+URL_SAMPLE=40
 FULL=0
-
 while [ $# -gt 0 ]; do
   case "$1" in
     --full) FULL=1; SYN_CAP=40000; URL_SAMPLE=100000; shift ;;
@@ -34,56 +29,74 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-
 f="${1:-}"
 [ -n "$f" ] && [ -f "$f" ] || { echo "usage: research-recovery-extract [--full] <transcript.jsonl>" >&2; exit 2; }
 
-RESEARCH_RE='WebSearch|WebFetch|web_fetch|searxng_web_search|web_url_read'
+# ── Harness detection ─────────────────────────────────────────────────────────
+# Codex rollout lines carry a {payload,timestamp,type} envelope; Claude lines
+# carry {message,type,...}. Sniff the first few lines.
+harness="claude"
+if head -5 "$f" 2>/dev/null | jq -e 'select(.payload? and .type?) | .payload' >/dev/null 2>&1; then
+  harness="codex"
+fi
 
-echo "# Research brief — $(basename "$f" .jsonl)$([ "$FULL" = 1 ] && echo ' (full)')"
+# ── Per-harness extractors: each emits queries / urls(TAB intent) / synthesis ──
+CLAUDE_RE='WebSearch|WebFetch|web_fetch|searxng_web_search|web_url_read'
+
+claude_queries() { jq -r --arg re "$CLAUDE_RE" '
+  select(.message.content? | type=="array") | .message.content[]
+  | select(.type=="tool_use" and (.name|test($re))) | .input
+  | (.query // .q // .prompt // .search // empty)' "$f" 2>/dev/null; }
+claude_urls() { jq -r --arg re "$CLAUDE_RE" '
+  select(.message.content? | type=="array") | .message.content[]
+  | select(.type=="tool_use" and (.name|test($re))) | .input
+  | select(.url? or .URL?) | "\(.url // .URL)\t\(.prompt // "")"' "$f" 2>/dev/null; }
+claude_synth() { jq -r '
+  select(.type=="assistant" or (.message.role?=="assistant"))
+  | (.message.content? // []) | if type=="array" then .[] else empty end
+  | select(.type=="text") | .text' "$f" 2>/dev/null; }
+
+# Codex: web_search_call.action has .query + .queries[] (searches) or .url (open_page).
+codex_queries() { jq -r '
+  select(.type=="response_item") | .payload | select(.type=="web_search_call")
+  | .action | select(.type=="search")
+  | (.queries[]? // .query // empty)' "$f" 2>/dev/null; }
+codex_urls() { jq -r '
+  select(.type=="response_item") | .payload | select(.type=="web_search_call")
+  | .action | select(.type=="open_page") | "\(.url)\t"' "$f" 2>/dev/null; }
+codex_synth() { jq -r '
+  select(.type=="response_item") | .payload
+  | select(.type=="message" and .role=="assistant")
+  | .content[]? | select(.type=="output_text" or .type=="text") | .text' "$f" 2>/dev/null; }
+
+if [ "$harness" = "codex" ]; then
+  get_queries() { codex_queries; }; get_urls() { codex_urls; }; get_synth() { codex_synth; }
+else
+  get_queries() { claude_queries; }; get_urls() { claude_urls; }; get_synth() { claude_synth; }
+fi
+
+# ── Emit the normalized brief ─────────────────────────────────────────────────
+echo "# Research brief — $(basename "$f" .jsonl)  [harness: $harness]$([ "$FULL" = 1 ] && echo ' (full)')"
 echo
 
 echo "## Research queries"
-jq -r --arg re "$RESEARCH_RE" '
-  select(.message.content? | type=="array")
-  | .message.content[]
-  | select(.type=="tool_use" and (.name|test($re)))
-  | .input
-  | (.query // .q // .prompt // .search // empty)
-' "$f" 2>/dev/null | grep -v '^$' | sort -u | sed 's/^/- /' || true
+get_queries | grep -v '^$' | sort -u | sed 's/^/- /' || true
 echo
 
-# URLs: distinct DOMAINS carry the durability/dedup signal cheaply; then a
-# bounded sample of full URLs+intent for the judge. (A 200-URL dump is waste.)
-all_urls="$(jq -r --arg re "$RESEARCH_RE" '
-  select(.message.content? | type=="array")
-  | .message.content[]
-  | select(.type=="tool_use" and (.name|test($re)))
-  | .input
-  | select(.url? or .URL?)
-  | "\(.url // .URL)\t\(.prompt // "")"
-' "$f" 2>/dev/null | grep -v '^$' | sort -u || true)"
+all_urls="$(get_urls | grep -v '^$' | sort -u || true)"
 
 echo "## Fetched source domains"
 printf '%s\n' "$all_urls" | awk -F'\t' '{print $1}' \
-  | sed -E 's#^https?://([^/]+).*#\1#' | sort | uniq -c | sort -rn \
+  | sed -E 's#^https?://([^/]+).*#\1#' | grep -v '^$' | sort | uniq -c | sort -rn \
   | awk '{printf "- %s (%s)\n", $2, $1}' || true
 echo
 
 echo "## Sample sources (URL — what was sought there)"
-printf '%s\n' "$all_urls" | head -n "$URL_SAMPLE" \
+printf '%s\n' "$all_urls" | grep -v '^$' | head -n "$URL_SAMPLE" \
   | awk -F'\t' '{ if ($2 != "") printf "- %s — %s\n", $1, substr($2,1,160); else printf "- %s\n", $1 }' || true
 echo
 
 echo "## Findings sample (assistant synthesis, first ${SYN_CAP} chars)"
-jq -r '
-  select(.type=="assistant" or (.message.role? == "assistant"))
-  | (.message.content? // [])
-  | if type=="array" then .[] else empty end
-  | select(.type=="text")
-  | .text
-' "$f" 2>/dev/null \
-  | awk 'length($0) > 60' \
-  | head -c "$SYN_CAP" || true
+get_synth | awk 'length($0) > 60' | head -c "$SYN_CAP" || true
 echo
 [ "$FULL" = 0 ] && echo "…(synthesis truncated — re-run with --full for the complete session prose)"
