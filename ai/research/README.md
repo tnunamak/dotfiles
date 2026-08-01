@@ -9,6 +9,30 @@ agents don't redo it.
 lives in `ai/AGENTS.md` (`# Research corpus`) and points here. Read this when you're
 about to write or substantially reorganize an entry.
 
+## What belongs here — the worthiness test
+
+Not all research is corpus research. Before writing an entry (or recovering one from a
+session log), apply this test. It is the definition; don't adjudicate it case-by-case.
+
+**KEEP if the finding is durable and reusable across future work:**
+- Prior-art sweeps (how do others solve X — Stripe, Plaid, standards bodies, OSS projects).
+- Library / tool / approach evaluations with a verdict ("X beats Y for Z because…").
+- Design investigations that resolve a real question ("how should we structure X").
+- A non-obvious fact about an external system/API/protocol that cost real search to find
+  and will be true next month.
+
+**SKIP (real research, but not corpus material):**
+- One-off ops / config for a personal or single-machine setup (my Jellyfin library layout,
+  my Radarr quality profiles, a specific proxmox error on my box). Reusable *only* to me,
+  *only* now — belongs in a runbook or scratch note, not the shared corpus.
+- Debugging a specific incident whose answer is the fix, not a transferable finding.
+- Anything already covered by an existing INDEX.md entry (link/update it instead).
+
+**The one-line test:** *Would a different engineer, on a different task next month, be glad
+this was written down instead of re-searched?* Yes → keep. "Only useful to me, only right
+now" → skip. When genuinely unsure, keep it as `status: draft` — a thin draft is cheaper
+than losing the finding.
+
 ## The one rule that makes this work
 
 A corpus that gets written but never read is wasted tokens. So:

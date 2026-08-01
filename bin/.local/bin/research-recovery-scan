@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# research-recovery-scan — find agent sessions whose web research was never
+# captured to the corpus, so a fan-out of cheap workers can recover it.
+#
+# WHY: research-capture-nudge only fires at compaction/session-end, and even
+# then some sessions slip through (see the false-negative investigation). This
+# scans transcripts directly for REAL web-research tool_use and emits the ones
+# that (a) actually researched, (b) compacted (so the research was substantial
+# enough to matter), and (c) never appear in the fire-log (never nudged/captured).
+#
+# Output: one JSON object per line (JSONL) on stdout, ranked by research volume:
+#   {"session":"<id>","transcript":"<path>","research_calls":N,"project":"<dir>"}
+#
+# Mechanized on purpose: the whole point is that workers spend ZERO tokens on
+# discovery. This script is deterministic and free.
+#
+# Usage:
+#   research-recovery-scan [--since 2026-07-13] [--min-calls 2] [--limit 0]
+#     --since     only transcripts modified on/after this date (default 2026-07-13)
+#     --min-calls minimum genuine research tool_use calls to qualify (default 2)
+#     --limit     cap the number of sessions emitted, 0 = all (default 0)
+
+# NOT set -e: the scan runs many pipelines (jq/grep/wc) that legitimately return
+# nonzero per-file (no match, empty result) — those are normal control flow, not
+# errors. -e would abort the whole scan on the first such case. Keep -u for
+# unset-var safety; handle failures explicitly with `|| continue` / `|| true`.
+set -u
+
+SINCE="2026-07-13"
+MIN_CALLS=2
+LIMIT=0
+PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+FIRE_LOG="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}/fire-log.tsv"
+
+# The one regex that defines "genuine web research" (real tool_use names only —
+# NOT browser automation, NOT metadata). Keep in sync with research-capture-detect.
+RESEARCH_RE='WebSearch|WebFetch|web_fetch|searxng_web_search|web_url_read'
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --since)     SINCE="$2"; shift 2 ;;
+    --min-calls) MIN_CALLS="$2"; shift 2 ;;
+    --limit)     LIMIT="$2"; shift 2 ;;
+    -h|--help)   grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || { echo "jq required" >&2; exit 1; }
+
+# Sessions already in the fire-log were nudged; skip them (assume handled).
+fired_ids=""
+[ -f "$FIRE_LOG" ] && fired_ids="$(cut -f2 "$FIRE_LOG" 2>/dev/null | sort -u || true)"
+
+# Collect qualifying sessions (unranked), then rank by research volume and limit.
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+while IFS= read -r f; do
+  b="$(basename "$f" .jsonl)"
+  # Subagents (agent-*) don't fire the hook independently; their research rolls
+  # up into the parent. Skip them to avoid double-recovery.
+  case "$b" in agent-*) continue ;; esac
+  # Already nudged?
+  if [ -n "$fired_ids" ] && printf '%s\n' "$fired_ids" | grep -Fxq "$b"; then
+    continue
+  fi
+  # Count GENUINE research tool_use invocations (not schema/definitions).
+  n="$(jq -r --arg re "$RESEARCH_RE" '
+        select(.message.content? | type=="array")
+        | .message.content[]
+        | select(.type=="tool_use" and (.name|test($re)))
+        | .name' "$f" 2>/dev/null | wc -l | tr -d ' ')"
+  [ "${n:-0}" -ge "$MIN_CALLS" ] || continue
+  # Require a compaction boundary — a session substantial enough to have
+  # compacted is where uncaptured research is most worth recovering.
+  grep -q '"subtype":"compact_boundary"\|"isCompactSummary":true' "$f" 2>/dev/null || continue
+
+  # project dir: use the cwd recorded in the transcript when present.
+  proj="$(jq -r 'select(.cwd?) | .cwd' "$f" 2>/dev/null | head -1)"
+  [ -n "$proj" ] || proj="$(basename "$(dirname "$f")")"
+
+  # Prefix with the call count (tab-separated) for ranking, then the JSON.
+  printf '%d\t' "$n" >> "$tmp"
+  jq -cn --arg s "$b" --arg t "$f" --argjson n "$n" --arg p "$proj" \
+     '{session:$s, transcript:$t, research_calls:$n, project:$p}' >> "$tmp"
+done < <(find "$PROJECTS_DIR" -name '*.jsonl' -newermt "$SINCE" 2>/dev/null)
+
+# Rank by call count (desc), drop the sort key, apply limit.
+sort -t"$(printf '\t')" -k1,1 -rn "$tmp" | cut -f2- | {
+  if [ "$LIMIT" -gt 0 ]; then head -n "$LIMIT"; else cat; fi
+}

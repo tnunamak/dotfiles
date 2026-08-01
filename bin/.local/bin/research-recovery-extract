@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# research-recovery-extract — distill one session transcript into a compact
+# "research brief": the web-research queries, the URLs fetched, and the
+# assistant's own synthesis text around them. This is ALL a recovery worker
+# needs — it never has to read the raw multi-thousand-line transcript.
+#
+# TOKEN ECONOMY: this is the whole reason the fan-out is affordable. A raw
+# transcript is 5k+ lines; this brief is a few hundred at most. Workers read the
+# brief, not the transcript.
+#
+# Output (plain text, human+LLM readable) on stdout:
+#   ## Research queries        — every WebSearch/searxng query string
+#   ## Fetched sources         — every URL passed to WebFetch/web_url_read
+#   ## Assistant synthesis     — the assistant text blocks that immediately
+#                                followed research results (the actual findings)
+#
+# Usage: research-recovery-extract <transcript.jsonl>
+
+set -u
+command -v jq >/dev/null 2>&1 || { echo "jq required" >&2; exit 1; }
+
+f="${1:-}"
+[ -n "$f" ] && [ -f "$f" ] || { echo "usage: research-recovery-extract <transcript.jsonl>" >&2; exit 2; }
+
+RESEARCH_RE='WebSearch|WebFetch|web_fetch|searxng_web_search|web_url_read'
+
+echo "# Research brief — $(basename "$f" .jsonl)"
+echo
+
+echo "## Research queries"
+# tool_use blocks for search tools: pull the query/prompt input.
+jq -r --arg re "$RESEARCH_RE" '
+  select(.message.content? | type=="array")
+  | .message.content[]
+  | select(.type=="tool_use" and (.name|test($re)))
+  | .input
+  | (.query // .q // .prompt // .search // empty)
+' "$f" 2>/dev/null | grep -v '^$' | sort -u | sed 's/^/- /' || true
+echo
+
+echo "## Fetched sources (URL — what was sought there)"
+# For WebFetch, the URL alone loses the intent; the .prompt says what the agent
+# was looking for at that page. Pair them so the brief carries the research goal.
+jq -r --arg re "$RESEARCH_RE" '
+  select(.message.content? | type=="array")
+  | .message.content[]
+  | select(.type=="tool_use" and (.name|test($re)))
+  | .input
+  | select(.url? or .URL?)
+  | "\(.url // .URL)\t\(.prompt // "")"
+' "$f" 2>/dev/null | grep -v '^$' | sort -u \
+  | awk -F'\t' '{ if ($2 != "") printf "- %s — %s\n", $1, $2; else printf "- %s\n", $1 }' || true
+echo
+
+echo "## Assistant synthesis (text blocks from assistant turns)"
+# The assistant's own prose is where the findings live. Emit assistant text
+# content blocks, skipping tiny acknowledgements. Cap length so a pathological
+# session can't blow up the brief.
+jq -r '
+  select(.type=="assistant" or (.message.role? == "assistant"))
+  | (.message.content? // [])
+  | if type=="array" then .[] else empty end
+  | select(.type=="text")
+  | .text
+' "$f" 2>/dev/null \
+  | awk 'length($0) > 40' \
+  | head -c 40000 || true
+echo
