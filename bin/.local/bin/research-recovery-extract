@@ -1,34 +1,49 @@
 #!/usr/bin/env bash
-# research-recovery-extract — distill one session transcript into a compact
-# "research brief": the web-research queries, the URLs fetched, and the
-# assistant's own synthesis text around them. This is ALL a recovery worker
-# needs — it never has to read the raw multi-thousand-line transcript.
+# research-recovery-extract — distill one session transcript into a MINIMAL
+# "research brief" carrying just enough for a worthiness judgment (keep vs skip
+# vs already-covered): the research queries, the sources (URLs), and a short
+# taste of the agent's findings. A worker/judge never reads the raw transcript.
 #
-# TOKEN ECONOMY: this is the whole reason the fan-out is affordable. A raw
-# transcript is 5k+ lines; this brief is a few hundred at most. Workers read the
-# brief, not the transcript.
+# MINIMAL-HIGH-CONFIDENCE: the load-bearing signal for "is this durable prior-art
+# or one-off ops?" is (1) the topics researched [queries] and (2) the sources
+# [URLs] — those alone decide durable-vs-ops AND are the dedup key against the
+# corpus. Full synthesis prose is NOT needed for the judgment, only a short
+# sample, so it is capped hard. Default brief ≈ 3-4k tokens (was ~13k).
 #
-# Output (plain text, human+LLM readable) on stdout:
-#   ## Research queries        — every WebSearch/searxng query string
-#   ## Fetched sources         — every URL passed to WebFetch/web_url_read
-#   ## Assistant synthesis     — the assistant text blocks that immediately
-#                                followed research results (the actual findings)
+# Output (plain text) on stdout:
+#   ## Research queries                — every distinct search query/prompt
+#   ## Fetched sources (domains+sample)— distinct domains + a sample of full URLs
+#   ## Findings sample                 — first N chars of assistant synthesis
 #
-# Usage: research-recovery-extract <transcript.jsonl>
+# Usage: research-recovery-extract [--full] <transcript.jsonl>
+#   --full  don't cap (fat brief) — for a borderline session a judge wants to
+#           inspect in depth. Default is the tight, judge-sized brief.
 
 set -u
 command -v jq >/dev/null 2>&1 || { echo "jq required" >&2; exit 1; }
 
+# Caps (tight defaults; --full removes them).
+SYN_CAP=1500        # chars of synthesis in the tight brief
+URL_SAMPLE=40       # full URLs to show (beyond the domain list)
+FULL=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --full) FULL=1; SYN_CAP=40000; URL_SAMPLE=100000; shift ;;
+    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) break ;;
+  esac
+done
+
 f="${1:-}"
-[ -n "$f" ] && [ -f "$f" ] || { echo "usage: research-recovery-extract <transcript.jsonl>" >&2; exit 2; }
+[ -n "$f" ] && [ -f "$f" ] || { echo "usage: research-recovery-extract [--full] <transcript.jsonl>" >&2; exit 2; }
 
 RESEARCH_RE='WebSearch|WebFetch|web_fetch|searxng_web_search|web_url_read'
 
-echo "# Research brief — $(basename "$f" .jsonl)"
+echo "# Research brief — $(basename "$f" .jsonl)$([ "$FULL" = 1 ] && echo ' (full)')"
 echo
 
 echo "## Research queries"
-# tool_use blocks for search tools: pull the query/prompt input.
 jq -r --arg re "$RESEARCH_RE" '
   select(.message.content? | type=="array")
   | .message.content[]
@@ -38,24 +53,29 @@ jq -r --arg re "$RESEARCH_RE" '
 ' "$f" 2>/dev/null | grep -v '^$' | sort -u | sed 's/^/- /' || true
 echo
 
-echo "## Fetched sources (URL — what was sought there)"
-# For WebFetch, the URL alone loses the intent; the .prompt says what the agent
-# was looking for at that page. Pair them so the brief carries the research goal.
-jq -r --arg re "$RESEARCH_RE" '
+# URLs: distinct DOMAINS carry the durability/dedup signal cheaply; then a
+# bounded sample of full URLs+intent for the judge. (A 200-URL dump is waste.)
+all_urls="$(jq -r --arg re "$RESEARCH_RE" '
   select(.message.content? | type=="array")
   | .message.content[]
   | select(.type=="tool_use" and (.name|test($re)))
   | .input
   | select(.url? or .URL?)
   | "\(.url // .URL)\t\(.prompt // "")"
-' "$f" 2>/dev/null | grep -v '^$' | sort -u \
-  | awk -F'\t' '{ if ($2 != "") printf "- %s — %s\n", $1, $2; else printf "- %s\n", $1 }' || true
+' "$f" 2>/dev/null | grep -v '^$' | sort -u || true)"
+
+echo "## Fetched source domains"
+printf '%s\n' "$all_urls" | awk -F'\t' '{print $1}' \
+  | sed -E 's#^https?://([^/]+).*#\1#' | sort | uniq -c | sort -rn \
+  | awk '{printf "- %s (%s)\n", $2, $1}' || true
 echo
 
-echo "## Assistant synthesis (text blocks from assistant turns)"
-# The assistant's own prose is where the findings live. Emit assistant text
-# content blocks, skipping tiny acknowledgements. Cap length so a pathological
-# session can't blow up the brief.
+echo "## Sample sources (URL — what was sought there)"
+printf '%s\n' "$all_urls" | head -n "$URL_SAMPLE" \
+  | awk -F'\t' '{ if ($2 != "") printf "- %s — %s\n", $1, substr($2,1,160); else printf "- %s\n", $1 }' || true
+echo
+
+echo "## Findings sample (assistant synthesis, first ${SYN_CAP} chars)"
 jq -r '
   select(.type=="assistant" or (.message.role? == "assistant"))
   | (.message.content? // [])
@@ -63,6 +83,7 @@ jq -r '
   | select(.type=="text")
   | .text
 ' "$f" 2>/dev/null \
-  | awk 'length($0) > 40' \
-  | head -c 40000 || true
+  | awk 'length($0) > 60' \
+  | head -c "$SYN_CAP" || true
 echo
+[ "$FULL" = 0 ] && echo "…(synthesis truncated — re-run with --full for the complete session prose)"
