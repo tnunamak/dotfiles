@@ -79,6 +79,42 @@ resize_and_verify() {
   return 1
 }
 
+# A pty resize during boot-time resume is silently dropped by any process
+# launched under `setsid --wait` (tmux-agent-resume's resume_command(), the
+# real mechanism behind tmux-agent-resume/attend-boot-restore): setsid moves
+# the child into a new session, so the resized pty's foreground-process-group
+# SIGWINCH delivery never reaches it, even though tmux and the kernel both
+# correctly agree on the new size — confirmed via
+# devcontainer/scripts/sigwinch-repro (bare pty and real tmux+claude, 3/3 and
+# 5/5 clean across trials; real `claude` TUI repainted at the OLD width until
+# a manual `kill -WINCH` was sent). A single fix-after-startup WINCH is not
+# enough either: whichever of "resize" and "agent start" happens second still
+# gets silently dropped, so this must run AFTER our own resize_and_verify
+# confirms the window's real geometry landed, targeting whatever the pane's
+# CURRENT foreground process is at that moment (walking through setsid if
+# present). Best-effort: an agent that hasn't started yet (pane still runs a
+# shell) is not an error — the caller retries later via the liveness sweep,
+# and a resumed process that reads its size at its own startup after the
+# resize already landed needs no correction at all.
+resend_pty_winch_for_tmux_window() {
+  local idx="$1" group pane_pid comm real_child
+  group="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^main(-[0-9]+)?$' | head -1)"
+  [[ -n "$group" ]] || return 1
+  pane_pid="$(tmux list-panes -t "=${group}:${idx}" -F '#{pane_pid}' 2>/dev/null || true)"
+  [[ -n "$pane_pid" ]] || return 1
+  comm="$(ps -o comm= -p "$pane_pid" 2>/dev/null || true)"
+  if [[ "$comm" == setsid ]]; then
+    real_child="$(pgrep -P "$pane_pid" 2>/dev/null | head -1)"
+    [[ -n "$real_child" ]] || return 1
+    kill -WINCH "$real_child" 2>/dev/null
+    return
+  fi
+  # Not (yet) running under setsid: either no resume has been dispatched yet
+  # (nothing to fix — the eventual startup will read the already-correct
+  # size) or the resumed process was launched some other way. Nothing to do.
+  return 1
+}
+
 state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="${DESKTOP_LAYOUT_MANIFEST:-$state/manifest.json}"; dry=0; force=0
 created_set="${DESKTOP_LAYOUT_CREATED_SET:-}"; test_socket_dir="${DESKTOP_LAYOUT_TEST_SOCKET_DIR:-}"; spawn_number=0
 kitty_config="${DESKTOP_LAYOUT_KITTY_CONFIG:-}"
@@ -143,6 +179,7 @@ while IFS= read -r row;do
   fi
   read -r x y w h < <(jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '[.position.x*$cw/$sw,.position.y*$ch/$sh,.size.width*$cw/$sw,.size.height*$ch/$sh]|map(round)|join(" ")' <<< "$row")
   kdotool set_desktop_for_window "$new" "$desk"; resize_and_verify "$new" "$w" "$h" "$x" "$y" || true
+  [[ "$tmux_row" == true && -n "$idx" ]] && resend_pty_winch_for_tmux_window "$idx"
 done < <(jq -c '.windows[]' "$manifest")
 
 # Liveness sweep, a few seconds after every spawn finished: catches windows
@@ -157,6 +194,13 @@ if (( ! dry )) && (( ${#spawned_pids[@]} > 0 )); then
     if kill -0 "$pid" 2>/dev/null; then
       printf 'spawn=%s pid=%s window=%s cwd=%s tmux=%s tmux_idx=%s outcome=alive_after_5s\n' \
         "$sweep_spawn_number" "$pid" "$sweep_new" "$sweep_cwd" "$sweep_tmux_row" "$sweep_idx" >> "$outcome_log"
+      # Second chance for the SIGWINCH fix above: tmux-agent-resume's
+      # attend-boot-restore dispatches the resumed agent asynchronously off
+      # tmux's client-attached hook, so at the time the main loop resized
+      # this window the pane may still have been a bare shell (nothing to
+      # WINCH yet). By now the agent has almost certainly started under
+      # setsid; catch it here too.
+      [[ "$sweep_tmux_row" == true && -n "$sweep_idx" ]] && resend_pty_winch_for_tmux_window "$sweep_idx"
     else
       printf 'spawn=%s pid=%s window=%s cwd=%s tmux=%s tmux_idx=%s outcome=DIED_within_5s\n' \
         "$sweep_spawn_number" "$pid" "$sweep_new" "$sweep_cwd" "$sweep_tmux_row" "$sweep_idx" >> "$outcome_log"

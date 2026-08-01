@@ -8,7 +8,33 @@ as PID 1, dotfiles bind-mounted read-only) — but there is no "reboot"
 phase: this harness reproduces a live-session race (rapid successive
 window spawns racing a KWin scripting-API resize), not crash recovery.
 
-## Status as of the second investigation pass (2026-08-01)
+## Update (2026-08-01, separate investigation): the "TUI too small for its window" bug is SOLVED — it was never a KWin/rendering bug
+
+A later report described a live symptom that looked similar at first
+glance — a Claude Code TUI (inside tmux, inside kitty, inside a
+`setsid --wait` resume wrapper) rendering confined to a smaller area than
+its actual terminal size — but on investigation this was confirmed to be
+**pure process/signal/pty mechanics, unrelated to KWin, kitty rendering,
+or anything this harness covers**. tmux and kitty agreed on the real size
+(91x59) throughout; a manual `kill -WINCH <node_pid>` immediately fixed
+the TUI. Root cause, reproduced with real evidence (bare pty, real tmux,
+and the real `claude` binary — not just a synthetic stand-in) in
+`devcontainer/scripts/sigwinch-repro/` during that investigation and
+formalized as `tests/test_desktop_layout_pty_resize_winch.sh`:
+`tmux-agent-resume`'s `resume_command()` launches the resumed agent under
+`setsid --wait`, which moves the child into a new session — so any later
+pty resize's SIGWINCH (which the kernel delivers to the pty's foreground
+process group) never reaches it, even though the pty's kernel-level
+winsize and tmux's own pane-size bookkeeping are both correctly updated.
+Fixed in `bin/.local/bin/desktop-layout-restore`
+(`resend_pty_winch_for_tmux_window()`, called after `resize_and_verify`
+succeeds and again during the liveness sweep, to cover both orderings of
+"agent starts before/after the window resize"). Not the same bug as
+anything below — kept as an update note here only because both symptoms
+were initially described similarly ("TUI/content confined to a smaller
+area").
+
+## Status as of the third investigation pass (2026-08-01)
 
 `bin/.local/bin/desktop-layout-restore`'s burst-spawn resize race (Finding
 1 below) is **fixed and proven** — see "Fix: verify-and-retry closes the
@@ -16,9 +42,15 @@ burst race" below. The harness's base image was also upgraded from Ubuntu
 25.10 to 26.04 to close a real KWin-version fidelity gap against the actual
 host (`peregrine`) before trusting further results from it — see "Harness
 fidelity audit" below. The original "small rectangle with ghosted content"
-symptom (Finding 2 discussion) **remains unexplained** — one additional
-scenario (minimize/resize/restore) was tried and did not reproduce it
-either; see "Still open" at the bottom.
+symptom (Finding 2 discussion) **remains unexplained**. Two more angles
+were tried this pass and neither reproduced it: fractional display scaling
+(the leading untested theory going in — turned out to be untestable in
+this harness at all, not merely negative, see below) and a real screenshot
+capability build-out that surfaced its own, related dead end. See
+"Fractional scaling: KWin's virtual backend cannot do it" and "Screenshot
+capture: also broken in this environment, same likely root cause" below,
+and "Still open" at the bottom for the full four-scenario tally including
+the prior pass's minimize/resize/restore attempt.
 
 ## IMPORTANT — read this first: the theory this harness was built to test is NOT what caused the real incident
 
@@ -298,6 +330,142 @@ now-known stale-`WAYLAND_DISPLAY` failure mode ruled out first since it's
 cheap to check: `systemctl --user show-environment | grep WAYLAND_DISPLAY`
 vs `ls /run/user/$UID/wayland-*`).
 
+### Fractional scaling: KWin's virtual backend cannot do it (2026-08-01, third pass)
+
+The leading untested theory going into this pass: peregrine's real outputs
+run non-integer scale factors (2.5, 2.0, 1.15 across its three monitors,
+per `kscreen-doctor -o` on the real host — read-only, never re-run against
+it from inside an investigation), and `kdotool getwindowgeometry` there
+returns non-integer geometry (e.g. `3339.130434782609x1344.347...`). The
+theory was that this non-integer client/compositor geometry math could
+make a client compute one cell-grid size while the compositor's actual
+scaled pixel buffer ends up different — a plausible mechanism for "content
+painted into a small rectangle, rest of window stale/unpainted".
+
+**This turned out to be untestable in this harness, for an architectural
+reason, not a configuration one.** Four independent mechanisms for getting
+a non-1.0 `devicePixelRatio` onto a `kwin_wayland --virtual` output were
+tried; none work:
+
+1. **`kwin_wayland --virtual --scale <N>`.** This flag exists and accepts
+   fractional values (`--scale 2.5`, `--scale 1.15` both start cleanly, no
+   error — the binary's `FATAL ERROR incorrect value for scale` guard is
+   only for unparseable strings). But it is **not** the client-visible
+   scale factor. Verified via a KWin scripting-API query
+   (`workspace.screens[0].devicePixelRatio`, the same property kind
+   `kdotool` itself reads) after starting with `--scale 2.5`:
+   `devicePixelRatio` reported **1**, and `geometry` reported
+   **4800x2700** (`1920*2.5 x 1080*2.5` — the `--width`/`--height`
+   defaults multiplied through). Repeated at `--scale 1.15`:
+   `devicePixelRatio` still **1**, `geometry` **2208x1242**
+   (`1920*1.15 x 1080*1.15`). `--scale` on the virtual backend is a
+   **raw-framebuffer pixel-resolution multiplier applied at output
+   creation**, not a fractional-scaling knob — architecturally a
+   render-resolution/CI-screenshot-fidelity setting, unrelated to HiDPI
+   simulation. Confirmed independently via `WAYLAND_DEBUG=1` protocol
+   trace on a kitty client connected to a `--scale 2.5` session: the
+   advertised `wl_output.mode()` stays `1920, 1080`, `wl_output.scale()`
+   reports `1`, and the modern `wp_fractional_scale_v1` protocol (present
+   and bound by kitty) reports `preferred_scale(120)` — 120/120 = exactly
+   1.0. Every layer a real client would read agrees: scale is 1, always,
+   regardless of `--scale`.
+2. **`~/.config/kwinoutputconfig.json`** (the real, non-virtual backend's
+   per-output scale persistence format, keyed by output name/EDID
+   identity). Wrote a config setting `"Virtual-0"` to `"scale": 2.5` before
+   starting KWin: no effect, `devicePixelRatio` still reports `1`. Expected
+   in hindsight — this mechanism is designed around identifying real
+   monitors by DRM/EDID identity, which a virtual output has none of.
+3. **KWin scripting-API write.** `workspace.screens[0].devicePixelRatio`
+   is a read-only Qt property on the virtual backend —
+   `TypeError: Cannot assign to read-only property "devicePixelRatio"`
+   when a KWin JS script tries to set it directly.
+4. **Qt env vars** (`QT_SCALE_FACTOR`, `QT_WAYLAND_FORCE_DPI`) set on the
+   `kwin_wayland` process's own environment before start. No effect —
+   correctly so in hindsight: these affect how a Qt *client* self-scales
+   its own rendering against a compositor-announced scale, and KWin here
+   is the compositor doing the announcing, not a scaled client.
+
+No KWin config mechanism, CLI flag, or scripting-API surface produces a
+non-1.0 output scale on the virtual backend. This is consistent with the
+virtual backend's real purpose (deterministic headless CI/screenshot
+rendering at a fixed, predictable resolution), not HiDPI/fractional-scale
+behavioral testing. **Conclusion: this harness cannot exercise the
+fractional-scaling theory at all, not because the theory is wrong, but
+because the tool it's built on has no supported way to simulate fractional
+scaling.** This is a harder, more fundamental gap than the "runs at 1.0
+scale" caveat previously recorded in the fidelity audit above suggested —
+it isn't a config knob that was left at its default, it's genuinely
+unreachable short of building/patching a KWin virtual-backend fork to
+propagate `--scale` into `LogicalOutput::scale()`, which is out of scope
+for a test-harness investigation. The theory remains unconfirmed AND
+unrefuted — it simply cannot be tested with this tool.
+
+### Screenshot capture: also broken in this environment, same likely root cause
+
+Separately from scaling, this pass also tried to close the "no screenshot
+tooling" gap recorded in "What we could not test" below, since real pixel
+evidence (not just protocol-trace/geometry-query evidence) was explicitly
+requested for any reproduction attempt. Progress and a new dead end:
+
+- **`org.kde.KWin.ScreenShot2` CAN be made available.** The earlier
+  claim that it's unregistered because `kwin-wayland`'s minimal apt
+  dependency set excludes the plugin is correct as far as it goes, but
+  the fix is simple: `apt-get install kwin-common` (peregrine already has
+  it, pulled in as a `plasma-desktop` dependency — confirmed via
+  `dpkg -l | grep kwin` on the real host, read-only). `kwin-common` ships
+  `screenshot.so` at
+  `/usr/lib/x86_64-linux-gnu/qt6/plugins/kwin/plugins/screenshot.so`
+  (confirmed via `dpkg-deb -c` on the downloaded `.deb` before installing)
+  — this is a core always-load plugin directory, not an opt-in effect, so
+  a fresh `kwin_wayland` start after installing it registers
+  `/org/kde/KWin/ScreenShot2` on session D-Bus with no further config.
+  (Installing it in this exploration pulled in a large KDE dependency
+  chain including `network-manager`, whose postinst hung mid-configure in
+  this minimal container — harmless to the already-`ii`-configured
+  `kwin-common` package itself, but a real Dockerfile change would need a
+  narrower dependency picture, e.g. `--no-install-recommends` plus
+  explicitly excluding `network-manager`, or accepting the heavier image.
+  Not resolved here since the capture path turned out to be broken anyway
+  — see below.)
+- **Calling it directly returns `NoAuthorized`.** KWin's screenshot
+  interface gates callers (normally only `spectacle` or
+  `xdg-desktop-portal-kde` are trusted) — renaming/symlinking the calling
+  binary to `spectacle` did not bypass this (the check evidently resolves
+  the real executable identity, not `argv[0]`/symlink name). Found a real,
+  intended bypass instead: `strings` on `screenshot.so` turned up
+  `KWIN_SCREENSHOT_NO_PERMISSION_CHECKS`, an undocumented debug env var.
+  Set on the `kwin_wayland` process's own environment before start, it
+  does work — the error changes from `NoAuthorized` to a different one.
+- **`Error.Cancelled` on every capture method tried.** With the permission
+  check bypassed, `CaptureWorkspace`, `CaptureActiveScreen`, and
+  `CaptureArea` (a Python `dbus`-module client passing a pipe write-end as
+  the required Unix-fd argument, verified connecting and calling
+  correctly — the error is a real D-Bus method-call failure, not a client
+  bug) all fail identically with `org.kde.KWin.ScreenShot2.Error.Cancelled:
+  Screenshot got cancelled`. No corresponding error appears in
+  `kwin_wayland`'s own log even with `QT_LOGGING_RULES="kwin_screenshot=true"`
+  set on its environment — the capture is being rejected very early,
+  before the plugin's own logging fires. The container's `kwin_wayland`
+  log already shows `Failed to open drm node: "/dev/dri/renderD1{28,29,30}"`
+  and `Configured compositor not supported by Platform. Falling back to
+  defaults` at startup (present regardless of the screenshot work) —
+  consistent with KWin's screenshot capture path depending on a DMA-BUF/
+  GBM-backed render target that the llvmpipe software-rendering fallback
+  this container is stuck on cannot provide. Not proven down to the exact
+  KWin source line (would need a debug build to trace further), but the
+  failure is 100% consistent across every capture method, which points at
+  the shared rendering-pipeline dependency rather than anything
+  method-specific.
+
+**Combined conclusion: this harness cannot get real pixel evidence, for
+what looks like the same underlying reason it cannot get real GPU
+compositing — no functional DRM/GBM render path, only llvmpipe.** This was
+already flagged as a known, accepted gap in "What we could not test"
+below for a different reason (GPU-specific compositing bugs); this pass's
+finding is that it also blocks the screenshot capture pipeline itself, not
+just GPU-driver-specific rendering bugs. `WAYLAND_DEBUG=1` protocol tracing
+remains the only working ground-truth technique in this environment.
+
 ### Confirmed real gap in `desktop-layout-restore` (regardless of which theory is right)
 
 `bin/.local/bin/desktop-layout-restore`'s `wait_for_graphical_session`
@@ -341,29 +509,36 @@ environment — useful for any future dotfiles work touching
 
 ## What we could not test (and why)
 
-**No screenshot capability at all.** `org.kde.KWin.ScreenShot2` (the
-D-Bus interface a `kwin-mcp`-style external tool would use) is **not
-registered** by this environment's KWin — the `kwin-wayland` apt package
-ships *only* the two binaries (`kwin_wayland`, `kwin_wayland_wrapper`)
-plus its declared library dependencies; there is no `kwin-data`,
-`kwin-addons`, or plugin/effects package pulled in (checked directly:
-`apt-cache depends kwin-wayland` lists no such dependency). **Re-verified
-after the 2026-08-01 base-image switch from Ubuntu 25.10 to 26.04: this
-gap is unchanged in 26.04** (`apt-cache depends kwin-wayland` on
-`ubuntu:26.04` shows the identical lean dependency set) — it's a
-consistent packaging decision across releases, not something 25.10
-specifically lacked. Neither `spectacle` nor any `wlr-screencopy`-based
-tool (`grim`, etc.) is available either — and KWin doesn't implement
-`wlr-screencopy` regardless (that's a wlroots-specific protocol). This is
-a **packaging gap in this specific container's minimal Ubuntu-repo-only
-base**, not a KWin capability gap — the same virtual-backend approach is
-documented and used successfully by external projects (e.g.
-`isac322/kwin-mcp`) that pull in the fuller KDE Plasma stack. If a future
-investigation genuinely needs pixel-level screenshots, either add
-`plasma-workspace`/the full desktop meta-package chain to the Dockerfile
-(heavier image, more install time) or accept `WAYLAND_DEBUG=1` protocol
-tracing as the ground-truth technique instead (used throughout this
-investigation; see Finding 1).
+**No screenshot capability, for two stacked reasons — one fixed, one not.**
+`org.kde.KWin.ScreenShot2` was originally unregistered simply because the
+`kwin-wayland` apt package ships only the two binaries plus declared
+library deps, with no `kwin-data`/`kwin-addons`/plugin package pulled in.
+**That half is fixed as of the third pass (2026-08-01):** `kwin-common`
+(not `kwin-addons` — a naming red herring; `kwin-addons` is switcher
+effects) ships `screenshot.so` in KWin's always-load plugin directory, and
+installing it does register `/org/kde/KWin/ScreenShot2`. **But the
+interface still cannot actually produce a screenshot in this container** —
+every capture method (`CaptureWorkspace`, `CaptureActiveScreen`,
+`CaptureArea`) fails with `Error.Cancelled` once past the separate
+`KWIN_SCREENSHOT_NO_PERMISSION_CHECKS` authorization gate. This is
+consistent with — and very likely the same underlying cause as — the "No
+real GPU/DRM path" limitation immediately below: `kwin_wayland`'s own log
+shows `Failed to open drm node` and a compositor-platform fallback at
+startup, and screenshot capture depends on a DMA-BUF/GBM-backed render
+target that pure llvmpipe software rendering doesn't provide. See
+"Screenshot capture: also broken in this environment, same likely root
+cause" above for the full trail (packages, the undocumented permission
+bypass env var, and the Cancelled result across all capture methods).
+Neither `spectacle` nor any `wlr-screencopy`-based tool (`grim`, etc.) is
+installed either, and KWin doesn't implement `wlr-screencopy` regardless
+(that's a wlroots-specific protocol) — but per the above, installing them
+would not have helped anyway, since the underlying render-target gap is
+compositor-side, not client-side. If a future investigation genuinely
+needs pixel-level screenshots, the realistic paths are: get real GPU
+passthrough into the container (`--drm` backend + a DRM render node
+device, not `--virtual`), or accept `WAYLAND_DEBUG=1` protocol tracing as
+the ground-truth technique instead (used throughout this investigation;
+see Finding 1).
 
 **No real GPU/DRM path.** The virtual backend falls back through Zink →
 llvmpipe software rendering (`MESA: error: ZINK: vkCreateInstance failed
@@ -372,7 +547,9 @@ Any bug that is specifically about real-GPU compositing behavior (e.g.
 the `single_pixel_buffer` protocol gap cited in kitty#7478, which is
 about a specific GPU/driver combination) cannot be ruled in or out by
 this harness — it can only test protocol-level / scripting-API-level
-behavior, which is what both findings above actually are.
+behavior, which is what both findings above actually are. As of the third
+pass, this same gap is now also confirmed to block screenshot capture
+itself (see above), not just GPU-driver-specific compositing bugs.
 
 ## Quick start
 
@@ -488,7 +665,7 @@ host secrets involved. Additional to this harness:
 ## Still open: the original "small rectangle with ghosted content" symptom
 
 Not explained, despite two independent theories tested and disproven, and
-now three scenarios tried:
+now four scenarios tried:
 
 1. Burst-spawn resize race (Finding 1 / the Fix) — produces
    stuck-at-default-size windows, not ghosted content. Now fixed anyway,
@@ -498,19 +675,44 @@ now three scenarios tried:
    window.
 3. Minimize → resize → restore — produces the same stuck-at-wrong-geometry
    signature as (1), not ghosted content either.
+4. Fractional display scaling (the leading theory this third pass was
+   built to test) — **could not be tested at all**: KWin's virtual backend
+   has no working mechanism to produce a non-1.0 client-visible scale
+   factor (four independent approaches tried and confirmed dead —
+   `--scale` CLI flag, `kwinoutputconfig.json`, scripting-API write, Qt
+   env vars — see "Fractional scaling: KWin's virtual backend cannot do
+   it" above). This is a **harness-capability gap, not a disproof of the
+   theory** — unlike (1)-(3), which were reproduced and shown to produce a
+   different failure shape than the reported symptom, fractional scaling
+   was never actually exercised, so it remains neither confirmed nor
+   ruled out.
 
-Everything this harness can test is **protocol-level / scripting-API-level
+Everything this harness CAN test is **protocol-level / scripting-API-level
 behavior** against a **software-rendered (llvmpipe), non-scaled virtual
-KWin backend**. If the ghosting symptom's actual mechanism involves real
-GPU/DRM compositing (buffer age tracking, damage-region tracking, a
-specific driver's swapchain behavior, or similar — the kind of thing
-kitty#7478's `single_pixel_buffer` citation was originally gesturing at)
-or fractional-scaling-specific rendering paths, this harness cannot
-reproduce or rule it out, by construction — not because it wasn't tried
-hard enough, but because the harness has no real GPU path and runs at 1.0
-scale (see "Harness fidelity audit" and "What we could not test" above).
-That would be a legitimate, evidenced reason the symptom stays open rather
-than a gap in this investigation's effort.
+KWin backend**. Two real, evidenced architectural limits now confirmed
+(not assumed) for why the ghosting symptom's actual mechanism is likely
+out of reach here regardless of further scenario attempts:
+
+- **No real GPU/DRM compositing path.** Confirmed via `kwin_wayland`'s own
+  startup log (`Failed to open drm node`, Zink→llvmpipe fallback) and,
+  this pass, via the fact that even KWin's own screenshot-capture pipeline
+  (`org.kde.KWin.ScreenShot2`) fails with `Error.Cancelled` on every
+  method tried once the plugin is installed and permission-gated — a
+  DMA-BUF/GBM-dependent capture path failing is a stronger signal of a
+  real render-target gap than the startup log alone. If the ghosting
+  symptom's mechanism involves buffer age tracking, damage-region
+  tracking, or a specific driver's swapchain behavior (the kind of thing
+  kitty#7478's `single_pixel_buffer` citation was originally gesturing
+  at), this harness cannot reproduce or rule it out.
+- **No fractional/non-integer output scaling**, confirmed exhaustively
+  this pass (see above) rather than just noted as a default-config gap.
+
+Both are honest, evidenced reasons the symptom stays open — not a gap in
+this investigation's effort. Closing either would require infrastructure
+beyond a test-harness investigation's scope: real GPU passthrough
+(`kwin_wayland --drm` against an actual render node, not `--virtual`) for
+the first, or a patched/forked KWin virtual backend that propagates
+`--scale` into `LogicalOutput::scale()` for the second.
 
 The most productive next step, if the symptom recurs live, is direct
 observation on the real desktop at the moment it happens: capture
@@ -521,4 +723,7 @@ just attach `strace -f -e trace=network -p <pid>` or restart kitty's
 | grep -i kwin` around the timestamp) rather than trying to construct more
 synthetic repro scenarios without a concrete new mechanism to test —
 further scenario-guessing without new evidence would be exactly the kind
-of unevidenced speculation this investigation is trying to avoid.
+of unevidenced speculation this investigation is trying to avoid. If it
+recurs on a fractionally-scaled output specifically, that observation
+itself would be significant evidence for the scaling theory, since this
+harness has now confirmed it structurally cannot check that condition.
