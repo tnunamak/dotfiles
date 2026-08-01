@@ -35,6 +35,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-capture-detect-codex' 2>/dev/null"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
           },
           {

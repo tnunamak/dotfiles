@@ -177,6 +177,22 @@ else
     fi
 fi
 
+
+# ── Test 8: false-positive guards — browser automation + metadata never fire ──
+
+for fp in "mcp__playwright__browser_navigate" "mcp__playwright__browser_click" \
+          "mcp__playwright__browser_snapshot" "mcp__searxng__searxng_instance_info" \
+          "mcp__plugin_context-mode__ctx_doctor"; do
+    posttooluse_json "$fp" "session-fp" | "$DETECT" || true
+    if [ -f "$TEST_STATE/research-pending-session-fp" ]; then
+        fail "Test 8: non-research tool '$fp' wrongly created a flag"
+        rm -f "$TEST_STATE/research-pending-session-fp"
+        break
+    fi
+done
+[ -f "$TEST_STATE/research-pending-session-fp" ] || pass "Test 8: browser-automation + metadata tools do not fire (no false positives)"
+rm -f "$TEST_STATE/research-pending-session-fp"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 echo ""

@@ -39,16 +39,28 @@ tn_lc="$(printf '%s' "$tool_name" | tr '[:upper:]' '[:lower:]')"
 
 is_research=0
 
-# Web-research tool names across Claude / Gemini / Codex / context-mode / MCP search.
-# Matched case-insensitively as substrings so per-agent naming variants all hit:
-#   Claude:   WebFetch, WebSearch
-#   Gemini:   web_fetch, google_web_search
-#   Codex:    web_search / web.run-style
-#   context-mode / MCP: ctx_fetch_and_index, searxng, web_url_read
+# EXCLUDE-FIRST (structural, catches whole namespaces so future tools can't leak):
+#   - browser/UI automation: playwright browser_* is NOT research (it clicks/screenshots).
+#     The old bare *browse* glob matched every browser_* call → 22% false positives.
+#   - metadata/status calls: *_instance_info / *_info / *_stats / *_doctor / *_ping are
+#     not research even on a research server (e.g. searxng_instance_info).
 case "$tn_lc" in
-    *webfetch*|*websearch*|*web_fetch*|*web_search*|*web-search*|\
-    *google_web_search*|*web_url_read*|*searxng*|*ctx_fetch*|*fetch_and_index*|\
-    *url_read*|*browse*)
+    *browser_*|*playwright*|*_instance_info|*_info|*_stats|*_doctor|*_ping)
+        exit 0
+        ;;
+esac
+
+# POSITIVE allowlist — specific action+context pairs, not loose single words. Each
+# requires the ACTION and its CONTEXT together, so a lone "search"/"browse"/"url"
+# can't trip it:
+#   Claude:  WebFetch, WebSearch        Gemini: web_fetch, google_web_search
+#   Codex:   web_search                 MCP/searxng: searxng_web_search, web_url_read
+#   context-mode: ctx_fetch_and_index
+case "$tn_lc" in
+    *websearch*|*web_search*|*google_web_search*|\
+    *webfetch*|*web_fetch*|\
+    *searxng_web_search*|*web_url_read*|\
+    *ctx_fetch*|*fetch_and_index*)
         is_research=1
         ;;
 esac

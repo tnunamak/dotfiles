@@ -1,5 +1,17 @@
 # Research corpus index
 
+- [Tauri externalBin is the supported way to ship a platform Node runtime](ci-release-engineering/tauri-externalbin-is-the-supported-way-to-ship-a-platform-node-runtime.md) - 2026-07-31 - Tauri explicitly supports external binaries so desktop apps do not require user-installed Node or Python; stage a target-triple Node binary in each native release lane, verify its architecture/version, and test connector startup without system Node in PATH.
+
+- [GitHub Actions macOS runners must match the architecture of packaged native helpers](ci-release-engineering/github-actions-macos-runners-must-match-native-helper-architecture.md) - 2026-07-31 - Current hosted labels map `macos-latest`/`macos-15` to arm64 and `macos-15-intel` to x64. DataConnect must build each macOS bundle on its matching native runner because its personal-server helper and `better-sqlite3` module are host-architecture outputs.
+
+- [Codex SQLite feedback-log churn was reduced in 0.142–0.143, but live hosts still need a write-rate and insert-churn check](agentic-context-design/codex-sqlite-feedback-log-churn-was-fixed-in-0142-but-must-be-measured-on-live-hosts.md) — 2026-07-31 — The original high-write report was closed after fixes released in 0.142–0.143, but later reports describe residual TRACE churn. On this host 0.146.0 has a 2.86 GiB `logs_2.sqlite` and a 15-second sample showed 608 inserted IDs for 70 retained rows; quantify device/process write rate before deciding on cleanup.
+
+- [Standards-session pre-reading is scoped to the work, distributed in advance, and short enough to finish](lfdt-labs-prior-art/standards-session-pre-reading-is-scoped-to-the-work-not-an-exhaustive-curriculum.md) — 2026-07-30 — IETF/W3C practice supports a short session-scoped packet; for PDP-Connect, use a 20-minute welcoming start, primary protocol sources, Open Banking as the strongest deployed comparison, and clearly label scholarly synthesis as context rather than authority.
+
+- [Good first issues are groomed and mentored entry points, not merely small tasks](lfdt-labs-prior-art/good-first-issues-are-groomed-and-mentored-not-merely-small.md) — 2026-07-30 — GitHub exposes these issues on `/contribute`; Kubernetes requires a settled solution, relevant code/tests, copyable fixtures, low setup/domain barriers, and an explicit maintainer commitment to shepherd the first PR.
+
+- [Authorization terms must bind exactly to the transaction before side effects or consent](protocol-security/exact-authorization-terms-must-bind-to-the-transaction.md) — 2026-07-30 — OAuth Security BCP's exact-match and transaction-binding defenses generalize to relay-backed consent: validate optimization data against canonical transaction identity and exact authorization terms; abort, never fall back, on mismatch.
+
 - [Durable-workflow, job-queue, actor, and terminal-automation systems all put engineering into the boundary Waspflow is missing](agent-harnesses/durable-wakeup-patterns-from-workflow-queue-actor-and-terminal-systems.md) — 2026-07-30 — Cross-system survey (Temporal, Step Functions, Erlang/OTP, GitHub Actions, BullMQ, VS Code shell integration, tmux, systemd, plus Gas Town/FirstMate) answering whether any system achieves native-like injection without owning the parent event loop (no — Step Functions' token pattern is the closest non-owning exception) and whether terminal automation is a legitimate adapter or only a fallback (only a fallback — no ordering/atomicity/ack guarantee at the tmux layer, no cross-tool readiness signal except Codex's narrow OSC 9 turn-complete). Recommends a durable idempotent receipt plus per-harness cooperative signal where documented, heuristic pane classification as an explicit fallback elsewhere.
 
 - [Waspflow completion adapters require evidence for delivery order, turn ownership, and recovery](agent-harnesses/waspflow-native-like-completion-adapters-should-use-a-tiered-contract.md) — 2026-07-30 — Draft implementation gate for eight products: classify each path as documented pre-next-decision, documented next/new-turn only, or not documented; controller acceptance never substitutes for model-context delivery; every row carries setup ownership and unrun active/busy/permission, restart, and duplicate-ack probes.
@@ -49,6 +61,8 @@
 - [The remaining credible Qwen3.6 engine gains are MTP depth tuning or a DFlash challenger, not non-P2P dual-GPU serving](llm-serving/remaining-qwen36-engine-upside-is-mtp-depth-or-dflash-not-dual-gpu.md) — 2026-07-16 — the local sweep keeps MTP depth 3 and ubatch 512, promotes target-verified q5/q4 draft KV at 205,824 context, excludes DFlash by operator choice, and rejects non-P2P dual-GPU serving.
 
 One line per entry, **newest first**. Agents read this first to decide what to open
+
+**[Recovery backlog](RECOVERY-BACKLOG.md)** — 91 KEEP leads from the 2026-08-01 census of uncaptured research; recover on demand.
 (see `README.md` for the convention; the standing "check here before web-researching"
 rule is in `ai/AGENTS.md`). Add a line here whenever you create an entry.
 

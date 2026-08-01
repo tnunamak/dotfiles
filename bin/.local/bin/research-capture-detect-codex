@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# research-capture-detect-codex — Codex Stop-hook detector.
+#
+# WHY THIS EXISTS: Codex's web research is its BUILT-IN `web_search_call`, which
+# does NOT surface as a PostToolUse hook event (built-ins bypass the tool-call
+# hook path). So research-capture-detect (a PostToolUse detector) never sees it,
+# and 303 Codex research sessions produced 0 nudges. Instead we detect POST-HOC:
+# on Stop, scan the session's own rollout JSONL for a web_search_call and, if
+# present, write the same pending flag the nudge consumes — so the existing
+# research-capture-nudge (also wired on Codex Stop) fires normally.
+#
+# This runs at Stop, BEFORE the nudge in the same hook list, so the flag it
+# writes is present when the nudge reads it.
+#
+# Fail-silent: must never break the session. Must emit a valid `{}` for Codex
+# Stop hooks that expect a JSON object.
+
+trap 'printf "{}\n" 2>/dev/null; exit 0' ERR
+
+STATE_DIR="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}"
+CODEX_SESSIONS_DIR="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+
+emit() { printf '{}\n'; }
+
+# Kill switch.
+[ -f "$STATE_DIR/OFF" ] && { emit; exit 0; }
+command -v jq >/dev/null 2>&1 || { emit; exit 0; }
+
+input="$(cat 2>/dev/null || true)"
+[ -n "$input" ] || { emit; exit 0; }
+
+# Codex Stop payload carries the session id; try common field names.
+session_id="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // .session.id // .conversation_id // empty' 2>/dev/null || true)"
+
+# Locate this session's rollout. Codex encodes the session UUID in the filename:
+# rollout-<ts>-<uuid>.jsonl. If we have the id, match it; else fall back to the
+# most recently modified rollout (the one that just stopped).
+rollout=""
+if [ -n "$session_id" ]; then
+    rollout="$(find "$CODEX_SESSIONS_DIR" -name "*${session_id}*.jsonl" 2>/dev/null | head -1)"
+fi
+if [ -z "$rollout" ]; then
+    rollout="$(find "$CODEX_SESSIONS_DIR" -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null \
+                | sort -rn | head -1 | cut -d' ' -f2-)"
+fi
+[ -n "$rollout" ] && [ -f "$rollout" ] || { emit; exit 0; }
+
+# Did this session actually do a native web search?
+if ! jq -e 'select(.type=="response_item") | .payload | select(.type=="web_search_call")' "$rollout" >/dev/null 2>&1; then
+    emit; exit 0
+fi
+
+# Flag key: prefer the real session id; else derive from the rollout filename.
+key="$session_id"
+[ -n "$key" ] || key="$(basename "$rollout" .jsonl)"
+flag_file="$STATE_DIR/research-pending-${key}"
+
+mkdir -p "$STATE_DIR" 2>/dev/null || { emit; exit 0; }
+chmod 0700 "$STATE_DIR" 2>/dev/null || true
+
+ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+# Only write if not already flagged this exact tool kind (idempotent across
+# multiple Stop events in one session).
+if ! grep -q 'codex_web_search' "$flag_file" 2>/dev/null; then
+    printf '%s %s\n' "$ts" "codex_web_search" >> "$flag_file" 2>/dev/null || true
+fi
+
+emit
+exit 0
