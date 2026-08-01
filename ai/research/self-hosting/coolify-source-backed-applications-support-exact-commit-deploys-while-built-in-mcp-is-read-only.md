@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [coolify, deployments, git, mcp, api]
 status: draft
 sources: [coolify-applications, coolify-public-api, coolify-mcp]
+source_session: 019e9b28-9d19-78c0-b4fb-ae480f826d52
 ---
 
 ## CLAIMS

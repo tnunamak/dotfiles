@@ -5,6 +5,7 @@ topic: search-infrastructure
 tags: [pgvector, postgres, ann, hnsw, ivfflat, vector-search, filtered-search]
 status: draft
 sources: [pgvector-readme, pg-partial-indexes, pg-partitioning, pg-index-types, pg-multicolumn-indexes]
+source_session: b4730db5-cfed-49e1-89df-4bfc59b16025
 ---
 
 ## CLAIMS

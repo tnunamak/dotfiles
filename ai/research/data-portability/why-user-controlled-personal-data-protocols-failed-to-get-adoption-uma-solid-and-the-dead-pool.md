@@ -5,6 +5,7 @@ topic: data-portability
 tags: [uma, solid, personal-data-stores, data-portability, smart-on-fhir, open-banking, standards-adoption, prior-art]
 status: draft
 sources: [kantara-uma1, uma2-grant, wso2-uma, forgerock-uma, hie-of-one, uma-core, arxiv-uma, richer-uma2, inrupt-techcrunch, inrupt-axios, odi-solid, latka-inrupt, odi-symposium, solid-forum-adoption, verborgh-pods, dodds-solid, demartin-solid, newstack-solid, chrissaad, adweek-dataportability, oreilly-locker, forbes-locker, allthingsd-singly, mydex-paper, mydex-companies-house, dataswift-site, snyk-hatjs, smart-fhir-descope, openbanking-roadmap]
+source_session: 019d35d2-84c0-7322-8615-9b5076e452db
 ---
 
 ## CLAIMS

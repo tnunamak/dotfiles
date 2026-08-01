@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [ingestion, connectors, etl, airbyte, kafka-connect, push-vs-pull, prior-art]
 status: draft
 sources: [ietf-set, openid-ssf, scim, activitypub, websub, oauth2, otel-collector, kafka-connect, airbyte, debezium, nifi, fluentd-vector]
+source_session: 019d33e2-4b34-76b0-9a9e-001d576fa54f
 ---
 
 ## CLAIMS

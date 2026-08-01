@@ -5,6 +5,7 @@ topic: data-portability
 tags: [google-maps, timeline, location-history, import-ux, web-share-target, google-takeout, dawarich]
 status: draft
 sources: [gmaps-timeline-help, google-download-data, web-share-target-chrome, web-share-target-mdn, android-receive-data, dpapi-intro, dawarich-home, dawarich-vs-timeline, dawarich-alternatives, timelinize-google, timelinize-import, hpi-readme, takeout-parser, owntracks, google-takeout]
+source_session: 019e3c96-4e66-7611-9c00-c7498d13dfa7
 ---
 
 ## CLAIMS

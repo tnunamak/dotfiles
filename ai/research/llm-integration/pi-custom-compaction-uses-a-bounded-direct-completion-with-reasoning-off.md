@@ -5,6 +5,7 @@ topic: llm-integration
 tags: [pi, compaction, context-window, reasoning, extensions]
 status: draft
 sources: [pi-compaction-docs, pi-custom-compaction-example, pi-issue-92]
+source_session: 019f5a2e-37c8-7e61-a669-d1b546873800
 ---
 
 ## CLAIMS

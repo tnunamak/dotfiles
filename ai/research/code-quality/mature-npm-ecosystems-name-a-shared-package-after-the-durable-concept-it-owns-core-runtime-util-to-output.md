@@ -5,6 +5,7 @@ topic: code-quality
 tags: [package-naming, api-design, monorepo, npm, prior-art]
 status: draft
 sources: [tanstack-query-core, urql-core, relay-runtime, apollo-client, redux-toolkit, sentry-core, otel-core, smithy-core, smithy-types, aws-sdk-core, mcp-sdk, unified, vfile, vfile-reporter, mdast-util-to-markdown, hast-util-to-html, mdast-util-to-string, unist-util-visit, to-vfile]
+source_session: 80feb421-6d05-45fb-a555-63b91bab8f4f
 ---
 
 ## CLAIMS

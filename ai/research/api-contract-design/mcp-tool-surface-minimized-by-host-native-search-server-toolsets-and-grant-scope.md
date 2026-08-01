@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [mcp, tool-surface, token-footprint, toolsets, deferred-loading, search-fetch]
 status: draft
 sources: [mcp-tools, mcp-pagination, openai-mcp, openai-mcp-data, openai-tool-search, codex-mcp, claude-mcp, anthropic-tool-ref, anthropic-advanced-tools, claude-tool-search, github-mcp, github-toolsets, stripe-mcp, notion-mcp, linear-mcp, linear-changelog, sentry-mcp]
+source_session: 019d77bf-c440-7ea3-a715-a8a2cb29d7e9
 ---
 
 <!-- Reusable per-provider MCP prior-art extracted from a pdpp design note. pdpp-specific

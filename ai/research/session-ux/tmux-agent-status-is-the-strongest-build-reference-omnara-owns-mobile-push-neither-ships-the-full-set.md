@@ -5,6 +5,7 @@ topic: session-ux
 tags: [buy-vs-build, tmux, mobile, notifications, hooks, multi-agent]
 status: draft
 sources: [tmux-agent-status, omnara, cursor-cloud, codex-cloud, claude-agent-view, claude-desktop-dispatch, claude-squad]
+source_session: 019f6b7d-22f8-7023-a5d8-7ded9e023ec3
 ---
 
 <!--

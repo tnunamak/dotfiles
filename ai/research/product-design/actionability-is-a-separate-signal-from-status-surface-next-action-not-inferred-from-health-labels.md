@@ -5,6 +5,7 @@ topic: product-design
 tags: [actionability, status-ux, next-action, triage, repair-flow, prior-art]
 status: draft
 sources: [stripe-status, datadog-status-page, plaid-update-mode, sentry-states]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: product-design
 tags: [mobile, responsive, touch-targets, motion, reduced-motion, list-detail, accessibility, prior-art]
 status: draft
 sources: [wcag-target-size, nng-touch-targets, android-list-detail, android-m3, wcag-animation, webdev-reduced-motion, mdn-reduced-motion, nng-animation, nng-skeleton, github-mobile, github-filtering, stripe-express, linear-method, apple-hig]
+source_session: 019d7059-53fd-7a70-85ef-7a568ded7b7b
 ---
 
 ## CLAIMS

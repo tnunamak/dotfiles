@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [connection-lifecycle, oauth, plaid, stripe, nango, merge, rest-semantics, prior-art]
 status: draft
 sources: [plaid-items, plaid-link, stripe-connect-accounts, stripe-oauth, nango-docs, merge-docs, rfc7231]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

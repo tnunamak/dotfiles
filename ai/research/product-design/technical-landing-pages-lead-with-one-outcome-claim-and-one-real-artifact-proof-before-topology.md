@@ -5,6 +5,7 @@ topic: product-design
 tags: [landing-page, positioning, above-the-fold, developer-marketing, prior-art]
 status: draft
 sources: [stripe, linear, vercel, plaid, cloudflare, valtown, onepassword, launchdarkly]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 ## CLAIMS

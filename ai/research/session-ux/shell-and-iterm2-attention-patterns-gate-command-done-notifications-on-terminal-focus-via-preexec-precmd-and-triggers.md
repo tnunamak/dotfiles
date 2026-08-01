@@ -5,6 +5,7 @@ topic: session-ux
 tags: [zsh, preexec, precmd, iterm2, triggers, marks, badges, notify, focus-gating]
 status: draft
 sources: [zsh-hooks, bash-preexec, zsh-notify, noti, iterm-triggers, iterm-marks, iterm-badges, iterm-escape]
+source_session: unknown
 ---
 
 <!--

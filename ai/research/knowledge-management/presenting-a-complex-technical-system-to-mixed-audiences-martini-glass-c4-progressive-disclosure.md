@@ -5,6 +5,7 @@ topic: knowledge-management
 tags: [technical-communication, progressive-disclosure, c4-model, narrative-visualization, docs-as-product, design-systems]
 status: draft
 sources: [segel-heer, stripe-markdoc, cloudflare-ref-arch, apple-hig, linear-method, nng-progressive-disclosure, c4-model, tufte, owasp-threat-modeling, plaid-directed-graph, illustrated-tls, geist, primer, polaris, radix, shadcn, spectrum]
+source_session: 019d2ace-04a3-7242-85e8-1f49ff7813e5
 ---
 
 ## CLAIMS

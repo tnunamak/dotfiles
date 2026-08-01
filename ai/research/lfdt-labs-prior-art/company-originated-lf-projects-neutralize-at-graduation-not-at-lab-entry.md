@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [linux-foundation, cncf, lfdt, hyperledger, vendor-neutrality, project-lifecycle, donation, sandbox, labs, incubation, graduation]
 status: draft
 sources: [cncf-lifecycle, cncf-incubation-template, cncf-vendor-neutrality-guide, cncf-toc-issue-2231, lfdt-labs-proposal, lfdt-labs-github, hiero-announcement, hedera-hiero-blog, backstage-spotify-sandbox-post, ibm-fabric-token-donation, coindesk-hyperledger-labs, lfdt-toc-project-lifecycle, lfdt-aifaq-incubation-proposal]
+source_session: 019f5128-5759-7c61-9407-764bfcf59b6d
 ---
 
 ## CLAIMS

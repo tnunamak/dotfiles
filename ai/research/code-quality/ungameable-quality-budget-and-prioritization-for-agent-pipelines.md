@@ -5,6 +5,7 @@ topic: code-quality
 tags: [code-quality, goodhart, specification-gaming, reward-hacking, quality-gate, budget, prioritization, maker-not-judge, agents]
 status: draft
 sources: [deepmind-spec-gaming, krakovna-spec-gaming-def, anthropic-reward-tampering, openai-cot-monitoring, everitt-reward-tampering, goodhart-1975, strathern-1997, garrabrant-goodhart-taxonomy, manheim-garrabrant-categorizing, gao-overoptimization, williams-honesty-subterfuge, one-token-fool-judge, panickssery-self-recognition, wataoka-self-preference, zheng-mt-bench, matton-eval-leakage, bai-constitutional-ai, sonar-clean-as-you-code, sonar-quality-gates, dora-four-keys, dora-empower-teams, swe-book-code-review, swe-book-knowledge-sharing, google-eng-practices-standard, nist-separation-of-duty, nist-800-53-ac5]
+source_session: 019d36fa-79a0-7e52-8f36-c40011d890aa
 ---
 
 <!--

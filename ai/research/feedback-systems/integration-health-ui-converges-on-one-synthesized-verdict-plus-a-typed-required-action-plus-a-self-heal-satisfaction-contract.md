@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [connector-health, integration-status, required-action, self-heal, error-messages, plaid, stripe, datadog]
 status: draft
 sources: [plaid-update-mode, plaid-item-errors, plaid-items-api, stripe-onboard, stripe-verification-updates, stripe-api-verification, stripe-capabilities, stripe-review-accounts, stripe-remediation-links, stripe-changelog-disabled-reason, stripe-changelog-error-codes, datadog-status-page, datadog-config, datadog-integration-monitor, datadog-aggregation, github-suspend, vercel-error-list, vercel-git-settings, nango-invalid-grant, nango-logs, nng-error-heuristic, logrocket-errors, uxcc-errors]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

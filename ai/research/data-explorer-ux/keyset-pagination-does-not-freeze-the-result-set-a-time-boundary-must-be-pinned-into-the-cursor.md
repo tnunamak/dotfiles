@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [keyset-cursor, pagination, snapshot, point-in-time, relay, total-count]
 status: draft
 sources: [stripe-pagination, slack-pagination, twitter-x, relay-connections, jsonapi-cursor, use-the-index-luke, es-pit]
+source_session: fdb1b036-8ef1-4457-9033-c25b485ce4b3
 ---
 
 ## CLAIMS

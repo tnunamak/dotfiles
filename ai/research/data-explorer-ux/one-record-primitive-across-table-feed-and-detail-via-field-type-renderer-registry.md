@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [design-system, data-table, cell-renderers, notion, airtable, primer, component-architecture]
 status: draft
 sources: [notion-views-api, airtable-field-types, airtable-record-detail, primer-datatable, primer-actionlist, linear-redesign, stripe-sail, pragmatic-stripe]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 <!-- Extracted from a pdpp record-components doc; the pdpp file-shape recommendation discarded, patterns kept. -->

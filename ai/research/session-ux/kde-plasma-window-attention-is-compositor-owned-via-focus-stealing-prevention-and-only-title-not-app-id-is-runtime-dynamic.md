@@ -5,6 +5,7 @@ topic: session-ux
 tags: [kde-plasma, wayland, xdg-activation, notify-send, urgency, kwin, app-id, taskbar]
 status: draft
 sources: [notify-send-man, freedesktop-urgency, kwin-focus-steal, kwin-window-rules, xdg-activation, xdg-shell-appid, kitty-invocation, foot-wayland-urgent]
+source_session: bdac59f6-cce0-4bbb-8c9f-e58ff30c232b
 ---
 
 <!--

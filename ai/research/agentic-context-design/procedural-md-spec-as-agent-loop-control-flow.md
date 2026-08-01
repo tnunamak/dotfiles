@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [agent-loop, spec-as-program, evaluator-optimizer, llm-as-judge, reward-hacking, bounded-autonomy, procedural-spec, multi-agent-consensus, harness-design, ralph-loop, context-anxiety, managed-agents, loop-engineering]
 status: draft
 sources: [anthropic-bea, react-paper, reflexion-paper, langgraph-blog, constitutional-ai, llm-judge-mt-bench, self-preference-paper, multiagent-debate, sycophancy-perez, scalable-oversight, lats-paper, anthropic-effective-harnesses, anthropic-harness-design, anthropic-c-compiler, anthropic-managed-agents, anthropic-claude-code-expertise, anthropic-long-running-claude, osmani-loop-engineering-oreilly, osmani-loop-engineering-blog, steipete-tweet-jun7, cherny-loops-quote, claude-code-goal-v2-1-139]
+source_session: 019d36fa-79a0-7e52-8f36-c40011d890aa
 ---
 
 ## CLAIMS

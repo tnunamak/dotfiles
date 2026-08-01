@@ -5,6 +5,7 @@ topic: data-portability
 tags: [dma, eu-data-act, gdpr, cfpb-1033, open-banking, smart-on-fhir, open-finance, cdr, regulation, prior-art]
 status: draft
 sources: [dma-6-9, ec-gatekeepers, scida-dma, dti-blog, ec-data-act, gdpr-art20, edpb-wp242, com2020-264, cfpb-1033, cfpb-fdx, bpi-1033, cfpb-anpr, onc-g10, jamia-smart, argonaut-hitn, hhs-oig-blocking, cma-order-2017, fca-fs254, duaa-2025, pib-aa, prs-dpdp, anpd-index, cdr-review]
+source_session: 019d36fa-79a0-7e52-8f36-c40011d890aa
 ---
 
 ## CLAIMS

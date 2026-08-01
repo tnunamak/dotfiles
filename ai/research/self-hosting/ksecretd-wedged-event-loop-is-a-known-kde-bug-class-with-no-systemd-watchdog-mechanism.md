@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [kwallet, ksecretd, dbus, systemd, kde, secret-service]
 status: draft
 sources: [kde-bug-504656, kde-bug-504014, kde-bug-259942, ksecretd-source, dbus-spec-peer, sd-notify-man, sd-watchdog-man, archwiki-kwallet, qsavefile-docs, azure-circuit-breaker, gdbusconnection-docs]
+source_session: 019f5b86-497d-75c2-9c45-146f24daac7e
 ---
 
 ## CLAIMS

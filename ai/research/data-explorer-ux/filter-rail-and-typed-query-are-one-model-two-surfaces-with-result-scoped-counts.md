@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [faceted-search, filters, query-builder, chips, count-badges, negation, linear, datadog, github]
 status: draft
 sources: [linear-filters, datadog-facets, datadog-search-syntax, github-issues-filter, github-issues-search-ga, sentry-issue-details, sentry-search, google-faceted-nav, brokenrubik-faceted, notion-advanced-filters, airtable-grouping, patternfly-filters, material-chips]
+source_session: 019db87f-3c01-7b80-9802-b7a53e9031de
 ---
 
 <!-- Extracted from a pdpp filter-rail doc; pdpp con:/stream: recommendations discarded, patterns kept. -->

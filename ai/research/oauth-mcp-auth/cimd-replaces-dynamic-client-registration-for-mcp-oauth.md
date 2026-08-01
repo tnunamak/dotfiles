@@ -5,6 +5,7 @@ topic: oauth-mcp-auth
 tags: [oauth, mcp, cimd, dynamic-client-registration, ssrf, consent]
 status: draft
 sources: [mcp-auth-2025-06-18, mcp-auth-draft, cimd-01, rfc9728, rfc8414, rfc7591, obsidian-2025, speakeasy-2026, linear-mcp, sentry-mcp, notion-mcp, stripe-mcp]
+source_session: 019d3bc3-1259-7d73-b066-22b0aed3b3cd
 ---
 
 <!-- Reusable industry/standards findings extracted from a pdpp design note. pdpp-specific

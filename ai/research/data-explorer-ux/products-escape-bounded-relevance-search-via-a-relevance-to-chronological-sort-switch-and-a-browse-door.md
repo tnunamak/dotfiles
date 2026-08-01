@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [search-ux, sort-switch, browse-door, faceting, result-set-model, personal-archive]
 status: draft
 sources: [slack-search-messages, slack-engineering, notion-search, notion-api, gmail-sort, github-sort, stripe-activity-breakdown, algolia-refinement, glean-search, kibana-discover, weaviate-hybrid, hebbia, google-my-activity, datadog-explorer, rewind]
+source_session: a9f44c73-fad1-46cd-ac52-9e7e2848c866
 ---
 
 ## CLAIMS

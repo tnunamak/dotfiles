@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [feedback, dogfooding, decision, code-review, posttooluse, roster]
 status: settled
 sources: [codex-arch-review-2026-06-25, codex-rebuttal-2026-06-25, posttooluse-schema-entry, event-gated-entry]
+source_session: unknown
 ---
 
 ## CLAIMS

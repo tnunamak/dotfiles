@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [self-hosting, docker-compose, onboarding, secrets, cloudflare-tunnel, runpod, backup]
 status: draft
 sources: [supabase-selfhost, n8n-selfhost, docker-secrets, cloudflare-tunnel-dev, selfhosting-sh-tunnel, tunnel-vs-ngrok-tailscale, gitea-selfhost, coolify-install, deploy-platforms-2026, runpod-hub, runpod-templates, runpod-containers, restic-docker, docker-volume-backup, pg-docker-backup]
+source_session: 36569c3c-d158-41e1-8bfb-4ae7f483fcd2
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [data-explorer, search, faceted-filter, virtualization, autocomplete, saved-views, prior-art]
 status: draft
 sources: [datadog-saved-views, datadog-facets, datadog-search-syntax, datadog-visualize, github-code-search, github-issue-filter, github-search-syntax, posthog-filters, notion-views, devtools-network, algolia-routing, tanstack-virtual, airtable-grid, raycast-manual]
+source_session: a9f44c73-fad1-46cd-ac52-9e7e2848c866
 ---
 
 ## CLAIMS

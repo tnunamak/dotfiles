@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [feed-ux, pagination, grouping, load-more, count-reachability, virtualization]
 status: draft
 sources: [stripe-invoice-lines, stripe-pagination, react-virtuoso, todoist-upcoming, things-upcoming]
+source_session: dcace7d1-a118-4aed-a752-1d140f88c087
 ---
 
 <!-- Extracted from a pdpp feed-interaction-dynamics doc; pdpp bug/code refs discarded. Several product claims in the source named the product without a direct URL — those are noted as lower-confidence. -->

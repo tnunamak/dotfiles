@@ -9,6 +9,7 @@ supersedes_center_of: MEMO-6-IDEAL-MACHINE-EXPERT-CONVERGENCE.md
 sources: [MEMO-7-falsification-data-kills-the-mechanization-thesis, RAW-expert7-response-round3-portfolio-machine,
           MEMO-6-IDEAL-MACHINE-EXPERT-CONVERGENCE, own-rent-delete-the-attention-perimeter-objective-function,
           SLVPQ-OPERATIONALIZATION, CANONICAL-CODE-QUALITY-THEORY.phase1]
+source_session: unknown
 ---
 
 # The project-quality portfolio machine

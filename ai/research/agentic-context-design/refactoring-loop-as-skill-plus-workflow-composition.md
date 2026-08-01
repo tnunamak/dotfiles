@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [loop-engineering, refactoring, skills, workflow, maker-checker, fail-closed, evidence-contract]
 status: draft
 sources: [osmani-loop-engineering, anthropic-harness-design, build-decision-2026-06-26]
+source_session: 31191f1e-53d2-44fa-b202-edce7889b4a4
 ---
 
 ## CLAIMS

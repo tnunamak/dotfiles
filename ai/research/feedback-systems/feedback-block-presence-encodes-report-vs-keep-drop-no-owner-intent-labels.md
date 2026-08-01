@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [dogfooding, roster, hickey, simplicity, code-review, decision]
 status: settled
 sources: [codex-hickey-review-2026-06-25, dogfooding-v1-decision]
+source_session: unknown
 ---
 
 ## CLAIMS

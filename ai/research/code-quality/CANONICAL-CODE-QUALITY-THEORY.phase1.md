@@ -5,6 +5,7 @@ topic: code-quality
 tags: [code-quality, theory, canon, constitution, agents, hickey, ousterhout, brooks, parnas, carmack, gabriel, acton, paradigm-independent]
 status: phase1-theory-rebalanced-pending-final-sourcing
 sources: [brooks-nsb, hickey-sme, parnas-72, ousterhout-aposd, hughes-wfpm, backus-77, ousterhout-martin-debate, ray-2014-reanalysis, zakirullin-cognitive-load, metz-wrong-abstraction, ai-code-smells-corpus, dynamic-import-cycles-corpus, chatgpt-straw-theory, carmack-fp-cpp, king-2019-parse-dont-validate, minsky-effective-ml, okasaki-pfds, knuth-literate-programming, pike-notes-on-c, dijkstra-ewd, iso-25010, cisq-iso-5055, gabriel-worse-is-better, acton-dod, sqlite-testing, torvalds-good-taste, chatgpt-decenter]
+source_session: unknown
 ---
 
 <!--

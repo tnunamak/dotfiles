@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [agents-md, system-prompt, context-engineering, instruction-following, lost-in-the-middle, prompt-structure]
 status: settled
 sources: [cc-memory-docs, lost-in-middle, anthropic-context-eng, anthropic-steering-2026, openai-prompt-guide, anthropic-xml, ifeval, anthropic-clear-direct, windsurf-agents-md, anthropic-long-context]
+source_session: 019f6667-cca5-7712-b037-e522dd6f59b8
 ---
 
 ## CLAIMS

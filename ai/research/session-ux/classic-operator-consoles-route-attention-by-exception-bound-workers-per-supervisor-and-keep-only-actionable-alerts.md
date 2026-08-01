@@ -5,6 +5,7 @@ topic: session-ux
 tags: [operations-console, attention-routing, alert-fatigue, use-red, exception-based, prior-art]
 status: draft
 sources: [nasa-flight-controller, nasa-ssr, atc-stca, sre-monitoring, use-method, red-method]
+source_session: 019f1fc5-ed5e-7eb3-bfee-8ee8b26aeccf
 ---
 
 <!--

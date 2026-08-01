@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [read-models, materialized-views, storage-introspection, facets-measures, drill-through, data-explorer]
 status: draft
 sources: [pg-matviews, bigquery-table-storage, datadog-facets-measures, kibana-field-stats, metabase-drill-through]
+source_session: unknown
 ---
 
 ## CLAIMS

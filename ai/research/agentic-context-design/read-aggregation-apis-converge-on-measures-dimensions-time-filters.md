@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [aggregation, olap, pagination, faceted-search, mcp, token-efficiency, api-design]
 status: draft
 sources: [elastic, opensearch, stripe-pagination, stripe-sigma, github-pagination, linear-pagination, relay-connections, slack-search, snowflake-datetrunc, snowflake-widthbucket, oracle-rollup, mssql-groupby, algolia-facets, algolia-disjunctive, cube-query, ga-runreport, metabase-mbql, mcp-token-mindstudio, mcp-token-newstack, mcp-token-pydantic]
+source_session: fdb1b036-8ef1-4457-9033-c25b485ce4b3
 ---
 
 ## CLAIMS

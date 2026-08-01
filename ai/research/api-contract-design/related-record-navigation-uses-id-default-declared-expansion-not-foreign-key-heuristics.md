@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [rest, relationships, resource-expansion, json-api, graphql-relay, postgrest]
 status: draft
 sources: [stripe-expand, jsonapi, relay-connections, postgrest-embedding, airtable-notion]
+source_session: 019db34f-f4a7-77f3-b339-4f7b2b596e64
 ---
 
 ## CLAIMS

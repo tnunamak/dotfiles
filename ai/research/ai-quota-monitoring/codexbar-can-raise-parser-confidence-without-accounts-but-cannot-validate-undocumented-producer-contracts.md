@@ -5,6 +5,7 @@ topic: ai-quota-monitoring
 tags: [clawmeter, codexbar, quotas, provider-integrations, contract-testing]
 status: draft
 sources: [openrouter-credits, openrouter-key, synthetic-quotas, kiro-billing, codexbar-providers, codexbar-diagnose, clawmeter-source]
+source_session: 2b406b9f-a130-49f4-a22c-c656ac39a531
 ---
 
 ## CLAIMS

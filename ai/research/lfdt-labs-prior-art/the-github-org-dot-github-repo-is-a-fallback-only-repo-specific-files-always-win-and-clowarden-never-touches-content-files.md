@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [lfdt, pdp-connect, clowarden, dot-github-repo, codeowners, community-health-files, dco, github-governance]
 status: draft
 sources: [pdp-connect-governance-config, pdp-connect-dot-github-repo, clowarden-cncf-readme-2, github-community-health-docs, github-issue-template-precedence, lfdt-labs-governance-config-2, lfdt-labs-fabric-x-codeowners, lf-decentralized-trust-dot-github, lfdt-labs-governance-repo-files]
+source_session: 019f863a-dad6-7783-b8fb-bfbbdde85a11
 ---
 
 <!--

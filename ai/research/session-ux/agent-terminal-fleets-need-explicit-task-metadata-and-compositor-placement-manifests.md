@@ -5,6 +5,7 @@ topic: session-ux
 tags: [tmux, kitty, kde-wayland, claude-code, codex-cli, session-restore]
 status: draft
 sources: [claude-statusline, claude-agent-view, codex-slash, codex-hooks, tmux-manual, tmux-fzf, sessionx, kde-session-restore, kwin-xdg-session-mr, kwin-api, kdotool, kitty-sessions, kitty-ls, quickchat-tmux-summaries, tmux-agent-status]
+source_session: 019ca16f-3acb-7cb2-bd7f-bbcea114d54c
 ---
 
 ## CLAIMS

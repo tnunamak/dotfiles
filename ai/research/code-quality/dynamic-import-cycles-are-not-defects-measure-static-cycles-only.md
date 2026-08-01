@@ -5,6 +5,7 @@ topic: code-quality
 tags: [cycles, dependency-cruiser, esm, refactoring-loop, false-positive, verify-before-fixing]
 status: draft
 sources: [dependency-cruiser-docs, pdpp-auth-search]
+source_session: 019f1569-f5c4-70c3-904c-dc2c49e80ec9
 ---
 
 ## CLAIMS

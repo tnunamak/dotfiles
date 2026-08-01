@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [contributing, pr-template, issue-template, labels, ci-gates, wip, ai-disclosure, dco, cla, owners-files, pdp-connect]
 status: draft
 sources: [rust-contributing, rustc-dev-guide-contributing, rust-pr-template, rust-easy-labels, rust-rfc-readme, astro-contributing, astro-pr-template, astro-issue-template, astro-labels, astro-discussions, biome-contributing, biome-agentscan-workflow, deno-pr-template, deno-contributing-page, k8s-community-readme, k8s-pr-template, k8s-owners-example, k8s-owners-api-example, k8s-cla-process, k8s-pr-best-practices]
+source_session: 019fa5ba-c575-7c23-a556-aea41212d976
 ---
 
 <!--

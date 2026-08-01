@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [traefik, nextjs, websocket, hmr, reverse-proxy, http2, dev-environment]
 status: draft
 sources: [traefik-serverstransport, traefik-pr-11408, traefik-issue-11405, next-alloweddevorigins, next-v12-upgrade, cve-2026-27977]
+source_session: 019d7059-53fd-7a70-85ef-7a568ded7b7b
 ---
 
 <!--

@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [retrieval, grep, embeddings, rag, aider, cody, search]
 status: settled
 sources: [augment-grep, aider-repomap, cody-context, basic-memory, anthropic-context-eng]
+source_session: 019f5dc4-9d6b-7300-b1ce-745c23848a50
 ---
 
 ## CLAIMS

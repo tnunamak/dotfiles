@@ -5,6 +5,7 @@ topic: agent-harnesses
 tags: [waspflow, adapters, async, lifecycle, receipts, recovery]
 status: draft
 sources: [completion-contracts]
+source_session: unknown
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: llm-serving
 tags: [llama.cpp, bee, beellama, mtp, qwen, speculative-decoding, gguf]
 status: draft
 sources: [bee-arg-audit, upstream-arg-audit, mtp-pr-22673, mtp-pr-23269, issue-23577, reddit-may-2026-shootout]
+source_session: 104fc3d9-a1d2-4777-affb-c5654d861214
 ---
 
 ## CLAIMS

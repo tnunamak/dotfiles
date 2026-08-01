@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [agent-loops, autonomous, orchestrator, ai-control, scalable-oversight, trusted-monitoring, debate, separation-of-duties, goodhart, maker-not-judge, self-grading, narrative-audit, sequencing, deterministic-verification]
 status: draft
 sources: [redwood-ai-control, redwood-ai-control-html, ctrl-z-resampling, irving-debate, irving-debate-lw, brown-cohen-prover-estimator, leike-reward-modeling, christiano-amplification, hubinger-market-making, bowman-sandwiching, cotra-sandwiching, weak-llm-judges-strong, iia-three-lines, nist-ac5, nist-sod-glossary, four-eyes-soldevelo, maker-checker-xtrm, garrabrant-goodhart-taxonomy, matton-eval-leakage, panickssery-self-recognition, anthropic-reward-tampering, williams-honesty-subterfuge, openai-cot-monitoring]
+source_session: 019f19b5-0e0d-7792-95a8-32a16f1f2768
 ---
 
 <!--

@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [dco, squash-commit, lfdt, hyperledger, repo-transfer, debranding, npm-scope, trademark, copyright, package-registry]
 status: draft
 sources: [lfdt-labs-readme, lfdt-labs-governance, lfdt-incubation-entry, lf-dco-wiki, splice-lab-page, hedera-hiero-migration, npm-hashgraph-scope, npm-trusted-publishing-docs, npm-trusted-publishing-explainer, lf-trademark-usage, lf-trademark-blog, chaindeploy-commits, gitmesh-commits, naryo-commits, cncf-dco2]
+source_session: 019e5b17-6096-7cf2-aec9-42244f40d8ac
 ---
 
 <!--

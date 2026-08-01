@@ -90,6 +90,8 @@ topic: agentic-context-design   # = the subdirectory
 tags: [retrieval, grep, embeddings]   # 2-6 free-form retrieval keywords
 status: draft             # draft | settled | superseded
 sources: [slug-1, slug-2] # cross-links to the SOURCES section
+source_session: <id>      # the session that produced this (Claude session_id / Codex rollout uuid).
+                          # Enables `convo show <id>` to recover full context. `unknown` if not known.
 ```
 
 `status`: `draft` = agent-written, not re-verified. `settled` = cross-confirmed or

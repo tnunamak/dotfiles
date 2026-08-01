@@ -5,6 +5,7 @@ topic: webhooks-events
 tags: [webhooks, cloudevents, standard-webhooks, hmac, event-delivery, thin-payloads]
 status: draft
 sources: [cloudevents-spec, standard-webhooks-spec, standard-webhooks-home, stripe-webhooks, github-webhooks]
+source_session: fc7c7495-298c-4c1b-917c-6001a7db5ca9
 ---
 
 ## CLAIMS

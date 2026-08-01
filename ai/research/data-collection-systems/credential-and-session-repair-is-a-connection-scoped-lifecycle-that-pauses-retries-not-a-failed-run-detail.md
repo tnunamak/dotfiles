@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [connectors, credentials, oauth, session-repair, reconnect, prior-art]
 status: draft
 sources: [plaid, zapier, google-oauth, nango, nylas, openai-security]
+source_session: 019d3695-95e5-7841-aa67-2de5b804ee8e
 ---
 
 ## CLAIMS

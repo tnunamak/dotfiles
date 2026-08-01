@@ -5,6 +5,7 @@ topic: llm-serving
 tags: [qwen3.6, llama.cpp, mtp, dflash, multi-gpu, rtx-3090]
 status: draft
 sources: [llama-mtp-regression, llama-draft-cache-types, bee-dflash-benchmarks, llama-multi-gpu, llama-non-p2p-corruption, local-topology, llama-cuda-ubatch, local-controlled-sweep]
+source_session: 104fc3d9-a1d2-4777-affb-c5654d861214
 ---
 
 ## CLAIMS

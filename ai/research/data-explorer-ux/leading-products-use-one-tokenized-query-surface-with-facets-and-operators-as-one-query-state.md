@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [search-ui, filters, facets, query-model, chips, schema-driven-presentation]
 status: draft
 sources: [linear-filters, linear-changelog, linear-devs, github-projects-antipattern, helpscout, datadog-facets, datadog-explorer, notion-property, airtable-primary-field, airtable-record-detail, datadog-standard-attrs, schema-org-mainentity, jsonschema-annotations, stripe-search, gmail-chips, gmail-refine, google-my-activity, gharchive]
+source_session: 019db34f-f4a7-77f3-b339-4f7b2b596e64
 ---
 
 ## CLAIMS

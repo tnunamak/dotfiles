@@ -5,6 +5,7 @@ topic: product-design
 tags: [consent, oauth, popup, redirect, iframe, cross-tab]
 status: complete
 sources: [plaid-link, stripe-financial-connections, stripe-checkout, paypal-sdk, web-locks, broadcast-channel]
+source_session: 019d4502-2fc3-7ff2-b561-d709fda6e77c
 ---
 
 ## CLAIMS

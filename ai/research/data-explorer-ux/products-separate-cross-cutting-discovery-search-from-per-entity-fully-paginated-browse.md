@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [data-explorer, search-vs-browse, pagination, escape-ramp, discovery, faceting]
 status: draft
 sources: [datadog-explorer, datadog-pagination, datadog-patterns, stripe-activity-breakdown, stripe-events, linear-display, github-search, github-repo-search, algolia-infinite-scroll, posthog-events, posthog-persons, plaid-transactions, notion-when-to-use, notion-dashboards, airtable-pagination]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

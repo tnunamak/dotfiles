@@ -5,6 +5,7 @@ topic: session-ux
 tags: [tmux, monitor-activity, bell-action, allow-passthrough, osc, grouped-sessions, set-titles, alert-hooks]
 status: draft
 sources: [tmux-monitor, tmux-actions, tmux-visual, tmux-flags, tmux-hooks, tmux-titles, tmux-passthrough, tmux-clipboard, tmux-groups, tmux-osc-issue]
+source_session: 019fb3ef-ae73-7992-85b1-517585cf2e71
 ---
 
 <!--

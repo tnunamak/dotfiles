@@ -5,6 +5,7 @@ topic: session-ux
 tags: [multi-agent, state-taxonomy, ordering, attention-routing, prior-art]
 status: draft
 sources: [claude-agent-view, claude-agent-view-blog, devin-sessions, vibe-kanban, crystal, claude-squad, conductor, tmux-agent-status]
+source_session: 019f3874-ec11-7461-981b-4240d788567b
 ---
 
 <!--

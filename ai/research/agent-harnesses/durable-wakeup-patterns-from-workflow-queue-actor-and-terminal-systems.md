@@ -5,6 +5,7 @@ topic: agent-harnesses
 tags: [waspflow, async, durability, wakeup, terminal-automation, gastown, firstmate]
 status: draft
 sources: [temporal-docs, stepfunctions-docs, otp-docs, gha-docs, bullmq-docs, vscode-docs, tmux-man, sdnotify-docs, tmux-sendkeys-issues, codex-notify-docs, gastown-firstmate-corpus]
+source_session: 019ca16f-3acb-7cb2-bd7f-bbcea114d54c
 ---
 
 ## CLAIMS

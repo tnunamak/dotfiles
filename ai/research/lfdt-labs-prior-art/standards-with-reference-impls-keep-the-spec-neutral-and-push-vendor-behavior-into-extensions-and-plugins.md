@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [standards-governance, neutral-core, foundation-model, spec-vs-implementation, extension-mechanism, trademark-policy]
 status: draft
 sources: [toip-whitepaper-structure, toip-techarch, toip-dtgwg, owf-governance, owf-labs-lifecycle, smart-fhir-conformance, fhir-license, fhir-trademark-policy, hapi-fhir-relationship, oauth-rfc6749-interop, oauth-rfc6749-iana]
+source_session: 019d96dc-adc7-7cf0-9430-a536eeedbd32
 ---
 
 <!--

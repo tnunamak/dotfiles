@@ -5,6 +5,7 @@ topic: model-routing
 tags: [escalation, cascades, verification, reward-hacking, cache-invalidation, reasoning-effort, agent-loops, break-even-math, step-level-routing]
 status: draft
 sources: [dekoninck-unified-routing-cascading, decision-theoretic-cascade, frugalgpt-cascade, routerbench-cascade, automix, r2v-agent, agentcollab, uno-orchestra, agentswing, verification-horizon, impossiblebench, self-consistency-wang, just-ask-calibration, uq-survey, semantic-entropy-nature, snell-test-time-compute, gpt5-cost-accuracy, entropy-adaptive-decoding, routing-collapse, speculative-decoding, claude-code-commands, claude-code-prompt-caching, anthropic-prompt-caching-api, codex-quickstart, codex-config-reference, codex-issue-20477, codex-issue-19877, openai-prompt-caching, openai-reasoning-guide, grok-modes-commands, grok-headless-scripting, grok-prompt-caching-multiturn, claude-code-subagents-docs, claude-agent-sdk-subagents, openai-agents-handoffs, openai-swarm, cline-plan-act, roo-api-profiles, aider-architect-editor, anthropic-multi-agent-system, langchain-plan-execute, anthropic-building-effective-agents, cascadeflow-repo, agentpatterns-effort-escalation, github-copilot-auto, cognition-devin-lessons]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 <!--

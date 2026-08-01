@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [ime, android, gboard, guacamole, neko, wayland, rdp, remote-browser, composition-events]
 status: draft
 sources: [guacamole-manual, guac-textinput-src, neko-547, wayland-input-method, ms-rdp-android, ckeditor-12058, hyperbeam-yc, hyperbeam-docs, neko-issues]
+source_session: 019e1f9d-b1f5-7ad2-89a9-ebb26230c4bd
 ---
 
 ## CLAIMS

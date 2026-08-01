@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [tmpfs, TMPDIR, CLAUDE_CODE_TMPDIR, codex-sandbox, ENOSPC, systemd, scratch]
 status: draft
 sources: [systemd-tempdirs, kernel-tmpfs, systemd-v258-quota, cc-tmpdir-doc, cc-issue-46479, cc-issue-15700, cc-issue-51814, cc-issue-31024, cc-issue-35442, codex-sandbox, codex-config-ref, tmpdir-side-effects, prezto-emacs-socket, slurm-tmpdir, humansfix-cc-tmp, tmpfiles-cleanup, archwiki-tmpfs]
+source_session: 019d8d21-4983-7270-ad8a-be3c2b6338bf
 ---
 
 <!--

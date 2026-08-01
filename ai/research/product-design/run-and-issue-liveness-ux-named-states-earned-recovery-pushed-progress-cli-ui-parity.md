@@ -5,6 +5,7 @@ topic: product-design
 tags: [status-ux, state-machine, recovery, liveness, cli-ui-parity, observability, prior-art]
 status: draft
 sources: [sentry-states, sentry-issues, sentry-issue-details, linear-workflows, temporal-events, triggerdev-runs, triggerdev-realtime, triggerdev-usage, gha-run-logs, gha-rerun, gha-visualization, stripe-payment-status, stripe-identity, datadog-monitor-config, datadog-monitor-status, gh-cli-rerun, gh-cli-watch]
+source_session: 019d96dc-b062-7be1-80e0-b2a931dcd464
 ---
 
 ## CLAIMS

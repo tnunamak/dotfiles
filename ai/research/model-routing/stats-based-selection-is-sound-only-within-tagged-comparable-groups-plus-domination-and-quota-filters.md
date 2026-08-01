@@ -5,6 +5,7 @@ topic: model-routing
 tags: [model-selection, routing, difficulty-estimation, benchmarks, comparability, routellm, nvidia-classifier, routing-plateau, quota, effort]
 status: draft
 sources: [openrouter-auto, anthropic-effort-docs, claude-code-model-config, routellm-paper, routellm-github, frugalgpt-arxiv, irt-router, ucci-cascade, confidence-tokens, revisable-by-design, controllability-trap, portkey-conditional-routing, portkey-task-routing, martian-routerbench, braintrust-routers-2026, openai-agents-models, langgraph-comparison, nvidia-prompt-complexity-classifier, nvidia-llm-router-blueprint, modernbert-router-recipe, unified-routing-cascading, routerbench-arxiv, llmrouterbench-arxiv, routerarena-arxiv, irt-router-acl, graphrouter-iclr, avengers-pro-arxiv, hybridllm-arxiv, routing-plateau-arxiv, routellm-iclr-v4, leaderboard-illusion, azure-foundry-model-router, openrouter-models-api, omniroute, litellm-router]
+source_session: ac9e632b-99e9-4ba2-a900-4b477a5cd48c
 ---
 
 <!--

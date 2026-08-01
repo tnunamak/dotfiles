@@ -5,6 +5,7 @@ topic: session-ux
 tags: [alerting, urgency-tiers, dark-cockpit, inhibits, interruption-policy, aviation]
 status: draft
 sources: [airbus-ecam-levels, airbus-inhibit, ecam-wiki, apple-interruption-levels, onesignal-levels]
+source_session: e2305330-9057-48c1-bcaf-6a28f00e4617
 ---
 
 <!--

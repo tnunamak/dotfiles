@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [cdp, screencast, chromium, select, browser-streaming, css]
 status: draft
 sources: [cdp-page-screencast, chromium-customizable-select, mdn-customizable-select, neko-readme, browserless-select, puppeteer-select, local-cdp-experiment]
+source_session: 019d2610-c519-7b42-a2d5-f1056474daf8
 ---
 
 ## CLAIMS

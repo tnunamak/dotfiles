@@ -5,6 +5,7 @@ topic: distributed-systems
 tags: [sync, checkpointing, log-compaction, idempotency, record-versioning, airbyte, kafka, stripe]
 status: draft
 sources: [airbyte-checkpoint, meltano-state, kafka-compaction, stripe-idempotency]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 <!-- Reusable industry prior-art extracted from a pdpp record-version-semantics note.

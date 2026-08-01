@@ -5,6 +5,7 @@ topic: session-ux
 tags: [recovery, leases, heartbeat, timeout, agent-sessions]
 status: draft
 sources: [aws-task-state, aws-step-functions-best-practices]
+source_session: 019f5b22-7c53-7f52-869d-1326e067d54b
 ---
 
 ## CLAIMS

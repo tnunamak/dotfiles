@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [traces, runs, timelines, activity-feed, observability-ux, prior-art]
 status: draft
 sources: [datadog-trace-view, datadog-trace-explorer, datadog-correlate, datadog-log-explorer, sentry-breadcrumbs, sentry-issue-details, temporal-workflows, temporal-events, temporal-web-ui, gha-run-logs, gha-run-history, gha-visualization, linear-activity, linear-collapsed-history]
+source_session: 019d96dc-b062-7be1-80e0-b2a931dcd464
 ---
 
 ## CLAIMS

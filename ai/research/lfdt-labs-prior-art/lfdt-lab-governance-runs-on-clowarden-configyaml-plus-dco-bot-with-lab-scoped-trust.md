@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [lfdt, hyperledger-labs, clowarden, dco, github-governance, cncf, openwallet-foundation, npm-trusted-publishing]
 status: draft
 sources: [clowarden-cncf-readme, clowarden-lfdt-labs-config, clowarden-openwallet-governance, clowarden-io-site, dco2-cncf-readme, dco-app-original, developercertificate-org, lf-wiki-dco, lfdt-labs-governance-page, lfdt-labs-proposal-md, lfdt-labs-codeowners, lfx-security-onboarding, npm-trusted-publishing-docs, openjsf-trusted-publishing-blog, github-security-manager-role, github-org-owner-guidance, google-oss-github-owners]
+source_session: 019e5b17-6096-7cf2-aec9-42244f40d8ac
 ---
 
 <!--

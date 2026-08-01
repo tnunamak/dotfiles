@@ -5,6 +5,7 @@ topic: llm-integration
 tags: [gemini, generatecontent, structured-output, ranking, validation]
 status: draft
 sources: [gemini-structured-output, gemini-batch-api]
+source_session: 019f4eef-c376-7351-a499-0ce35f7cdf8a
 ---
 
 ## CLAIMS

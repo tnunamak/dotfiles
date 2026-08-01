@@ -5,6 +5,7 @@ topic: product-design
 tags: [design-system, dashboards, typography, color, density, linear, stripe, vercel-geist, plaid]
 status: draft
 sources: [linear-redesign, linear-2025, geist-colors, geist-material, geist-philosophy, stripe-dashboard, plaid-design, enterprise-tables, data-typography, data-density]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 <!-- Reusable industry prior-art extracted from a pdpp console-redesign note. pdpp brand-specific

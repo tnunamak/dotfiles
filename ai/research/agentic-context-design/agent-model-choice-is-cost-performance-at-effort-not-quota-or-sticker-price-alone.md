@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [cost-performance, effort, model-choice, sonnet-5, gpt-5.5, grok, tokensmash, clawmeter, pareto]
 status: draft
 sources: [anthropic-sonnet-5, anthropic-models-overview, openai-gpt-5-5, openai-codex-pricing, xai-models-docs, ai-agents-that-matter, local-tooling-map]
+source_session: 4fc3911a-6dc4-4250-971f-3beb4e941df7
 ---
 
 <!--

@@ -5,6 +5,7 @@ topic: systemd
 tags: [drkonqi, systemd, coredump, journal, kubuntu]
 status: settled
 sources: [kde-pickup-origin, kde-drkonqi-v664, kde-drkonqi-master, kde-bug-484864, systemd-runtime-max, eos-timeout-report, arch-disable-thread]
+source_session: 019f95fa-58a3-7d30-abed-fbdb98c2ec7f
 ---
 
 ## CLAIMS

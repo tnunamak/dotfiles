@@ -5,6 +5,7 @@ topic: product-design
 tags: [connection-ux, device-inventory, oauth-reconnect, scheduling, data-retention, plaid, fivetran, airbyte, tailscale]
 status: draft
 sources: [plaid-duplicate-items, plaid-items, fivetran-rename, fivetran-sync, slack-workspaces, github-multi-account, onepassword-vaults, tailscale-key-expiry, tailscale-remove, syncthing-faq, dropbox-device-list, google-devices, airbyte-schedules, airbyte-connections, airbyte-clear, stripe-connect-requirements, linear-slack, slack-auth-revoke]
+source_session: 019d36f4-6f80-7291-bd18-9bf383c450fe
 ---
 
 <!-- Reusable per-product prior-art extracted from a pdpp connection/device-UX note.

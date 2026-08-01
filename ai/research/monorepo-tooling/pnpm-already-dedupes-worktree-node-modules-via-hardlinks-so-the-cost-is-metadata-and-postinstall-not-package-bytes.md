@@ -5,6 +5,7 @@ topic: monorepo-tooling
 tags: [pnpm, git-worktree, node_modules, hardlink, content-addressable-store, package-import-method, enableGlobalVirtualStore, reflink, ext4, patchright, playwright, waspflow, pdpp, multi-agent]
 status: draft
 sources: [pnpm-git-worktrees, pnpm-global-virtual-store, pnpm-package-import-method, pnpm-faq-store-drive, pnpm-reflink, observed-pdpp-machine, gitworktree-org-node-modules]
+source_session: 00c8971f-a662-42f0-9b0c-861e142db76b
 ---
 
 <!--

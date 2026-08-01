@@ -5,6 +5,7 @@ topic: product-design
 tags: [tracing, observability, event-history, timeline-ui, workflow, waterfall]
 status: draft
 sources: [jaeger, opentelemetry, grafana-traces, temporal, trigger-dev, inngest]
+source_session: 019d49a7-aff4-7d12-a76a-b6df3d78e1e3
 ---
 
 ## CLAIMS

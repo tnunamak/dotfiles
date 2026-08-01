@@ -5,6 +5,7 @@ topic: [subdirectory-name]
 tags: []
 status: draft
 sources: []
+source_session: [session id that produced this research, if known — e.g. the Claude session_id or Codex rollout uuid. Enables `convo show <id>` to recover the full context. Omit or `unknown` if not known.]
 ---
 
 <!--

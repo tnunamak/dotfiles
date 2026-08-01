@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [anoncreds, hyperledger, lf-decentralized-trust, spec-plus-reference-implementation, licensing, copyright, project-lifecycle, vendor-neutrality]
 status: draft
 sources: [anoncreds-spec-repo, anoncreds-rs-repo, anoncreds-cargo-toml, anoncreds-rs-maintainers, anoncreds-rs-contributing, anoncreds-org-search, hyperledger-lifecycle-search, anoncreds-origin-search, anoncreds-neutralization-search, anoncreds-license-md, anoncreds-notices-md]
+source_session: 019f9057-6ed2-77a1-ac39-4c6122c144ef
 ---
 
 <!--

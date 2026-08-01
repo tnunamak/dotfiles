@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [histograms, brushing, filters, accessibility, d3-brush, grafana, datadog, honesty]
 status: draft
 sources: [grafana-full-range-volume, grafana-logs-explore, datadog-log-explorer, stripe-workbench, sentry-issues, github-insights, observable-brushing, d3-brush, uswds-time-picker]
+source_session: 019d49a7-aff4-7d12-a76a-b6df3d78e1e3
 ---
 
 <!-- Extracted from a pdpp over-time-chart UX doc; pdpp code refs and internal LENS/gate framing discarded. -->

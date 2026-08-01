@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [webrtc, contenthint, degradationpreference, screencast, cdp, neko, gstreamer, vp8, av1, text-legibility]
 status: draft
 sources: [mst-content-hint-ed, mst-content-hint-tr, contenthint-origin-issue, webrtchacks-av1-meet, chromium-throttled-capture-design, gstreamer-vpxenc-docs, cdp-startscreencast-spec, neko-v3-config, guacamole-protocol-manual]
+source_session: 019d2610-c519-7b42-a2d5-f1056474daf8
 ---
 
 ## CLAIMS

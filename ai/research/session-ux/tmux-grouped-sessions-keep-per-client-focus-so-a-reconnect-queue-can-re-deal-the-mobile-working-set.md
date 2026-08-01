@@ -5,6 +5,7 @@ topic: session-ux
 tags: [tmux, grouped-sessions, reconnect, per-client-focus, hooks, restore-queue]
 status: draft
 sources: [tmux-man, tmux-superfocus, tmux-groups-gist, tmux-hooks, tmux-picker-gist, blink-persist]
+source_session: 019d321e-8d08-7372-94e6-e277909f53c6
 ---
 
 <!--

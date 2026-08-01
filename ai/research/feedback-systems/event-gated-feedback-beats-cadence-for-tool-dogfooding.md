@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [feedback, sampling, dogfooding, experience-sampling, telemetry, rate-limit]
 status: settled
 sources: [himmelstein-esm, otel-sampling, oneuptime-sampling, centercode-dogfood, chameleon-nps, failure-aware-obs]
+source_session: 019f005e-b205-77b3-9faa-01fe0eac7ed7
 ---
 
 ## CLAIMS

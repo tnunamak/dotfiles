@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [search-ux, honesty-copy, url-state, relevance, default-views]
 status: draft
 sources: [linear-search, algolia-what-is, stripe-search, linear-custom-views]
+source_session: 019db34f-f4a7-77f3-b339-4f7b2b596e64
 ---
 
 <!-- Extracted from a pdpp honesty-copy doc; internal THE-LENS/critic-verdict and pdpp code refs discarded. -->

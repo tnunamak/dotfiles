@@ -5,6 +5,7 @@ topic: search-infrastructure
 tags: [postgres, bm25, full-text-search, paradedb, pg_search, lexical-search]
 status: draft
 sources: [paradedb-intro, paradedb-topk, paradedb-create-index, paradedb-self-hosted, paradedb-third-party, paradedb-github, neon-pg-search, pg-textsearch-indexes, pg-btree-gin]
+source_session: 6591a019-4e8b-445c-bde7-b8a31c8851a1
 ---
 
 ## CLAIMS

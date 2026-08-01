@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [connection-lifecycle, reauthorization, plaid, stripe, nango, merge, oauth, prior-art]
 status: draft
 sources: [plaid-update-mode, plaid-items, plaid-item-login-required, stripe-oauth-deauth, nango-reauth, merge-linked]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

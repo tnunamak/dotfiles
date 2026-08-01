@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [kwallet, ssh, pam, kubuntu, secrets]
 status: settled
 sources: [kwallet-handbook, kwallet-pam-source, kwallet-runtime-source, archwiki-kwallet-terminal, reddit-kwallet-ssh, reddit-nonpassword-login]
+source_session: 019f8f55-9f2f-7ba1-92c2-2169a031a10f
 ---
 
 ## CLAIMS

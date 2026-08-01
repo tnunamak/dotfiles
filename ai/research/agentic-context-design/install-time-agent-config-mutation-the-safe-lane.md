@@ -3,6 +3,7 @@ title: Install-time mutation of agent-harness configs — the safe lane (drop-in
 date: 2026-06-30
 tags: [install, packaging, mcp, claude-code, codex, config, idempotency, minnows]
 sources: primary (Anthropic Desktop Extensions post; Simon Willison TIL; Claude Code settings docs)
+source_session: 019e5b17-6096-7cf2-aec9-42244f40d8ac
 ---
 
 # Install-time agent-config mutation: what's safe, what's the anti-pattern

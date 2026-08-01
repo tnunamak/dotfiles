@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [clipboard, keyboard, novnc, guacamole, cdp]
 status: draft
 sources: [novnc-clipboard, novnc-rfb, guacamole-manual, guacamole-faq, mdn-clipboard, hyperbeam-examples]
+source_session: 019e0512-58c2-7a82-b0b8-04a2854da549
 ---
 
 ## CLAIMS

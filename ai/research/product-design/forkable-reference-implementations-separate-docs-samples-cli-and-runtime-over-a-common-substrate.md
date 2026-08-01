@@ -5,6 +5,7 @@ topic: product-design
 tags: [reference-implementation, forkability, cli-design, developer-experience, packaging, prior-art]
 status: draft
 sources: [stripe-cli-docs, stripe-cli-repo, stripe-samples, plaid-quickstart-docs, plaid-quickstart-repo, ory-cli, ory-cli-repo, ory-kratos-ui, temporal-cli, temporal-samples, otel-demo-docs, otel-demo-repo]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 ## CLAIMS

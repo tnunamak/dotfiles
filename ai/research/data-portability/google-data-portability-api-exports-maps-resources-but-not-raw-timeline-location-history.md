@@ -5,6 +5,7 @@ topic: data-portability
 tags: [google, data-portability, oauth, google-maps, timeline, location-history]
 status: draft
 sources: [dpapi-intro, dpapi-oauth, dpapi-time-based, dpapi-scopes, dpapi-methods, dpapi-rest, dpapi-initiate, dpapi-archive-state, dpapi-access-check, dpapi-maps-schema, dpapi-local-actions, gmaps-timeline-help]
+source_session: 019eb88b-14ea-7e83-a5ba-5cb820968c05
 ---
 
 ## CLAIMS

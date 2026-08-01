@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [coolify, cli, installation, macos, linux]
 status: draft
 sources: [coolify-cli-readme, coolify-cli-installer, coolify-cli-release]
+source_session: 019f53bd-60e5-71b1-9b84-e6f065591556
 ---
 
 ## CLAIMS

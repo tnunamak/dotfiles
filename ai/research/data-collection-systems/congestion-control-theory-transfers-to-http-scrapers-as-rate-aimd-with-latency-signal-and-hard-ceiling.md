@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [congestion-control, aimd, tcp, bbr, vegas, http-scraping, prior-art]
 status: draft
 sources: [chiu-jain, jacobson, tcp-vegas, bbr, netflix-limits, aws-adaptive, farkiani-2025]
+source_session: 019e2709-b385-7d12-add2-10b9a1c5268a
 ---
 
 ## CLAIMS

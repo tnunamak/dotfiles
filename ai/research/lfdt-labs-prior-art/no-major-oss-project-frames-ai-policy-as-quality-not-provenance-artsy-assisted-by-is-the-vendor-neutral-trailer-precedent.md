@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [ai-policy, ai-disclosure, contributing, quality-vs-provenance, git-trailer, assisted-by, co-authored-by, dco, curl, linux-kernel, linux-foundation, django, rust, biome, deno, pdp-connect]
 status: draft
 sources: [curl-golden-rule, curl-stenberg-tools-review, django-ai-policy-docs, django-security-ai-note, rust-forge-llm-policy, rust-rfc-3950, linux-kernel-coding-assistants-doc, linux-kernel-tomshardware, linux-foundation-genai-policy, biome-contributing-ai, deno-pr-template-ai, artsy-rfc-assisted-by, claude-code-assisted-by-issue, fabio-rehm-assisted-by, git-submittingpatches-trailers, github-copilot-coauthor-vscode, melissawm-policy-list]
+source_session: 019fa544-d530-7fa2-ad04-073aa76dd4d1
 ---
 
 <!--

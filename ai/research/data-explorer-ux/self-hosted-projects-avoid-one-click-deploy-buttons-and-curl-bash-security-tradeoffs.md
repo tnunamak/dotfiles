@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [self-hosting, deploy, docker, fly-io, security, onboarding]
 status: draft
 sources: [fly-launch, fly-launch-create, fly-flyctl-launch, n8n-docker, plausible-ce, umami-install, outline-readme, coolify-install, curl-pipe-shell]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 <!-- Extracted from a pdpp deploy-button-parity doc; pdpp-specific fly.toml paths and internal design notes discarded. -->

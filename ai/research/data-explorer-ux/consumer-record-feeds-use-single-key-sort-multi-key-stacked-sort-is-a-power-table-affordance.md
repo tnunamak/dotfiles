@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [sorting, feed-ux, github, linear, airtable, notion, blanks-first]
 status: draft
 sources: [github-sort, linear-display-options, linear-board-ordering, airtable-sort, notion-views-api, stripe-dashboard, nng-filters-facets]
+source_session: 019d45f8-df0e-75d0-af07-12f3ebaa7527
 ---
 
 <!-- Extracted from a pdpp rich-sort doc; pdpp server/code refs discarded, patterns kept. -->

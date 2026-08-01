@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [visual-design, row-anatomy, typography, tabular-nums, loading-states, faceted-search, design-systems]
 status: draft
 sources: [linear-925, linear-perf, primer-actionlist, sentry-issues, stripe-payment-details, stripe-dashboard, airtable-grid, airtable-detail, notion-lists, notion-dbviews, teams-activity-feed, aubergine-feeds, geist-typography, primer-typography, stripe-design, tnum-vs-mono, raycast-design, madegood-mono, pencilandpaper-tables, geist-spinner, geist-skeleton, bbc-gel-loadmore, github-loadmore, slack-lazy, nng-infinite-scroll, nng-skeleton, nprogress, uxpatterns-infinite, addyosmani-cls, linear-filters, datadog-facets, datadog-syntax, github-filtering, sentry-facet-map, google-faceted-nav, patternfly-filters, material-chips, airtable-grouping, notion-advanced-filters]
+source_session: 019d45f8-df0e-75d0-af07-12f3ebaa7527
 ---
 
 ## CLAIMS

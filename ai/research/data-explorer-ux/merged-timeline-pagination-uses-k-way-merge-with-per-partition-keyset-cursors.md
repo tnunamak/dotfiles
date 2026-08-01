@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [pagination, keyset-cursor, k-way-merge, timeline, fan-out, composite-cursor]
 status: draft
 sources: [trekhleb-x, twitter-highscalability, mastodon-timelines, mastodon-pagination, es-paginate, es-composite-agg, es-pit, datadog-logs, stripe-pagination, slack-pagination, facebook-graph, github-activity, uspto-nway-merge]
+source_session: dcace7d1-a118-4aed-a752-1d140f88c087
 ---
 
 ## CLAIMS

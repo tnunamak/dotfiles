@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [mobile-keyboard, visual-viewport, virtualkeyboard-api, dvh, ios-safari, layout-shift, viewport-meta]
 status: draft
 sources: [w3c-css-viewport-1, chrome-viewport-resize-blog, mdn-viewport-meta, mdn-bcd-issue-29011, mdn-virtualkeyboard-api, mdn-virtualkeyboard-overlayscontent, mdn-bcd-virtualkeyboard-json, webkit-bugzilla-230225, zouhir-safari-vk-blog, mdn-visualviewport, mdn-visualviewport-resize-event, tkte-ch-visual-viewport, wicg-visual-viewport-issue-79, w3c-css-values-4-dynamic-viewport, chromium-issue-40891557, mdn-css-length-viewport-units, webdev-viewport-units, webkit-standards-positions-65, webkit-bugzilla-153224, webkit-bugzilla-202120, webkit-bugzilla-176205, webkit-bugzilla-265578, chromium-issue-40924170]
+source_session: 019d2ace-04a3-7242-85e8-1f49ff7813e5
 ---
 
 ## CLAIMS

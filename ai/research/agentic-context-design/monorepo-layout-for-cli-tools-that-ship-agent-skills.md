@@ -3,6 +3,7 @@ title: Monorepo layout for small CLI tools that each ship an agent skill — sha
 date: 2026-06-30
 tags: [monorepo, packaging, agent-skills, pep723, uv, claude-code, repo-structure]
 sources: primary (anthropics/skills file tree md5-verified, Agent Skills spec, PEP 723, uv docs, Simon Willison)
+source_session: 019d33c8-24c6-7f51-bdb9-949980e73f71
 ---
 
 # Monorepo layout for CLI-tools-that-ship-skills (2026 prior art)

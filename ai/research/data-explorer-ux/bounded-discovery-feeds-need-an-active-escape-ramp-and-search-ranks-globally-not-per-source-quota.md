@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [search-ux, pagination, escape-ramp, global-ranking, faceted-search, stripe, notion]
 status: draft
 sources: [stripe-activity-breakdown, notion-db-views, notion-search, linear-display-options, github-search, datadog-pagination, algolia-pagination, algolia-infinite-scroll, elasticsearch-pagination, linear-pagination, slack-pagination]
+source_session: 019db87f-3c01-7b80-9802-b7a53e9031de
 ---
 
 <!-- Extracted from a pdpp spec-validation doc; internal corpus citations and pdpp code refs discarded, external-URL-backed patterns kept. -->

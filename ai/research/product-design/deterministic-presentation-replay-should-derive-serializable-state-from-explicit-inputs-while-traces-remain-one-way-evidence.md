@@ -5,6 +5,7 @@ topic: product-design
 tags: [deterministic-replay, event-sourcing, presentation-state, testing, privacy, pixi]
 status: draft
 sources: [redux-actions, redux-purity, temporal-history, temporal-versioning, eventsourcingdb-snapshots, playwright-clock, playwright-tracing, playwright-video, playwright-visual, rrweb-guide, pixi-render-loop, json-schema-dialect, protobuf-evolution]
+source_session: 019d92d2-1eab-74b3-98c1-8c5bf9d26f2a
 ---
 
 ## CLAIMS

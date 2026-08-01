@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [rate-limiting, congestion-control, aimd, gcra, backoff, prior-art]
 status: draft
 sources: [aws-adaptive, netflix-concurrency, envoy-adaptive, google-sre, scrapy-autothrottle, gcra, finagle, temporal-worker]
+source_session: 019e2709-b385-7d12-add2-10b9a1c5268a
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [scheduling, retries, backoff, human-in-the-loop, notifications, attention, connector-health]
 status: draft
 sources: [temporal-schedule, gha-environments, prefect-automations, fivetran-connectors, fivetran-alerts, plaid-items, zapier-error-settings, mdn-push-practices, mdn-notifications-api]
+source_session: 019d4502-2fc3-7ff2-b561-d709fda6e77c
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [agent-loops, autonomous, ralph, competitive, self-grading, oracle, maker-checker, waspflow, prior-art]
 status: verified
 sources: [gnhf-repo, gnhf-readme]
+source_session: 019f512b-9fda-7f43-8222-c82e306e256b
 ---
 
 <!--

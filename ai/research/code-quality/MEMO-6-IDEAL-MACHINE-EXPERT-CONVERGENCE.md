@@ -8,6 +8,7 @@ sources: [MEMO-6-ideal-autonomous-refactor-machine, RAW-expert6-response-round1,
           own-rent-delete-the-attention-perimeter-objective-function, SLVPQ-OPERATIONALIZATION,
           ungameable-quality-budget-and-prioritization-for-agent-pipelines,
           auditing-the-orchestrator-not-just-the-change, discovering-and-prioritizing-codebase-defects-at-scale]
+source_session: unknown
 ---
 
 # The ideal near-autonomous decomplecting machine (converged)

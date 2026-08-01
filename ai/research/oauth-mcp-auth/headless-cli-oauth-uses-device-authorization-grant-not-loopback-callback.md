@@ -5,6 +5,7 @@ topic: oauth-mcp-auth
 tags: [oauth, device-flow, rfc8628, rfc8252, mcp-authorization, cli-auth, pkce]
 status: draft
 sources: [mcp-auth, cimd-draft, rfc8252, rfc8628, ms-device-code, mcp-auth-extensions, mcp-device-discussion, claude-code-issue, gh-cli, gcloud-cli, stripe-cli, vercel-changelog, linear-oauth, plaid-oauth]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

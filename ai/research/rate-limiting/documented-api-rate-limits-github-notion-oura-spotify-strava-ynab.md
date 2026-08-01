@@ -5,6 +5,7 @@ topic: rate-limiting
 tags: [rate-limits, api, github, notion, oura, spotify, strava, ynab, retry-after]
 status: draft
 sources: [github-rate-limits, notion-request-limits, oura-error-handling, spotify-rate-limits, strava-rate-limits, ynab-rate-limits]
+source_session: 8be2a586-2474-4cf6-8fb0-dd3e3ad79589
 ---
 
 ## CLAIMS

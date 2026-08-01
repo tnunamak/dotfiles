@@ -5,6 +5,7 @@ topic: distributed-systems
 tags: [payments, authorization, postgres, row-locking, identity]
 status: draft
 sources: [postgres-select, postgres-locking, stripe-payment-intent, stripe-incremental-authorization]
+source_session: 019f905a-afbc-7a90-be5e-346c09537ffe
 ---
 
 ## CLAIMS

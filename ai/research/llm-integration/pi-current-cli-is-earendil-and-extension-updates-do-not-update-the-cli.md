@@ -5,6 +5,7 @@ topic: llm-integration
 tags: [pi, updates, npm, provenance, extensions]
 status: draft
 sources: [pi-npm, pi-repository, pi-package-docs]
+source_session: 42c4a4ea-cd4c-4237-a186-dfd891c550c7
 ---
 
 ## CLAIMS

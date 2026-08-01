@@ -5,6 +5,7 @@ topic: distributed-systems
 tags: [outbox, queue, checkpointing, leases, backfill, local-agent, sqlite, temporal]
 status: draft
 sources: [outbox, sqlite-txn, sqlite-wal, solid-queue, que, celery-visibility, sidekiq, k8s-leases, airbyte-checkpoint, meltano-state, temporal-workflows, temporal-activities, airflow-catchup, dagster-backfill, tailscale-cli, tailscale-update, syncthing-autostart, syncthing-service, syncthing-rest, dropbox-linux, systemd-timers, systemd-resources, launchd]
+source_session: 019d96dc-b062-7be1-80e0-b2a931dcd464
 ---
 
 <!-- Reusable industry prior-art extracted from a pdpp local-collector design note. pdpp-specific

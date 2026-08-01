@@ -5,6 +5,7 @@ topic: agent-harnesses
 tags: [waspflow, async, lifecycle, releases, subagents, acp]
 status: draft
 sources: [release-map, claude-live, codex-release, codex-v2-main, gemini-release, opencode-live, opencode-main, pi-live, pi-main, qwen-release, qwen-main, kimi-legacy-release, kimi-code-release, kimi-code-main]
+source_session: 0d605d44-0bc6-414c-8151-de03a61891a5
 ---
 
 ## CLAIMS

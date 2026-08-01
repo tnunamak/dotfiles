@@ -5,6 +5,7 @@ topic: knowledge-management
 tags: [research-corpus, provenance, git-hygiene, agent-workflow, corpus-log]
 status: verified
 sources: [git-acdbd83, corpus-readme, research-capture-hook-memo]
+source_session: unknown
 ---
 
 <!--

@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [timeline, feed, heterogeneous-rows, design-tokens, geist, primer, day-grouping, upcoming-section]
 status: draft
 sources: [geist-designmd, geist-typography, geist-colors, geist-spacing, vercel-activity-log, vercel-deployments-redesign, vercel-nav-redesign, vercel-managing-deployments, designmd-vercel, primer-primitives, primer-typography, primer-color, primer-primitives-color, primer-action-list, primer-action-list-product, primer-timeline-item, primer-relative-time, primer-label, primer-react-timeline, github-notifications-docs, github-feed-chronological, gfg-primer-timeline, datadog-explorer, datadog-visualize, datadog-attributes, grafana-logs-integration, grafana-logs-viz, copilot-dashboard, copilot-transactions, copilot-recurrings, monarch-recurring, monarch-bill-blog, monarch-bill-sync, ynab-scheduled, transaction-history-ux, eleken-calendar-ui, eleken-fintech-guide]
+source_session: 54d88b26-a0b7-4d76-aa78-d07fc197cad8
 ---
 
 ## CLAIMS

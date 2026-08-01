@@ -5,6 +5,7 @@ topic: distributed-systems
 tags: [projections, reconciliation, materialized-views, health, self-healing]
 status: draft
 sources: [kubernetes-controllers, postgres-materialized-views, postgres-refresh, kafka-streams-state]
+source_session: 019e3c94-bbfc-7072-8e33-24e5eca8f012
 ---
 
 ## CLAIMS

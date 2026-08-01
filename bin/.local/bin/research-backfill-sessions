@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# research-backfill-sessions — add `source_session:` provenance to existing corpus
+# entries by finding the EARLIEST session whose transcript contains the entry's
+# source URLs.
+#
+# INSIGHT: a researched URL gets re-quoted across many later sessions (the corpus,
+# follow-up work, analysis). But the session that ORIGINATED the research is almost
+# always the OLDEST one containing that URL. So: oldest-session-wins disambiguates
+# the "multiple matches" case a naive unique-match approach can't.
+#
+# PERFORMANCE: builds a URL→earliest-session index in ONE grep pass over all
+# transcripts (not per-URL-per-entry), then joins entries against it. O(transcripts)
+# once, instead of O(entries × urls × transcripts).
+#
+# Writes `source_session: <id>` into frontmatter; `unknown` only when NO transcript
+# contains any of the entry's URLs (never guesses). Idempotent (skips entries that
+# already have the field). Dry-run by default; --apply to write.
+#
+# Usage: research-backfill-sessions [--apply] [--limit N]
+
+set -u
+CORPUS="${RESEARCH_CORPUS_DIR:-$HOME/code/dotfiles/ai/research}"
+CLAUDE_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+CODEX_DIR="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+APPLY=0; LIMIT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    --limit) LIMIT="$2"; shift 2 ;;
+    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+sid_of() {  # transcript path -> session id, or empty if not a real session file
+  local b; b="$(basename "$1" .jsonl)"
+  case "$b" in
+    rollout-*) printf '%s\n' "$b" | grep -oE "${UUID_RE}\$" ;;
+    *) printf '%s\n' "$b" | grep -oxE "$UUID_RE" ;;   # only accept a bare-UUID stem
+  esac
+}
+
+entries() {
+  find "$CORPUS" -name '*.md' \
+    ! -name INDEX.md ! -name README.md ! -name _template.md ! -name 'RECOVERY-BACKLOG.md' \
+    2>/dev/null | sort
+}
+entry_urls() {  # $1=file -> distinctive URLs
+  grep -oE 'https?://[^ )"]+' "$1" 2>/dev/null \
+    | grep -vE 'anthropic\.com|example\.com|localhost|127\.0\.0\.1' | sort -u
+}
+
+echo "Building URL→earliest-session index (one pass over transcripts)…" >&2
+
+# 1. All distinctive URLs across all entries (the only URLs we care about).
+tmpd="$(mktemp -d)"; trap 'rm -rf "$tmpd"' EXIT
+: > "$tmpd/urls"
+while read -r e; do
+  grep -qE '^source_session:' "$e" 2>/dev/null && continue
+  entry_urls "$e" >> "$tmpd/urls"
+done < <(entries)
+sort -u "$tmpd/urls" > "$tmpd/urls.u"; mv "$tmpd/urls.u" "$tmpd/urls"
+
+# 2. Transcripts sorted OLDEST-FIRST by mtime. Grep each for any wanted URL; the
+#    FIRST (oldest) transcript that contains a given URL wins. Record url<TAB>path
+#    only on first sight.
+: > "$tmpd/url2path"
+if [ -s "$tmpd/urls" ]; then
+  # oldest-first list of all transcripts
+  { find "$CLAUDE_DIR" -name '*.jsonl' ! -name 'agent-*' -printf '%T@\t%p\n' 2>/dev/null
+    find "$CODEX_DIR" -name '*.jsonl' -printf '%T@\t%p\n' 2>/dev/null; } \
+    | sort -n | cut -f2- > "$tmpd/transcripts.oldest"
+
+  while IFS= read -r path; do
+    [ -f "$path" ] || continue
+    # which wanted URLs does this transcript contain? (only ones not yet claimed)
+    hits="$(grep -oF -f "$tmpd/urls" "$path" 2>/dev/null | sort -u)"
+    [ -z "$hits" ] && continue
+    while IFS= read -r u; do
+      [ -z "$u" ] && continue
+      grep -qxF "$u"$'\t'* "$tmpd/url2path" 2>/dev/null && continue  # never true; placeholder
+      # claim only if this URL not already recorded
+      if ! grep -qF -- "$u"$'\t' "$tmpd/url2path" 2>/dev/null; then
+        printf '%s\t%s\n' "$u" "$path" >> "$tmpd/url2path"
+      fi
+    done <<< "$hits"
+  done < "$tmpd/transcripts.oldest"
+fi
+echo "  indexed $(wc -l < "$tmpd/url2path") of $(wc -l < "$tmpd/urls") entry URLs." >&2
+
+# 3. For each entry, pick the EARLIEST claimed path among its URLs.
+filled=0; unknown=0; skipped=0; count=0
+while read -r entry; do
+  grep -qE '^source_session:' "$entry" 2>/dev/null && { skipped=$((skipped+1)); continue; }
+  [ "$(head -1 "$entry" 2>/dev/null)" = "---" ] || { skipped=$((skipped+1)); continue; }
+
+  best_time=""; best_sid=""
+  while IFS= read -r u; do
+    [ -z "$u" ] && continue
+    p="$(grep -F -- "$u"$'\t' "$tmpd/url2path" 2>/dev/null | head -1 | cut -f2-)"
+    [ -n "$p" ] && [ -f "$p" ] || continue
+    cand="$(sid_of "$p")"; [ -n "$cand" ] || continue   # skip journal.jsonl etc.
+    t="$(stat -c %Y "$p" 2>/dev/null || echo 0)"
+    if [ -z "$best_time" ] || [ "$t" -lt "$best_time" ]; then best_time="$t"; best_sid="$cand"; fi
+  done < <(entry_urls "$entry")
+
+  if [ -n "$best_sid" ]; then sid="$best_sid"; filled=$((filled+1)); verdict="$sid"
+  else sid="unknown"; unknown=$((unknown+1)); verdict="unknown (no transcript match)"; fi
+
+  printf '%s  →  %s\n' "${entry#"$CORPUS"/}" "$verdict"
+
+  if [ "$APPLY" -eq 1 ]; then
+    awk -v sid="$sid" '
+      NR==1 && $0=="---" {print; infm=1; next}
+      infm && $0=="---" {print "source_session: " sid; print; infm=0; next}
+      {print}
+    ' "$entry" > "$entry.tmp" && mv "$entry.tmp" "$entry"
+  fi
+
+  count=$((count+1))
+  [ "$LIMIT" -gt 0 ] && [ "$count" -ge "$LIMIT" ] && break
+done < <(entries)
+
+echo
+echo "Summary: $filled filled, $unknown unknown, $skipped skipped (already had provenance / no frontmatter)."
+[ "$APPLY" -eq 0 ] && echo "Dry-run. Re-run with --apply to write."

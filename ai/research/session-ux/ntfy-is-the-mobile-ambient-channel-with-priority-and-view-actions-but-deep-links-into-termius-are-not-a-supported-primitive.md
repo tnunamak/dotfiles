@@ -5,6 +5,7 @@ topic: session-ux
 tags: [ntfy, notifications, mobile, deep-link, agent-events, priority, actionable]
 status: draft
 sources: [ntfy-publish, ntfy-sh, ntfy-examples]
+source_session: 36569c3c-d158-41e1-8bfb-4ae7f483fcd2
 ---
 
 <!--

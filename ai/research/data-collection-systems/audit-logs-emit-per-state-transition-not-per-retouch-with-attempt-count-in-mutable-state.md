@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [event-sourcing, audit-log, idempotency, temporal, kafka, cqrs, prior-art]
 status: draft
 sources: [temporal, event-sourcing, stripe-events, kafka-compaction, cloudtrail]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

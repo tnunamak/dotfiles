@@ -5,6 +5,7 @@ topic: code-quality
 tags: [refactoring, complexity, cognitive-load, dry, abstraction, deep-modules, decomplecting, simplicity]
 status: draft
 sources: [hickey-simple-made-easy, ousterhout-aposd, zakirullin-cognitive-load, metz-wrong-abstraction, beck-change-easy, muratori-clean-code-perf, ousterhout-vs-martin]
+source_session: 563e98e9-6867-457b-aad2-891c1871035e
 ---
 
 ## CLAIMS

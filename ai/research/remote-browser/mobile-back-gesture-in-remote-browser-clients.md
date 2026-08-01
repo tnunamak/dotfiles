@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [back-button, android, navigation-api, history-api, popstate, remote-browser, guacamole, neko, mobile]
 status: draft
 sources: [guacamole-manual-home, guacamole-reddit-backbutton, droidvnc-ng-154, novnc-1757, so-popstate-hardware-back, webkit-248303, wicg-interventions-21, android-custom-back, mdn-navigation-api]
+source_session: 019e1f9d-b1f5-7ad2-89a9-ebb26230c4bd
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [timeline, activity-feed, reverse-chronological, future-dated, ux-pattern, accessibility]
 status: draft
 sources: [ynab, stripe-invoices, gmail-scheduled, things3, todoist, datadog-grafana, ms-teams-activity, fullcalendar, wcag-color, aria-feed]
+source_session: 8be2a586-2474-4cf6-8fb0-dd3e3ad79589
 ---
 
 ## CLAIMS

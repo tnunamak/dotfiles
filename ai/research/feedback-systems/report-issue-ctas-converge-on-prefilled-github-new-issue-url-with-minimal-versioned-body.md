@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [issue-reporting, prefilled-url, github-issues, feedback-cta, prior-art]
 status: draft
 sources: [github-new-issue, vscode-issue-reporter, sentry-github, raycast-bug-report, homebrew-report, linear-intake]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

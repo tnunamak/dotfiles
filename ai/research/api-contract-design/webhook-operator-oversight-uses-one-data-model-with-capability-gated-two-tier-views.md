@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [webhooks, event-subscriptions, operator-oversight, retries, secret-rotation, svix, stripe]
 status: draft
 sources: [stripe-webhooks, stripe-best-practices, stripe-cli-resend, standard-webhooks, svix-portal, svix-replay, svix-cli, github-redeliver, github-deliveries, github-org-hooks, auth0-log-streams, mcp-resources, cloudevents-subs]
+source_session: fc7c7495-298c-4c1b-917c-6001a7db5ca9
 ---
 
 <!-- Reusable industry prior-art extracted from a pdpp operator-oversight note. pdpp-specific

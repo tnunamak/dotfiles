@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [timeline, day-grouping, burst-collapse, pagination, live-feed, n-new-pill, point-in-time]
 status: draft
 sources: [google-photos-eng, google-photos-stacks, slack-day-divider, imessage-timestamps, outlook-date-groups, inbox-bundles, github-newsfeed, datadog-patterns, fb-timelinebuilder, dawarich, twitter-x-cursor, twitter-scrollback, mastodon-notifier, reddit-pill, slack-unread, slack-pagination, elasticsearch-pit, cloudwatch-livetail, gcp-livetail, uspto-11809215, stream-chat-flutter, messagekit, rocketchat]
+source_session: 019eb88b-14ea-7e83-a5ba-5cb820968c05
 ---
 
 ## CLAIMS

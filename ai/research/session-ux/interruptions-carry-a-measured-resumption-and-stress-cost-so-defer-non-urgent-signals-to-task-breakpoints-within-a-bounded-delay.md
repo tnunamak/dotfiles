@@ -5,6 +5,7 @@ topic: session-ux
 tags: [interruption-science, resumption-lag, bounded-deferral, breakpoints, calm-technology, notification-defaults, attention-cost]
 status: draft
 sources: [mark-chi08, mark-fragmentation, horvitz-bounded-deferral, iqbal-oasis-breakpoints, calm-tech-case, slack-rebuild, gitnotifier-routing]
+source_session: unknown
 ---
 
 <!--

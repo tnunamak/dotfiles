@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [query-ui, faceted-search, count-reachability, record-display, search-honesty, pagination]
 status: draft
 sources: [gmail-chips, stripe-search, linear-filters, datadog-facets, stripe-pagination, google-photos-stacks, virtuoso-grouped, things3, todoist-upcoming, airtable-primary, notion-property, datadog-explorer, gharchive]
+source_session: 019db34f-f4a7-77f3-b339-4f7b2b596e64
 ---
 
 ## CLAIMS

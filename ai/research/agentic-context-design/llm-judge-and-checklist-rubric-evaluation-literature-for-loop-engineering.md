@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [llm-as-judge, checklist, rubric, verifier, refactoring-loop, evaluation, two-model-gate, oracle]
 status: verified
 sources: [checklists-rlcf, judgebench, agentrewardbench, rubriceval, critic, meta-rewarding, prometheus, geval]
+source_session: 019e6ff8-a1db-7182-bad3-f7b7188e4cff
 ---
 
 <!--

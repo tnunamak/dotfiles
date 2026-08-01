@@ -5,6 +5,7 @@ topic: connectors
 tags: [connectors, setup-ux, credential-capture, reauthorization, airbyte, nango, plaid, stripe, prior-art]
 status: draft
 sources: [airbyte-spec, airbyte-protocol, nango-full, nango-reauth, plaid-update-mode, stripe-keys, merge-link, vercel-integrations]
+source_session: 019d33e2-4b34-76b0-9a9e-001d576fa54f
 ---
 
 ## CLAIMS

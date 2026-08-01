@@ -5,6 +5,7 @@ topic: ux-writing
 tags: [ux-writing, microcopy, error-messages, empty-states, status-labels, prior-art]
 status: draft
 sources: [stripe-errors, stripe-low-level, stripe-disputes, github-scopes, github-danger-zone, sentry-triage, sentry-issue-details, vercel-deployments, railway-deployments, trigger-runs, polaris-actionable, polaris-help, nng-errors, nng-empty, nng-microcontent, nng-ui-copy]
+source_session: 019d96dc-b062-7be1-80e0-b2a931dcd464
 ---
 
 ## CLAIMS

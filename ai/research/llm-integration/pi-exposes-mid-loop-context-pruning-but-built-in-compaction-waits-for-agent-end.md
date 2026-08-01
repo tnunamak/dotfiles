@@ -5,6 +5,7 @@ topic: llm-integration
 tags: [pi, compaction, context-pruning, claude-code, codex]
 status: draft
 sources: [pi-compaction-issue, pi-agent-session-source, pi-pruning-discussion, pi-context-prune, claude-errors, claude-troubleshooting, claude-changelog, codex-mid-turn]
+source_session: 09682362-1d47-41da-a3a3-a83e739b8760
 ---
 
 ## CLAIMS

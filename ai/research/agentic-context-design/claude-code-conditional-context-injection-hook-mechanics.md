@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [hooks, skills, claude-code, gemini, prompt-caching, conditional-context]
 status: settled
 sources: [cc-hooks, cc-skills-best-practices, anthropic-skills, cc-prompt-caching, gemini-config, cm-adapter-schema]
+source_session: 019f118b-c78e-7651-ba62-0cda57f9b264
 ---
 
 ## CLAIMS

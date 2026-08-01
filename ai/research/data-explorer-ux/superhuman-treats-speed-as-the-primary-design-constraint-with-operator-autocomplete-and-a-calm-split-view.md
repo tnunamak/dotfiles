@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [email-triage, search-operators, keyboard-ux, optimistic-ui, split-view, latency, calm-list, superhuman]
 status: draft
 sources: [sh-mail, sh-mail-ai, sh-ai-announce, sh-firstround, sh-firstround-mirror, sh-new-superhuman, sh-teams, sh-home, uxdesign-teardown, uxdesign-gamify, uxdesign-everyday, coffee-junk-ui]
+source_session: 103ec03d-8cf7-49c8-bce6-eecff348c49d
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: session-ux
 tags: [touch-targets, mobile, picker-geometry, vertical-tabs, wcag, material, apple-hig]
 status: draft
 sources: [apple-hig-accessibility, material-accessibility, wcag-target-min, wcag-target-enhanced, nng-touch-target, firefox-vertical-tabs, firefox-bug-597564, tst-docs]
+source_session: 66850dc0-bec5-47ac-9554-487d12bfb62b
 ---
 
 <!--

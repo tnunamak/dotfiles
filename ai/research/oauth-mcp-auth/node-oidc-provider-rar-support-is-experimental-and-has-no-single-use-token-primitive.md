@@ -5,6 +5,7 @@ topic: oauth-mcp-auth
 tags: [oauth, oidc-provider, rich-authorization-requests, rfc9396, koa, fastify, build-vs-buy]
 status: draft
 sources: [oidc-provider-readme, oidc-provider-npm, oidc-provider-repo]
+source_session: 019dd69b-c219-7032-a048-8a27e8f7bf39
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [retrieval, memory, cursor, cline, claude-code, write-only-failure]
 status: settled
 sources: [anthropic-context-eng, windsurf-memories, cline-memory-bank, claude-code-memory, devin-knowledge, letta-memory, trigger-cursor-rules]
+source_session: 019f005e-b205-77b3-9faa-01fe0eac7ed7
 ---
 
 ## CLAIMS

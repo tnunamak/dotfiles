@@ -5,6 +5,7 @@ topic: product-design
 tags: [mobile, navigation, master-detail, list-detail, responsive, material-design, apple-hig, prior-art]
 status: draft
 sources: [stripe-dashboard, linear-app, vercel-dashboard, plaid-portal, m3-canonical, android-list-detail, apple-splitview, apple-hig-sheets, nng-progressive-disclosure, nng-mobile-nav, nextjs-intercepting, nextjs-parallel]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

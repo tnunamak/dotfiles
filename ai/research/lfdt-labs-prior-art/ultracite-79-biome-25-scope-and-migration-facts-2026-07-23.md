@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [ultracite, biome, files-includes, legacy-js, force-ignore, monorepo-upgrade, pdpp]
 status: draft
 sources: [ultracite-biome-provider, ultracite-languages, ultracite-docs, ultracite-troubleshooting, biome-no-first-exception, biome-configuration, ultracite-releases, biome-v2-3, ultracite-v6-upgrade]
+source_session: 019d920b-c543-7f81-87bd-46159d70bc99
 ---
 
 ## CLAIMS

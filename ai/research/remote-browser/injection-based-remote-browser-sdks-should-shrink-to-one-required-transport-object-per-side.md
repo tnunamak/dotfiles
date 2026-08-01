@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [sdk-design, config-surface, injection, cdp, neko, quickstart, dx, prior-art]
 status: draft
 sources: [stripe-node, supabase-js, openapi-fetch-middleware, playwright-cdp, temporal-ts-activities, trpc-client, chrome-remote-interface, neko-faq, neko-quickstart, neko-v3-roadmap, remote-surface-readme, remote-surface-cookbook, remote-surface-cdp-adapter, remote-surface-cdp-backend, remote-surface-vanilla-example, remote-surface-playground-readme]
+source_session: 019e0512-6e2d-7de3-ae5f-ca852a711c80
 ---
 
 ## CLAIMS

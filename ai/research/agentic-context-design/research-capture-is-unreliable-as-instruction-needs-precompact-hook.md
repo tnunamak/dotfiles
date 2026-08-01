@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [research-corpus, capture, precompact, hook, instruction-reliability, mid-session-staleness]
 status: settled
 sources: [observed-2026-06-26, cc-prompt-caching-entry, retrieval-reliability-entry]
+source_session: unknown
 ---
 
 ## CLAIMS

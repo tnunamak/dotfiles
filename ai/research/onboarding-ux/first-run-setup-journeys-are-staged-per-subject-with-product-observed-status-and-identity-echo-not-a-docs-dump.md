@@ -5,6 +5,7 @@ topic: onboarding-ux
 tags: [onboarding, first-run, staged-setup, identity-echo, self-host, prior-art]
 status: draft
 sources: [tailscale-quickstart, railway-variables, vercel-projects, stripe-connect, plaid-link-returning, github-fgpat, google-linked-apps, supabase-keys]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 ## CLAIMS

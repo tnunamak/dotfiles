@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [command-palette, search-ranking, filter-chips, detail-pane, status-pills, progressive-disclosure, raycast, stripe]
 status: draft
 sources: [raycast-fallback, raycast-aliases, raycast-list-api, raycast-detail-api, raycast-colors, raycast-best-practices, raycast-fresh-look, raycast-deep-dive, raycast-quicklook, stripe-dash-search, stripe-filter-controls, stripe-chip, stripe-dash-basics, stripe-connect-filters, stripe-search-api, stripe-may-2024, designmd-stripe, designmd-stripe-breakdown, eleken-stripe, eleken-filter-ux, saasframe-stripe, nng-progressive-disclosure]
+source_session: 019d45f8-df0e-75d0-af07-12f3ebaa7527
 ---
 
 ## CLAIMS

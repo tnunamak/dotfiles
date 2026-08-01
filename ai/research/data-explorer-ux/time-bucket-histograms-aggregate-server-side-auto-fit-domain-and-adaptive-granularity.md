@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [histograms, time-series, postgres, brin, timescaledb, elasticsearch, d3, grafana, performance]
 status: draft
 sources: [crunchy-brin, crunchy-time-bins, timescale-caggs, es-auto-date-histogram, es-date-histogram, es-empty-buckets, d3-time-ticks, grafana-interval, grafana-full-range-volume, stripe-retention, datadog-log-explorer]
+source_session: 41ab3da7-be0a-46bc-8e60-06f5e655268f
 ---
 
 <!-- Extracted from a pdpp over-time-chart performance doc; pdpp verdicts/code discarded. -->

@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [data-import, deduplication, provenance, coverage, ingestion, personal-data, import-ux]
 status: draft
 sources: [immich-libraries, immich-mobile-backup, immich-15009, immich-1130, timelinize, timelinize-google-loc, timeliner-pkg, dawarich-imports, dawarich-2468, dawarich-merger, google-takeout-incremental, immich-24917, takeout-duplicates, apple-health-export, health-data-importer, rungap, whatsapp-export, importcsv-ux, bulk-ux, csvbox-patterns]
+source_session: ea36224e-4d69-4871-9387-c85d37ed3301
 ---
 
 ## CLAIMS

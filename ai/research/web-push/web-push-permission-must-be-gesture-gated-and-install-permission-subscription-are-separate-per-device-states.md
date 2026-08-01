@@ -5,6 +5,7 @@ topic: web-push
 tags: [web-push, notifications-api, push-api, pwa, permission-ux, service-worker]
 status: draft
 sources: [mdn-notifications-using, mdn-request-permission, mdn-push-api, mdn-pushmanager, webdev-permission-ux, chromium-quieter, webkit-web-push, apple-web-push, w3c-push-api]
+source_session: 019e284d-1564-74e0-b1af-5b55f729f4ee
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: session-ux
 tags: [mosh, eternal-terminal, tmux, ios-background, reconnect, roaming]
 status: draft
 sources: [mosh-org, mosh-github, mosh-usenix, et-dev, et-compare, blink-persist, termius-ios-bg, vscode-remote, codespaces]
+source_session: f7ee6afd-af1b-412d-8865-e4d54658ef3f
 ---
 
 <!--

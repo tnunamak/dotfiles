@@ -5,6 +5,7 @@ topic: product-design
 tags: [session-replay, rrweb, sentry, playwright, screenshots, redaction, privacy, deterministic-replay, ci-evidence, pramana]
 status: draft
 sources: [rrweb-guide, rrweb-observer, rrweb-replay, rrweb-optimize, sentry-privacy, sentry-replay-config, sentry-troubleshoot, sentry-unmask-issue, sentry-rrweb-fork, sentry-retention, pw-trace-viewer, pw-tracing-api, pw-screenshots, pw-videos, pw-ci, gh-runners, gh-upload-artifact-badchars, gh-artifact-retention, ffmpeg-x11grab, cypress-artifacts, lighthouse-filmstrip, fowler-eventsourcing, rr-project, fullstory-private, logrocket-network, datadog-privacy, strac-image-redaction]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 ## CLAIMS

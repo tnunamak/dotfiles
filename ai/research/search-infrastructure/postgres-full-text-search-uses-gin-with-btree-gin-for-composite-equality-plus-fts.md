@@ -5,6 +5,7 @@ topic: search-infrastructure
 tags: [postgres, full-text-search, gin, btree-gin, shared-memory]
 status: draft
 sources: [pg-textsearch-indexes, pg-btree-gin, pg-gin, crunchy-shmem]
+source_session: 6591a019-4e8b-445c-bde7-b8a31c8851a1
 ---
 
 ## CLAIMS

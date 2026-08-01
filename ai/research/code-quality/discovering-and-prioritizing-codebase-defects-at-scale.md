@@ -5,6 +5,7 @@ topic: code-quality
 tags: [static-analysis, defect-discovery, prioritization, false-positives, hotspots, churn-complexity, mutation-testing, dead-code, dependency-cycles, scanner, diff-time, quality-gate]
 status: draft
 sources: [google-tricorder-icse2015, google-cacm-2018, coverity-bessey-cacm2010, meta-infer-cacm2019, meta-zoncolan, meta-pysa, meta-getafix, meta-sapfix, sonar-cleancode, sonar-waterleak, sonar-metric-defs, campbell-cognitive-complexity, codeclimate-10point, codeclimate-churn-complexity, qlty-metrics, codescene-prioritize-impact, codescene-code-health, codescene-hotspots-defects, tornhill-crime-scene, knip, ts-prune-archived, dependency-cruiser, madge, jscpd, pmd-cpd, eslint-complexity, sonarjs-cognitive, type-coverage, ts-eslint-no-unsafe, stryker-docs, stryker-incremental, biome, kremenek-zranking, ruthruff-actionable, heckman-williams-review, ml-actionable-survey, scaife-sei]
+source_session: 019d4ec9-773e-7c41-9f15-4f1c30e6fb2b
 ---
 
 <!--

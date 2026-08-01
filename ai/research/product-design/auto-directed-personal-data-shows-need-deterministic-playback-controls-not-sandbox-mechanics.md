@@ -5,6 +5,7 @@ topic: product-design
 tags: [game-interaction, playback, visual-novel, accessibility, timed-text, mobile, personal-data]
 status: draft
 sources: [ea-sims-time-controls, renpy-preferences, renpy-config, renpy-history, renpy-rollback, renpy-keymap, wcag-timing, wcag-pause]
+source_session: 019f51de-df3c-7ef1-951d-65adee1e8b0a
 ---
 
 ## CLAIMS

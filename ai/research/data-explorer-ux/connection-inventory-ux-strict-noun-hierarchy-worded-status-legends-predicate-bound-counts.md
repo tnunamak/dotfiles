@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [connection-inventory, status-legend, health-rollup, master-detail, repair-flow, prior-art]
 status: draft
 sources: [airbyte-status, airbyte-connections, plaid-items, plaid-institutions, plaid-update-mode, sentry-issues, sentry-projects, datadog-config, datadog-status, github-apps, tailscale-machines, stripe-dashboard]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

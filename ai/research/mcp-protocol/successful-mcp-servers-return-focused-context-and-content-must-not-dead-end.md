@@ -5,6 +5,7 @@ topic: mcp-protocol
 tags: [mcp, content-vs-structuredcontent, resources, client-divergence, github-mcp, playwright-mcp, context7]
 status: draft
 sources: [mcp-tools, mcp-resources, mcp-structured-divergence, claude-code-custom-tools, github-mcp, playwright-mcp, context7, firecrawl, filesystem-mcp]
+source_session: c23135d0-5af1-45c0-962d-1f0242e51abf
 ---
 
 ## CLAIMS

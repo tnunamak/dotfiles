@@ -5,6 +5,7 @@ topic: connectors
 tags: [heb, login, passkey, verification-code, incapsula, oidc, browser-session, credential-capture]
 status: draft
 sources: [heb-help-passkey, heb-help-passkey-fallback, heb-help-phone-code, heb-help-forgot-password, heb-help-new-account, heb-my-account-redirect]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 ## CLAIMS

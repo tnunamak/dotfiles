@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [hooks, cross-agent, claude-code, gemini, codex, precompact, abstraction, portability]
 status: settled
 sources: [cc-hooks-docs, gemini-hooks-docs, codex-hooks-local, context-mode-adapters, weykon-agent-hooks, dotfiles-local]
+source_session: 019dd670-7005-7e83-a1c2-86e2610f04b0
 ---
 
 ## CLAIMS

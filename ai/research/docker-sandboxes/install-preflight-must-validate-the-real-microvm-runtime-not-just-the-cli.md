@@ -5,6 +5,7 @@ topic: docker-sandboxes
 tags: [docker-sandboxes, sbx, installation, kvm, policy, diagnostics]
 status: settled
 sources: [docker-get-started, docker-local-policy, docker-troubleshooting]
+source_session: 2ed248d2-fcb3-4840-b3af-f4316aeef2de
 ---
 
 ## CLAIMS

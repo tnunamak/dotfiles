@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [activity-feed, sorting, grouping, aggregation, chronological]
 status: draft
 sources: [getstream-aggregation, gmail-thread-sort, github-feed-revert, android-notifications, slack-grouping, datadog-log-patterns, aubergine-chrono-feeds]
+source_session: 499aa4a0-e6b0-4d93-8cbd-f9e2701ad14e
 ---
 
 <!-- Extracted from a pdpp burst-ordering doc; the pdpp bug site and code refs discarded. -->

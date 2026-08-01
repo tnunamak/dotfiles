@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [agent-orchestration, tmux, multi-agent, mcp, claude-code, codex, prior-art]
 status: draft
 sources: [maniple, aws-cao, groundcrew, boris-loops, ultracode-shim, claude-cli-ref]
+source_session: 6591a019-4e8b-445c-bde7-b8a31c8851a1
 ---
 
 ## CLAIMS

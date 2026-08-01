@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [rtk, headroom, token-savings, compression, benchmarks, prompt-caching, codex]
 status: settled
 sources: [local-ab-tokensmash, taco-paper, ai-agents-that-matter, mroczek-rtk-critique, llmlingua2-agent-failure, princeton-pareto, anthropic-caching, berkeley-prompt-compression]
+source_session: 019f48fe-31b3-7740-a603-2878a4692e80
 ---
 
 ## CLAIMS

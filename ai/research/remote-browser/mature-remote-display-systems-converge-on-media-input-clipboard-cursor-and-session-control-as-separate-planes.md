@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [rfb, vnc, rdp, spice, guacamole, x11, wayland, neko, cdp, cloud-gaming, protocol-design, remote-surface]
 status: draft
 sources: [rfc6143, rfc6143-vncdotool, realvnc-params, guacamole-protocol-ref, guacamole-protocol-chapter, ms-rdpbcgr-svc, ms-rdpedyc, ms-rdpeclip, ms-rdpea, spice-protocol, spice-gtk-api, wayland-vs-x11-abhik, wayland-vs-x11-glukhov, neko-issue-371, neko-webrtc-config, chrome-remote-desktop-wikipedia, cdp-input-domain, cdp-page-screencast, sunshine-deepwiki-udp, webrtc-datachannel-64kb, corpus-clipboard-channel, corpus-latency-cursor, corpus-viewport-fix, corpus-screen-content, corpus-injection-sdk, corpus-oss-strategy]
+source_session: 019dfa9a-6171-7f92-9b33-6b80711a3744
 ---
 
 <!--

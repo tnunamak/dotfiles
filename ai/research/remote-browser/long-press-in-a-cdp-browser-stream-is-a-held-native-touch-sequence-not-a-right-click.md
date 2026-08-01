@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [cdp, touch, long-press, mobile, context-menu]
 status: settled
 sources: [cdp-input, guacamole-touch, local-chromium-experiment]
+source_session: 019e5b17-6096-7cf2-aec9-42244f40d8ac
 ---
 
 ## CLAIMS

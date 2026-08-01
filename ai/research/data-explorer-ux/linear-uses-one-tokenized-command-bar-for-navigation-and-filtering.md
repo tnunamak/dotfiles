@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [command-palette, filters, filter-chips, autocomplete, keyboard-ux, visual-system, linear]
 status: draft
 sources: [linear-filters, linear-search, linear-redesign-2, linear-design-reset, linear-changelog-2024, refero-linear, typio-inter, cmdk-patterns, productivitystack-linear]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

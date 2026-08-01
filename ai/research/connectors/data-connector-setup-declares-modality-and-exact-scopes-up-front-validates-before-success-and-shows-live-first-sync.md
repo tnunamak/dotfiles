@@ -5,6 +5,7 @@ topic: connectors
 tags: [connector-setup, onboarding, oauth-scopes, credential-validation, first-sync, self-host, prior-art]
 status: draft
 sources: [github-oauth-scopes, github-pat, plaid-link, plaid-oauth, stripe-onboarding, stripe-hosted, railway-quickstart, railway-deployments, vercel-deployments, supabase-quickstart, supabase-deployment, tailscale-install, google-oauth-scopes, google-consent-screen]
+source_session: 019d3602-f708-7e13-861c-0c4199f18a3f
 ---
 
 ## CLAIMS

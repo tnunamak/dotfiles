@@ -5,6 +5,7 @@ topic: oauth-mcp-auth
 tags: [consent, attribution, verifiable-credentials, oidc, privacy, prior-art]
 status: draft
 sources: [kantara-cr, iso-27560, dpv, w3c-vc, oidc-ida, iab-tcf, p3p, barth-mitchell, apple-privacy-labels, dti, cfpb-1033, gnap, eudi-arf, haip, oid4vp]
+source_session: 019d36f4-6f80-7291-bd18-9bf383c450fe
 ---
 
 ## CLAIMS

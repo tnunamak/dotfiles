@@ -5,6 +5,7 @@ topic: session-ux
 tags: [window-switching, mru, spatial-memory, harpoon, command-palette, information-foraging, tmux]
 status: draft
 sources: [tak-interact2011, groupbar-ozchi2003, alttab-wikipedia, data-mountain-uist1998, scalable-fabric-avi2004, vscode-ui, jetbrains-recent-files, harpoon-readme]
+source_session: 66850dc0-bec5-47ac-9554-487d12bfb62b
 ---
 
 <!--

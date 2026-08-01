@@ -5,6 +5,7 @@ topic: oss-strategy
 tags: [open-source, licensing, remote-browser, streaming-substrate, multi-tenant, apache-2, playwright]
 status: draft
 sources: [neko, neko-releases, kasmvnc, kasm-community, kasm-license, selkies, browserless, browserless-issue, browser-use-cloud, browser-use-cloud-md, anthropic-computer-use, patchright, testdino-playwright]
+source_session: 019d2610-c519-7b42-a2d5-f1056474daf8
 ---
 
 <!-- Reusable OSS-posture prior-art extracted from a pdpp remote-surface note.

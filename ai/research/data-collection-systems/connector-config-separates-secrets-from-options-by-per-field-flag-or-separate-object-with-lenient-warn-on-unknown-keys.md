@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [connectors, config-schema, secrets, json-schema, etl, prior-art]
 status: draft
 sources: [airbyte, dlt, singer-meltano, terraform, kubernetes, openapi, pulumi, json-schema]
+source_session: 019d33e2-4b34-76b0-9a9e-001d576fa54f
 ---
 
 ## CLAIMS

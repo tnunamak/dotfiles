@@ -5,6 +5,7 @@ topic: mcp-protocol
 tags: [mcp, resource-link, structured-content, pagination, content-ladder, tool-results]
 status: draft
 sources: [mcp-tools, mcp-resources, mcp-pagination, mcp-schema, openai-apps-sdk]
+source_session: 80feb421-6d05-45fb-a555-63b91bab8f4f
 ---
 
 ## CLAIMS

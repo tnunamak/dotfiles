@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [cdp, touch, scrolling, fling, momentum, remote-desktop]
 status: settled
 sources: [cdp-input, guacamole-touch, hyperbeam-events, local-chromium-experiment]
+source_session: 019f67e2-364b-7881-ad01-170e699f88bd
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [connector-health, integration-status, plaid, stripe, vercel, fivetran, status-ux, backoff]
 status: draft
 sources: [stripe-webhooks, stripe-connect, stripe-webhook-support, plaid-item-errors, plaid-update-mode, plaid-webhooks, linear-changelog, linear-slack, vercel-github, vercel-commits, vercel-errors, fivetran-alerts, airbyte-2426, zapier-troubleshoot, segment-delivery, carbon-status, trevor-calabro, isdown-linear]
+source_session: 019d371d-a0ee-7013-b42f-a34bac5c806f
 ---
 
 ## CLAIMS

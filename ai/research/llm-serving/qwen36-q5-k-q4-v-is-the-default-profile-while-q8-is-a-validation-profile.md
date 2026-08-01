@@ -5,6 +5,7 @@ topic: llm-serving
 tags: [qwen3.6, llama.cpp, kv-cache, q8, q5]
 status: draft
 sources: [anbeeld-kv-benchmark, bee-qwen36-quickstart, local-capacity-sweep, local-llama-quant-benchmark, q5-agentic-report]
+source_session: 019f62b0-1ccd-7a10-90d2-69df8fa07969
 ---
 
 ## CLAIMS

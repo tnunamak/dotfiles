@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [infisical, secrets, cli, offline, cache]
 status: settled
 sources: [infisical-cli-faq, infisical-vault, infisical-cli-usage, infisical-projects, infisical-secrets-cli, infisical-keyring-source, local-offline-proof]
+source_session: 019f8f55-9f2f-7ba1-92c2-2169a031a10f
 ---
 
 ## CLAIMS

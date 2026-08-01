@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [mcp, orchestration, codex, claude, process-lifecycle]
 status: draft
 sources: [anthropic-cli, anthropic-mcp, local-cli-probes, orchestrator-prior-art]
+source_session: unknown
 ---
 
 ## CLAIMS

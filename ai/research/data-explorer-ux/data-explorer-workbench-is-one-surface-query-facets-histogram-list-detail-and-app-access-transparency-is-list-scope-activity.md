@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [data-explorer, faceted-search, histogram-filter, access-transparency, oauth-apps, workbench]
 status: draft
 sources: [datadog-explorer, posthog-filters, algolia-search-ui, google-connections, github-oauth-apps, plaid-link]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: data-collection-systems
 tags: [search, schema-authoring, indexing, display-metadata, prior-art]
 status: draft
 sources: [algolia, elasticsearch, airtable, salesforce, stripe, plaid, github, slack, openapi, prisma, segment, mcp, diataxis]
+source_session: 019ce297-6779-78c0-a12e-667fda61949e
 ---
 
 ## CLAIMS

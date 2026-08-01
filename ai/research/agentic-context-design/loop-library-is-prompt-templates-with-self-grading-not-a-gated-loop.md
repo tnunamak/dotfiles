@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [agent-loops, refactoring-loop, competitive, self-grading, prior-art]
 status: draft
 sources: [loop-library]
+source_session: 019f769c-f0bc-74c3-a41e-501dcc3c498a
 ---
 
 <!--

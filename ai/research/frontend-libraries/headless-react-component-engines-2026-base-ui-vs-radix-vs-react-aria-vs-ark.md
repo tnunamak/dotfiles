@@ -5,6 +5,7 @@ topic: frontend-libraries
 tags: [headless-ui, react, base-ui, radix, react-aria, ark-ui, design-system, library-eval]
 status: draft
 sources: [baseui-about, baseui-releases, baseui-v1, baseui-quickstart, baseui-dialog, baseui-field, radix-repo, radix-npm, radix-releases, reactaria-why, reactaria-components, ark-npm, shadcn-baseui, shadcn-changelog, shadcn-base-dialog]
+source_session: 130366cd-6aec-4733-a95d-8906f0e7530e
 ---
 
 ## CLAIMS

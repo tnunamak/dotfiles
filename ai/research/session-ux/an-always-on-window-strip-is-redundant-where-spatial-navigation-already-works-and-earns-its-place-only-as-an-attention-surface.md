@@ -5,6 +5,7 @@ topic: session-ux
 tags: [status-line, spatial-nav, workspaces, activities, tab-overload, attention, tmux]
 status: draft
 sources: [i3-userguide, gnome-workspaces, kde-kactivities, chang-chi2021, cmu-tab-overload, groupbar-ozchi2003b]
+source_session: 66850dc0-bec5-47ac-9554-487d12bfb62b
 ---
 
 <!--

@@ -5,6 +5,7 @@ topic: connectors
 tags: [sdk-design, isomorphic, openapi, typescript, stripe, supabase, plaid, zod]
 status: draft
 sources: [stripe-node, supabase-js, openapi-fetch, openapi-typescript, plaid-node, hey-api, openapi-zod-client]
+source_session: bc1a0831-bc2d-4be0-a15d-4f75be79529f
 ---
 
 ## CLAIMS

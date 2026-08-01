@@ -5,6 +5,7 @@ topic: standards-body-sites
 tags: [standards-body, protocol-site, information-architecture, neutrality, spec-presentation, governance, design-restraint]
 status: draft
 sources: [w3c-home, w3c-activitypub, dtinit, solid, oauthnet, jsonschema, openapis-org, openapis-spec, oas-latest, mcp-home, mcp-spec, openid-specs, rfc9110]
+source_session: 019d3695-95e5-7841-aa67-2de5b804ee8e
 ---
 
 <!--

@@ -5,6 +5,7 @@ topic: distributed-systems
 tags: [job-scheduling, timeouts, heartbeat, fencing-tokens, distributed-locking, watchdog, reaper, prior-art]
 status: draft
 sources: [temporal-failures, temporal-heartbeat, sidekiq-reliability, k8s-jobs, aws-sfn, celery-visibility, kleppmann-locking, redis-locks, goodjob]
+source_session: 33386fda-6556-4d05-bc5b-7a570a18e0bb
 ---
 
 ## CLAIMS

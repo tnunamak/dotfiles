@@ -5,6 +5,7 @@ topic: web-performance
 tags: [nextjs, rsc, postgres, sqlite, nodejs, performance, prior-art]
 status: draft
 sources: [nextjs-rsc, postgres, sqlite, node-api]
+source_session: 019fadec-67a6-78e0-bf14-fde86efd7f83
 ---
 
 ## CLAIMS

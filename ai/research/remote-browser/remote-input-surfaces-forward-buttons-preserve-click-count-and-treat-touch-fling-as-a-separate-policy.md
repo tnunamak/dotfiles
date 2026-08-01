@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [input, mouse, touch, scrolling, cdp, novnc]
 status: draft
 sources: [novnc-rfb, guacamole-mouse, guacamole-touch, hyperbeam-events, cdp-input]
+source_session: 6a2ccfd6-e5d5-4dd3-bcaa-7819d39f4bf3
 ---
 
 ## CLAIMS

@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [viewport, remote-browser, cdp, neko, kasmvnc, novnc, chromium-min-width, browserbase, streaming]
 status: draft
 sources: [browserbase-viewports, browserbase-live-view, steel-quickstart, steel-mobile-mode, steel-hitl, hyperbrowser-session-params, hyperbrowser-live-view, browserless-live-url, browserless-screencast, anchor-live-view, anchor-start-session, cloudflare-puppeteer, cloudflare-browser-run, kasmvnc-video-rendering, hyperbeam-web-sdk, kernel-blog-replays, neko-issue-595, neko-config, novnc-embedding, novnc-api, aws-live-view-sdk, aws-live-view-docs, chromium-min-width-issue, chromium-min-width-support-thread, cdp-device-metrics-override, chrome-headless-screen-config, cdp-set-window-bounds, cdp-set-window-bounds-bug]
+source_session: 019e03f3-036d-7892-8590-7be256a43efc
 ---
 
 ## CLAIMS

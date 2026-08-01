@@ -5,6 +5,7 @@ topic: github-actions
 tags: [github-actions, supply-chain, action-pinning, ci]
 status: draft
 sources: [checkout-v4-3-1, pnpm-setup-v4-3-0, setup-node-v4-4-0, upload-artifact-v4-6-2]
+source_session: 019f6bef-66a3-7310-a65b-566abdcc65cc
 ---
 
 ## CLAIMS

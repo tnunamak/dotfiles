@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [date-picker, filters, time-range, relative-dates, presets, accessibility]
 status: draft
 sources: [datadog-time-frames, grafana-time-range, grafana-semi-relative, linear-filters, linear-api-filtering, stripe-date-range, github-date-qualifiers, primer-datepicker, primer-datepicker-journey, airtable-conditions, notion-filters, uxpatterns-date-range]
+source_session: 019db87f-3c01-7b80-9802-b7a53e9031de
 ---
 
 <!-- Extracted from a pdpp Explore date-controls doc; pdpp code line refs and wiring recs discarded. -->

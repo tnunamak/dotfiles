@@ -5,6 +5,7 @@ topic: session-ux
 tags: [tray-app, desktop-gui, cli-wrapper, volunteer-compute, fyne, systray, ndjson, oauth-device-flow, waspflow-federation]
 status: draft
 sources: [clawmeter-repo, docker-sandboxes-security, honeygain, salad, boinc-simpleattach, folding-at-home, storj-node-dashboard, github-cli-device-flow, syncthing-events-api, ollama-app-arch, docker-daemon, github-desktop-vs-gh, lazygit-gitui, flamenco, aws-deadline, sagemaker-notebook-jobs, node-child-process, snowplow-schemaver, gnome-appindicator, nextcloud-tray-issues, waspflow-fedv0-ux-branch]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

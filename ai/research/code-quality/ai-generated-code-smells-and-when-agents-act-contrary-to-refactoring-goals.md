@@ -5,6 +5,7 @@ topic: code-quality
 tags: [ai-slop, vibe-coding, sycophancy, reward-hacking, refactoring, code-quality, code-agents, llm]
 status: draft
 sources: [gitclear-2024, pearce-2022, baltes-2026, karpathy-2025, willison-vibe-2025, willison-agentic-2026, honeycomb-carter-2025, anthropic-constitution, openai-sycophancy-2025, debugml-cheating-2026, anthropic-reward-hacking-2025]
+source_session: 019f4cc9-98a8-74e3-b301-a2a512ac475b
 ---
 
 <!--

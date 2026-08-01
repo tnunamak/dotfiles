@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [npm, schemas, catalogs, versioning, provenance]
 status: draft
 sources: [octokit-openapi, stripe-openapi, npm-trusted-publishers, github-immutable-releases, github-dependabot]
+source_session: 019e5b17-6096-7cf2-aec9-42244f40d8ac
 ---
 
 ## CLAIMS

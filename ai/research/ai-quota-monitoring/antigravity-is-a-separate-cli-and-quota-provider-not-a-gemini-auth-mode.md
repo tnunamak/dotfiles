@@ -5,6 +5,7 @@ topic: ai-quota-monitoring
 tags: [antigravity, gemini, quotas, providers]
 status: draft
 sources: [google-deprecation, google-transition, antigravity-usage, antigravity-install, antigravity-linux, antigravity-repo, codexbar-antigravity]
+source_session: 019f8fff-82dc-7d01-85c6-8a33af2846ad
 ---
 
 ## CLAIMS

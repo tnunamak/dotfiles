@@ -5,6 +5,7 @@ topic: connectors
 tags: [whatsapp, personal-data, chat-export, baileys, forensics, connectors]
 status: draft
 sources: [wa-export, wa-backup, verge-privacy, timelinize, hpi, chat-miner, whatsapp-web-js, baileys, open-wa, whatsapp-viewer, wa-crypt-tools, whapa]
+source_session: 019d3a7c-b2c1-7963-b2db-8afde62b2b82
 ---
 
 ## CLAIMS

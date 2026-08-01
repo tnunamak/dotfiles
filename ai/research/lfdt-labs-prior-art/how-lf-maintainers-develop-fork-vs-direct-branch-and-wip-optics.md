@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [lfdt, cncf, hyperledger, github-workflow, fork-vs-branch, contributing, wip-optics, pdp-connect]
 status: draft
 sources: [fabric-pr-sample, anoncreds-rs-pr-sample, backstage-pr-sample, fabric-x-block-explorer-pr-sample, hypernate-pr-sample, fabric-merge-commit-shape, fabric-forks-list, cncf-contribute-getting-started, lf-open-source-guides-participating, lfdt-labs-proposal-md, pdp-connect-pdpp-repo-state, vana-com-pdpp-repo-state]
+source_session: 019d732e-7e59-7671-8005-f6556f368358
 ---
 
 <!--

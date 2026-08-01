@@ -5,6 +5,7 @@ topic: product-design
 tags: [chronology, temporal-zones, list-design, visual-calm, animation, mobile, things3]
 status: draft
 sources: [cc-home, cc-features, cc-whats-new, cc-os26, cc-support-today, cc-support-scheduling, macstories-things3, masalar-things3, pratt-critique, block81-things3, calmevo-things3, smith-things3, greypatterson-things3]
+source_session: 103ec03d-8cf7-49c8-bce6-eecff348c49d
 ---
 
 ## CLAIMS

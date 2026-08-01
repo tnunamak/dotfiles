@@ -5,6 +5,7 @@ topic: session-ux
 tags: [kitty, notifications, osc99, remote-control, notify_on_cmd_finish, shell-integration, tab-title]
 status: draft
 sources: [kitty-conf-bell, kitty-notify-cmd-finish, kitty-desktop-notif, kitty-multiplexer, kitty-rc, kitty-ls, kitty-tab-title, kitty-conf-alert]
+source_session: f7ee6afd-af1b-412d-8865-e4d54658ef3f
 ---
 
 <!--

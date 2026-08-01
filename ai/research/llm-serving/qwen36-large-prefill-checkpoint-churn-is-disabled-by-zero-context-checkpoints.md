@@ -5,6 +5,7 @@ topic: llm-serving
 tags: [llama.cpp, qwen3.6, checkpoints, prefill, prompt-cache, cuda]
 status: draft
 sources: [local-daisy-measurement, llama-22746, llama-23181, llama-23371]
+source_session: 104fc3d9-a1d2-4777-affb-c5654d861214
 ---
 
 ## CLAIMS

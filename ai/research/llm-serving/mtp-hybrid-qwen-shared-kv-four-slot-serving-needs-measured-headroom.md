@@ -5,6 +5,7 @@ topic: llm-serving
 tags: [llama.cpp, beellama, qwen3.6, mtp, kv-cache, vram, concurrency]
 status: draft
 sources: [llama-parallel, llama-mtp-pr, llama-mtp-maintainer, llama-cache-ram, bee-docs, qwen-model-card]
+source_session: 8826c923-e6c7-4707-aceb-3f594c503661
 ---
 
 ## CLAIMS

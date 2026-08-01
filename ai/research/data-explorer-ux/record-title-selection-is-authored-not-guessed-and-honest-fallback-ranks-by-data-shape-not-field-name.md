@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [record-display, title-field, schema-annotations, cardinality, entropy, rdf-labels, faceted-display]
 status: draft
 sources: [airtable-primary, notion-property, metabase-semantic, metabase-49783, directus-templates, strapi-mainfield, strapi-8280, salesforce-name, sentry-issue-title, supabase-tables, retool-table, json-log-viewers, yscope-viewer, gcp-loggly, dbautodoc, sql-cardinality, detect-secrets, uuid-regex, rdf-labels, es-significant-terms, algolia-searchable, backstage-descriptor, json-schema-annotations, singer-airbyte, plaid-enrich, rjsf-uischema, merge-field-mapping]
+source_session: 5129cd36-06ed-4260-81bf-e66eefdd64b9
 ---
 
 ## CLAIMS

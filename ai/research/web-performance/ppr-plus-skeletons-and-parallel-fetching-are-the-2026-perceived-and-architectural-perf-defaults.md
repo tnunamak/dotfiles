@@ -5,6 +5,7 @@ topic: web-performance
 tags: [nextjs, ppr, react-server-components, perceived-performance, skeletons, motion, optimistic-ui]
 status: draft
 sources: [nextjs-ppr-guide, nextjs-production-checklist, samcheek-ppr, devto-ppr-deepdive, digitalapplied-rsc, logrocket-skeleton, logrocket-doherty, sidp-loading, simonhearne-optimistic, material-motion, mantlr-premium-ui, performancedev-linear]
+source_session: 2d02eedc-9bef-40ae-ba5c-314421fc043e
 ---
 
 ## CLAIMS

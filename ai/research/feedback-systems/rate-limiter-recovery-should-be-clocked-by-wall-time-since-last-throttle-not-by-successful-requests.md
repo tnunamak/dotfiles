@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [rate-limiting, aimd, cubic, bbr, aws-sdk, congestion-control, backoff, recovery-dynamics]
 status: draft
 sources: [chiu-jain-summary, aimd-wikipedia, aimd-fc, variable-structure, aimd-lecture, abc-paper, mimd-fairness, cubic-wikipedia, rfc9438, cubic-paper, aws-adaptive-commit, aws-retry-docs, aws-retry-blog, bbr-acmqueue, bbr-ietf]
+source_session: 019f4e32-3eea-7e93-8dc2-25f9cdde137d
 ---
 
 ## CLAIMS

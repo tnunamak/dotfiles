@@ -5,6 +5,7 @@ topic: code-quality
 tags: [code-quality, slvpq, operationalization, metric, gate, agents]
 status: phase3-draft
 sources: [canonical-code-quality-theory-phase1, ray-2014-reanalysis, ai-code-smells-corpus]
+source_session: unknown
 ---
 
 # Phase 3 — operationalize the canon (CANONICAL-CODE-QUALITY-THEORY.phase1.md)

@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [webhooks, event-subscriptions, cloudevents, hmac, hint-only, sse, replay]
 status: draft
 sources: [stripe-webhooks, stripe-signature, plaid-webhook-verification, google-drive-push, msgraph-webhooks, msgraph-resource-data, msgraph-subscription, github-webhooks, mcp-resources, websub, sse, webpush-rfc8030, cloudevents-spec]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 <!-- Reusable per-platform webhook prior-art extracted from a pdpp event-subscription note.

@@ -5,6 +5,7 @@ topic: oauth-mcp-auth
 tags: [access-review, oauth, connected-apps, scopes, revocation, consent, prior-art]
 status: draft
 sources: [google-connections, google-devices, github-revoke-apps, github-installed-apps, github-fine-grained-pat, stripe-keys, stripe-keys-best-practices, plaid-dtm, plaid-portal, apple-siwa]
+source_session: 019d189c-d050-7a92-af4a-aab2be41b5f1
 ---
 
 ## CLAIMS

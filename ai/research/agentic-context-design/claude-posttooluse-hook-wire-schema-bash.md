@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [hooks, posttooluse, claude-code, wire-schema, feedback-detection]
 status: settled
 sources: [empirical-capture-2026-06-25, cm-adapter-schema-wrong]
+source_session: unknown
 ---
 
 ## CLAIMS

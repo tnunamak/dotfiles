@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [komodo, secrets, mongodb, docker-compose, gitops, infisical, sops]
 status: settled
 sources: [komodo-stack-rs, komodo-remote-rs, komodo-execute-stack-rs, komodo-variable-rs, komodo-vars-docs, deepwiki-53, deepwiki-62, komodo-issue-583, komodo-issue-74, komodo-disc-934, coolify-envvar, portainer-db-enc, docker-swarm-secrets, argo-secrets, flux-sops, sealed-secrets, eso, kamal-env, ansible-vault]
+source_session: 019f9057-6ed2-77a1-ac39-4c6122c144ef
 ---
 
 ## CLAIMS

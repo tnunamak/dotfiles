@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [timeshift, rsync, snapshots, docker, retention]
 status: settled
 sources: [timeshift-readme, mint-install-guide]
+source_session: 019f0e5e-7353-7133-80ec-0728898f04d7
 ---
 
 ## CLAIMS

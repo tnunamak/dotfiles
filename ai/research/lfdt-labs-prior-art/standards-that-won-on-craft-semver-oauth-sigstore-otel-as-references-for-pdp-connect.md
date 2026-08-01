@@ -5,6 +5,7 @@ topic: lfdt-labs-prior-art
 tags: [standards, governance, spec-design, craft, sigstore, oauth, semver, opentelemetry, lfdt]
 status: draft
 sources: [semver-site, semver-repo, semver-contributing, oauth-net-site, oauth-rfc6749, oauth-iana-registry, sigstore-architecture-docs, sigstore-tsc-governance, sigstore-protobuf-specs, sigstore-repos, sigstore-docs-overview, otel-spec-site, otel-versioning-stability, otel-spec-repo, otel-contributing]
+source_session: 019d920b-c543-7f81-87bd-46159d70bc99
 ---
 
 <!--

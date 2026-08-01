@@ -5,6 +5,7 @@ topic: self-hosting
 tags: [kwallet, pam, ssh, fido, totp, authentication]
 status: settled
 sources: [archwiki-kwallet-pam, ubuntu-fido-ssh, ubuntu-totp-ssh, archwiki-gnome-keyring]
+source_session: 019f8f55-9f2f-7ba1-92c2-2169a031a10f
 ---
 
 ## CLAIMS

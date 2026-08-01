@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [personal-data, life-logging, unified-timeline, day-grouping, deep-pagination, quantified-self]
 status: draft
 sources: [google-timeline, google-my-activity, apple-journal, day-one-onthisday, rewind, gyroscope, exist-io, day-one, daylio, monica, facebook-activity, spotify-history, netflix-history]
+source_session: 019dbc80-ed7b-7a41-a5bd-de4ce42ef23c
 ---
 
 ## CLAIMS

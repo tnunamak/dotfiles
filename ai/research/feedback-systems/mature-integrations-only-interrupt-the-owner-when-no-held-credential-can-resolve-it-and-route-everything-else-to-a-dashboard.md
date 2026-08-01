@@ -5,6 +5,7 @@ topic: feedback-systems
 tags: [connector-health, calm-technology, alerting, silence-discipline, oauth-lifecycle, progressive-disclosure]
 status: draft
 sources: [plaid-item-errors, plaid-update-mode, plaid-items-api, nango-token-refresh, nango-webhooks, stripe-capabilities, stripe-verification, google-oauth, temporal-workflows, sre-monitoring, sre-alerting-slos, calm-tech-wiki, calm-tech-case, nng-progressive-disclosure]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

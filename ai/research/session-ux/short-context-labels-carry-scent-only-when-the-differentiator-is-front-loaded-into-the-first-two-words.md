@@ -5,6 +5,7 @@ topic: session-ux
 tags: [information-scent, information-foraging, labels, truncation, nng, f-pattern]
 status: draft
 sources: [pirolli-card-1999, nng-first-2-words, nng-writing-links, nng-f-pattern, dubroy-chi2010]
+source_session: 66850dc0-bec5-47ac-9554-487d12bfb62b
 ---
 
 <!--

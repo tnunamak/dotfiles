@@ -5,6 +5,7 @@ topic: remote-browser
 tags: [latency, perceived-performance, webrtc, cdp-screencast, cursor-rendering, webcodecs, input-coalescing, novnc, rdp, cloud-gaming]
 status: draft
 sources: [rfc6143, guacamole-protocol, guacamole-display-jsdoc, ms-rdpemsc, rdp-cursor-shadow-community, valve-source-netcode, valve-lag-compensation, ggpo-site, mdn-coalesced-events, mdn-predicted-events, w3c-pointerevents, novnc-rfb-source, webrtc-playout-delay, w3c-webrtc-stats, mdn-createimagebitmap, chrome-blog-createimagebitmap, mdn-rvfc, webdev-rvfc, webcodecs-explainer, chrome-webcodecs-docs, cdp-screencast-bug, webrtc-insertable-streams, nng-powers-of-10, webdev-rail, nvidia-reflex-docs, digital-foundry-stadia]
+source_session: 019e03f3-036d-7892-8590-7be256a43efc
 ---
 
 <!--

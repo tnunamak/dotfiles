@@ -5,6 +5,7 @@ topic: llm-serving
 tags: [qwen, vision, llama.cpp, ocr, grounding]
 status: draft
 sources: [llamacpp-qwen-image-size, local-image-token-validation]
+source_session: 019f5a4a-52e6-7a60-8091-f5fab423bd3b
 ---
 
 ## CLAIMS

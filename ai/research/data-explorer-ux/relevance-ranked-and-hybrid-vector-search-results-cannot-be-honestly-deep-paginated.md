@@ -5,6 +5,7 @@ topic: data-explorer-ux
 tags: [search, pagination, relevance, hnsw, pgvector, rrf, hybrid-search, primary-source]
 status: draft
 sources: [algolia-pagination-limited, algolia-20k, algolia-browse, es-max-window, es-paginate, es-rrf, opensearch-hybrid-pagination, pgvector-readme, meilisearch-pagination, stripe-search-pagination, airtable-deep-match, neon-hnsw]
+source_session: 240d8d3e-6b69-4048-abbc-68132f489f86
 ---
 
 ## CLAIMS

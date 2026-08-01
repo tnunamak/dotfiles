@@ -5,6 +5,7 @@ topic: agentic-context-design
 tags: [operational, incident, headroom, launch-wrapper, proxy, tokensmash, blast-radius]
 status: settled
 sources: [incident-2026-06-26]
+source_session: unknown
 ---
 
 ## CLAIMS

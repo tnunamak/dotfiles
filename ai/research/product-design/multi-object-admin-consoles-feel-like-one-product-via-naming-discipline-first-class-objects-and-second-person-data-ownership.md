@@ -5,6 +5,7 @@ topic: product-design
 tags: [product-gestalt, dashboard-design, information-architecture, data-dignity, consent, prior-art]
 status: draft
 sources: [linear-method, linear-now, stripe-dashboard, stripe-development, stripe-api-design, vercel-deployments, supabase-platform, raycast-manifesto, raycast-home, tailscale-machines, plaid-why, plaid-safety, plaid-handle-data, plaid-portal, plaid-items]
+source_session: 019d3a01-db31-7f00-b048-715f05e09cb7
 ---
 
 ## CLAIMS

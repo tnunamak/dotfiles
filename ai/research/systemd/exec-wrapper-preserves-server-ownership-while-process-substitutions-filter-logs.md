@@ -5,6 +5,7 @@ topic: systemd
 tags: [systemd, bash, exec, journald, logging]
 status: draft
 sources: [bash-exec, bash-process-substitution, journald-streams]
+source_session: 019f5b08-055e-7683-b842-b4a6b6f64a89
 ---
 
 ## CLAIMS

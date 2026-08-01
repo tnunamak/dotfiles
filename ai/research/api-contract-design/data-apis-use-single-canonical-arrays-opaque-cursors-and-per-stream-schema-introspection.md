@@ -5,6 +5,7 @@ topic: api-contract-design
 tags: [api-design, pagination, cursors, search, highlighting, mcp, odata, airbyte, graphql]
 status: draft
 sources: [stripe-pagination, stripe-charges, stripe-expand, stripe-errors, linear-pagination, linear-graphql, plaid-transactions, plaid-errors, openai-mcp, openai-deep-research, mcp-tools, anthropic-tools, es-highlight, opensearch-highlight, algolia-response, typesense-search, meilisearch-search, weaviate-fusion, airbyte-protocol, singer-spec, steampipe-docs, odata-tutorial, apollo-federation, rfc9396]
+source_session: 019d35d2-84c0-7322-8615-9b5076e452db
 ---
 
 <!-- Reusable interface-contract prior-art extracted from a pdpp MCP data-surface note.

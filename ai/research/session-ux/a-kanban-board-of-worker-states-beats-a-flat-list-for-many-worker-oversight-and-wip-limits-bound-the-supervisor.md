@@ -5,6 +5,7 @@ topic: session-ux
 tags: [kanban, wip-limits, board-vs-list, overview-surface, supervision-ux, prior-art]
 status: draft
 sources: [kanban-wikipedia, kanban-university, conductor, vibe-kanban, claude-agent-view]
+source_session: 019f3874-ec11-7461-981b-4240d788567b
 ---
 
 <!--
