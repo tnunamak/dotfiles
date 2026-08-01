@@ -47,6 +47,38 @@ wait_for_graphical_session() {
   return 1
 }
 
+# KWin can revert an in-flight `kdotool windowsize` to the window's default
+# geometry when a later window's spawn steals focus before the resize's
+# configure round-trip lands (deactivation configure carries pre-resize
+# geometry; kitty applies it literally) — 100% reproducible for the first
+# burst spawned right after a fresh KWin session starts (confirmed via
+# devcontainer/scripts/kwin-wayland-test), which is exactly this script's
+# real boot-time condition. Verify each window's geometry actually landed
+# before moving to the next spawn, reissuing on mismatch; same bounded-retry
+# shape as the PID-identification loop below.
+#
+# Geometry comparison is tolerance-based, not exact-string: fractional
+# display scaling makes kdotool report non-integer geometry on real hardware
+# (e.g. "3339.130434782609x1344.347..." for a requested 3339x1344) even when
+# the resize genuinely landed — confirmed live on peregrine's actual scaled
+# output, absent from the harness's unscaled virtual backend.
+resize_and_verify() {
+  local win="$1" w="$2" h="$3" x="$4" y="$5" geom gw gh
+  kdotool windowsize "$win" "$w" "$h"; kdotool windowmove "$win" "$x" "$y"
+  for _ in $(seq 1 30); do
+    geom="$(kdotool getwindowgeometry "$win" 2>/dev/null | awk -F': ' '/Geometry:/{print $2}')"
+    IFS=x read -r gw gh <<< "$geom"
+    if [[ -n "$gw" && -n "$gh" ]] && awk -v gw="$gw" -v gh="$gh" -v w="$w" -v h="$h" \
+      'BEGIN{exit !(gw>=w-2 && gw<=w+2 && gh>=h-2 && gh<=h+2)}'; then
+      return 0
+    fi
+    kdotool windowsize "$win" "$w" "$h"; kdotool windowmove "$win" "$x" "$y"
+    sleep .1
+  done
+  log "WARNING: window $win did not settle at ${w}x${h} (last geometry: ${geom:-unknown})"
+  return 1
+}
+
 state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="${DESKTOP_LAYOUT_MANIFEST:-$state/manifest.json}"; dry=0; force=0
 created_set="${DESKTOP_LAYOUT_CREATED_SET:-}"; test_socket_dir="${DESKTOP_LAYOUT_TEST_SOCKET_DIR:-}"; spawn_number=0
 kitty_config="${DESKTOP_LAYOUT_KITTY_CONFIG:-}"
@@ -110,7 +142,7 @@ while IFS= read -r row;do
     printf '%s|%s|%s\n' "$new" "$socket" "$inner_ids" >> "$created_set"
   fi
   read -r x y w h < <(jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '[.position.x*$cw/$sw,.position.y*$ch/$sh,.size.width*$cw/$sw,.size.height*$ch/$sh]|map(round)|join(" ")' <<< "$row")
-  kdotool set_desktop_for_window "$new" "$desk";kdotool windowsize "$new" "$w" "$h";kdotool windowmove "$new" "$x" "$y"
+  kdotool set_desktop_for_window "$new" "$desk"; resize_and_verify "$new" "$w" "$h" "$x" "$y" || true
 done < <(jq -c '.windows[]' "$manifest")
 
 # Liveness sweep, a few seconds after every spawn finished: catches windows
