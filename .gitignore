@@ -19,3 +19,6 @@ tmux/.config/tmux/plugins/
 
 # Local-only: NVIDIA 595 availability watcher (delete after 595 is installed)
 /nvidia-watch/
+
+# Core dumps (kernel-crash debugging artifacts — contain raw process memory incl. secrets; NEVER commit)
+core.*
