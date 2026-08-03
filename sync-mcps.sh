@@ -224,12 +224,41 @@ if shutil.which("claude"):
 else:
     print("Skipping Claude MCP sync: claude not found", file=sys.stderr)
 
+def scrub_gemini_literal_tokens():
+    """Gemini CLI's `mcp add --header` writes the LITERAL bearer token into
+    settings.json, and Gemini re-materializes ${VAR} on later writes too (known
+    bug: google-gemini/gemini-cli#7840, anthropics/claude-code#18692 — see
+    ai/research/oauth-mcp-auth/mcp-cli-add-commands-materialize-env-var-tokens-*).
+    Gemini EXPANDS ${VAR} at read time, so the placeholder form works AND keeps
+    the on-disk file secret-free. After syncing, replace any literal token with
+    its ${VAR} placeholder so the working tree never holds the secret."""
+    import re as _re
+    settings = os.path.expanduser("~/.gemini/settings.json")
+    if not os.path.exists(settings):
+        return
+    text = open(settings).read()
+    changed = False
+    for name, cfg in servers.items():
+        token_env = bearer_env(cfg)
+        if not token_env:
+            continue
+        val = os.environ.get(token_env)
+        if val and val in text:
+            text = text.replace(f"Bearer {val}", f"Bearer ${{{token_env}}}")
+            changed = True
+    if changed:
+        open(settings, "w").write(text)
+        print("Scrubbed literal bearer tokens from ~/.gemini/settings.json "
+              "(restored ${VAR} placeholders).", file=sys.stderr)
+
+
 if shutil.which("gemini"):
     remove_all_known("gemini")
     for name, cfg in selected_servers("gemini"):
         if not can_configure("gemini", cfg):
             continue
         add_gemini(name, cfg)
+    scrub_gemini_literal_tokens()
 else:
     print("Skipping Gemini MCP sync: gemini not found", file=sys.stderr)
 
