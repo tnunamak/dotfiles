@@ -199,9 +199,10 @@ fi
 
 # rtk (CLI proxy that reduces LLM token consumption)
 # Hook command is `rtk hook claude` (built-in subcommand), wired in stowed claude/.claude/settings.json.
-if ! command -v rtk &>/dev/null; then
-  curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-fi
+# DISABLED: user opts out of auto-updates 2026-08-01.
+# if ! command -v rtk &>/dev/null; then
+#   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+# fi
 
 # Coolify CLI (self-hosted PaaS management)
 # The official installer supports a user-scoped install, which keeps its binary in
@@ -236,7 +237,8 @@ fi
 
 # --- Stow ---
 
-PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex qwen rtk tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
+PACKAGES=(nvim zsh bash shell kitty starship git claude bin gemini codex qwen tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
+# DISABLED rtk 2026-08-01 (stow package comment-out; binary install also disabled above)
 
 echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
@@ -249,11 +251,19 @@ echo "Stowing packages: ${PACKAGES[*]}"
 #   user units.
 NO_FOLD_PKGS=(bin nvim claude qwen tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd)
 
-# The Bee units used to be stowed from the broad `systemd` package. They now
-# live behind dedicated facade packages, but Stow will not transfer ownership
-# from one package to another automatically. Remove only links whose lexical
-# target is the old package (not the new facade, which resolves to the same
-# canonical source), then let --restow recreate the new ownership below.
+# User units used to be stowed from the broad `systemd` package. They now live
+# behind dedicated facade packages, but Stow will not transfer ownership from
+# one package to another automatically: it refuses to replace a link it does
+# not own and aborts the whole run. Remove only links whose lexical target is
+# the old package (not the new facade, which resolves to the same canonical
+# source), then let --restow recreate the new ownership below.
+#
+# Derived from the facade packages themselves rather than a hand-maintained
+# path list. The hand-maintained version silently omitted playwright-mcp
+# (added 2026-07-23), so every `./setup.sh` aborted at that package until
+# 2026-08-02 — and the abort happens mid-loop, leaving later packages
+# unstowed. Enumerating the packages means a new facade cannot reintroduce
+# that failure.
 if [[ "$(uname)" == "Linux" ]]; then
   migrate_legacy_systemd_link() {
     local relative="$1"
@@ -263,7 +273,15 @@ if [[ "$(uname)" == "Linux" ]]; then
 
     local raw_target lexical_target lexical_legacy
     raw_target="$(readlink "$target")"
-    lexical_target="$(realpath -sm "$(dirname "$target")/$raw_target")"
+    # A legacy link may be absolute (hand-made) or relative (Stow-made).
+    # Joining an absolute raw target onto its own dirname produces nonsense
+    # like $HOME/.config/systemd/user/home/tnunamak/code/... which silently
+    # never matches, so the migration no-ops and Stow aborts the whole run.
+    if [[ "$raw_target" == /* ]]; then
+      lexical_target="$(realpath -sm "$raw_target")"
+    else
+      lexical_target="$(realpath -sm "$(dirname "$target")/$raw_target")"
+    fi
     lexical_legacy="$(realpath -sm "$legacy")"
     [[ "$lexical_target" == "$lexical_legacy" ]] || return 0
 
@@ -271,11 +289,34 @@ if [[ "$(uname)" == "Linux" ]]; then
     unlink "$target"
   }
 
-  # Unfold the old package-owned drop-in directory before handling files.
-  migrate_legacy_systemd_link .config/systemd/user/llama-bee.service.d
-  mkdir -p "$HOME/.config/systemd/user/llama-bee.service.d"
-  migrate_legacy_systemd_link .config/systemd/user/bee-llama-watchdog.service
-  migrate_legacy_systemd_link .config/systemd/user/llama-bee.service
+  # Scope the scan to each facade's user-unit tree: a facade may also ship
+  # helper scripts (daisy-systemd has ~/.local/bin/*), which never had legacy
+  # `systemd`-package ownership and should not be walked.
+  #
+  # Drop-in *directories* first: a legacy run may have folded a whole
+  # `foo.service.d` dir into one symlink, which must become a real directory
+  # before any file inside it can be linked.
+  for pkg in "${PACKAGES[@]}"; do
+    [[ "$pkg" == *-systemd ]] || continue
+    unit_root="$DOTFILES_DIR/$pkg/.config/systemd/user"
+    [[ -d "$unit_root" ]] || continue
+    while IFS= read -r dropin_dir; do
+      relative="${dropin_dir#"$DOTFILES_DIR/$pkg/"}"
+      migrate_legacy_systemd_link "$relative"
+      mkdir -p "$HOME/$relative"
+    done < <(find "$unit_root" -type d -name '*.service.d' 2>/dev/null)
+  done
+
+  # Then every unit/drop-in the facades provide.
+  for pkg in "${PACKAGES[@]}"; do
+    [[ "$pkg" == *-systemd ]] || continue
+    unit_root="$DOTFILES_DIR/$pkg/.config/systemd/user"
+    [[ -d "$unit_root" ]] || continue
+    while IFS= read -r entry; do
+      migrate_legacy_systemd_link "${entry#"$DOTFILES_DIR/$pkg/"}"
+    done < <(find "$unit_root" \( -type l -o -type f \) 2>/dev/null)
+  done
+  unset relative unit_root
 fi
 
 # Remove files that tools create before stow can link them
