@@ -65,5 +65,25 @@ if ! grep -q 'codex_web_search' "$flag_file" 2>/dev/null; then
     printf '%s %s\n' "$ts" "codex_web_search" >> "$flag_file" 2>/dev/null || true
 fi
 
+# SELF-CONTAINED: emit the reminder + fire-log HERE rather than relying on a
+# separate research-capture-nudge in the same Stop event. The two racing hooks
+# don't execute sequentially (proven by a live probe: the flag was written but
+# the sibling nudge ran before it existed → 0 fires). Doing it in one hook
+# removes the race. Codex Stop wants JSON on stdout, so the reminder goes to
+# stderr (visible to the agent) and we still emit `{}`.
+if [ ! -f "$STATE_DIR/OFF" ]; then
+    printf 'Research-capture reminder: this Codex session used web search (codex_web_search). If real prior-art, library, or design research was done and the findings are worth keeping, capture them to ai/research/ now (new entry + one line in INDEX.md, per ai/research/README.md) before the session is gone. Skip if there are no durable findings.\n' >&2
+    # fire-log (append one line, cap at 500) — same format as research-capture-nudge.
+    fire_log="$STATE_DIR/fire-log.tsv"
+    {
+        printf '%s\t%s\t%s\n' "$ts" "$key" "codex_web_search" >> "$fire_log"
+        if [ "$(wc -l < "$fire_log" 2>/dev/null || echo 0)" -gt 500 ]; then
+            tail -500 "$fire_log" > "${fire_log}.tmp" 2>/dev/null && mv "${fire_log}.tmp" "$fire_log" 2>/dev/null || rm -f "${fire_log}.tmp" 2>/dev/null
+        fi
+    } 2>/dev/null || true
+    # consume the flag so a later Stop in the same session doesn't double-nudge.
+    rm -f "$flag_file" 2>/dev/null || true
+fi
+
 emit
 exit 0
