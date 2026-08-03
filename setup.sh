@@ -43,6 +43,25 @@ case "$(uname)" in
       sudo apt-get install -y git-filter-repo
     fi
 
+    # Linuxbrew — OPT-IN (SETUP_INSTALL_LINUXBREW=1 ./setup.sh). apt is the
+    # primary package manager on this box, so brew is only worth its ~500MB and
+    # its own update channel on a machine that actually needs a formula apt
+    # lacks. Off by default keeps the default run from silently adding a second
+    # package manager. Shell wiring is unconditional in shell/.shell_config
+    # (guarded on the binary existing), so a box that installed it out-of-band
+    # still gets a working brew without re-running with the flag.
+    #
+    # NONINTERACTIVE=1 is the installer's supported non-prompting mode; the
+    # `sudo -v` at the top of this script has already cached credentials, so it
+    # will not stall waiting for a password. The installer only PRINTS shellenv
+    # instructions (verified against install.sh) — it does not edit rc files, so
+    # it cannot clobber the stow-managed ~/.zshrc symlink.
+    if [[ "${SETUP_INSTALL_LINUXBREW:-0}" == "1" ]] && ! [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+      echo "Installing Linuxbrew (SETUP_INSTALL_LINUXBREW=1)..."
+      NONINTERACTIVE=1 /bin/bash -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+
     # Kitty terminal
     if ! command -v kitty &>/dev/null; then
       sudo apt-get install -y kitty

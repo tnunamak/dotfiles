@@ -34,6 +34,14 @@ export EDITOR=nvim
 export VISUAL=nvim
 
 # PATH
+# Linuxbrew first: `brew shellenv` PREPENDS its bin/sbin, so it must run before
+# the prepends below or it would shadow ~/.local/bin and the user-managed CLIs.
+# Brew is supplementary here (apt is the primary package manager), so it ends up
+# last in PATH. Opt-in — installed by setup.sh with SETUP_INSTALL_LINUXBREW=1.
+# macOS brew shellenv lives in zsh/.zprofile (different prefix, login shell).
+if [[ -n "$IS_LINUX" ]] && [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+fi
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.foundry/bin:$PATH"
 export PATH="$HOME/.cargo/bin:$PATH"
