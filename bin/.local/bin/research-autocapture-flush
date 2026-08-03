@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# research-autocapture-flush — SessionStart hook. Flush any ORPHANED research
+# flag from a PREVIOUS session into a draft.
+#
+# WHY: research-autocapture runs at session END, but not every agent has a
+# reliable session-end event (Gemini has none — only PreCompress-on-compaction),
+# and a killed/crashed session never fires one either. So research can sit in a
+# pending flag forever. This hook runs at the START of the NEXT session and
+# writes a draft for any pending flag that is NOT the current session — i.e. any
+# research whose session already ended without being captured. Belt to
+# autocapture's suspenders: between the two, no ended research session is missed
+# regardless of how it ended.
+#
+# Fail-silent. Emits nothing meaningful (SessionStart output is additional
+# context; we stay silent to avoid injecting noise).
+#
+# Env: RESEARCH_CAPTURE_STATE_DIR, RESEARCH_AUTOCAPTURE_DIR (see research-autocapture).
+
+STATE_DIR="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}"
+AUTOCAP="$HOME/.local/bin/research-autocapture"
+
+trap 'exit 0' ERR
+{ [ -f "$STATE_DIR/OFF" ] || [ -f "$STATE_DIR/AUTOCAPTURE_OFF" ]; } && exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+[ -x "$AUTOCAP" ] || exit 0
+
+input="$(cat 2>/dev/null || true)"
+current_sid=""
+[ -n "$input" ] && current_sid="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // .session.id // empty' 2>/dev/null || true)"
+
+# Every pending flag EXCEPT the current session's = an ended-but-uncaptured
+# research session. Drive autocapture for each by feeding it a synthetic
+# SessionEnd payload keyed to that flag's session id.
+for f in "$STATE_DIR"/research-pending-*; do
+    [ -f "$f" ] || continue
+    sid="$(basename "$f" | sed 's/^research-pending-//')"
+    [ "$sid" = "$current_sid" ] && continue   # leave the live session's flag alone
+    [ "$sid" = "unknown" ] && continue
+    printf '{"session_id":"%s","hook_event_name":"SessionEnd"}' "$sid" \
+        | bash "$AUTOCAP" >/dev/null 2>&1 || true
+    # autocapture writes the draft but does NOT clear the flag; clear it here so
+    # the same orphan isn't reprocessed every future SessionStart.
+    rm -f "$f" 2>/dev/null || true
+done
+
+exit 0

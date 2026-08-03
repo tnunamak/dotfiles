@@ -55,6 +55,16 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-autocapture-flush' 2>/dev/null"
+          }
+        ]
+      }
     ]
   }
 }
