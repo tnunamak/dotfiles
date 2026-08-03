@@ -60,6 +60,7 @@ THRESH_ELIXIR_BUILD=524288000  # 500M (tier-2 — _build/; `mix compile` rebuild
 THRESH_ELIXIR_DEPS=524288000   # 500M (tier-2 — deps/; `mix deps.get` needs network)
 THRESH_UNITY_LIBRARY=2147483648 # 2G (tier-2 — Library/; Unity reimports on reopen, slow)
 THRESH_PYCACHE=52428800     # 50M (tier-1 — __pycache__/.pytest_cache/.mypy_cache/.ruff_cache; instant regen, numerous)
+THRESH_NVM_VERSIONS=1073741824 # 1G (tier-2 — old ~/.nvm/versions/node/vX; `nvm install X` re-downloads)
 
 # Volumes tier-3 must NEVER offer for deletion, even when dangling — "dangling"
 # only means no container references them right now; these hold real data
@@ -105,6 +106,7 @@ CATEGORIES=(
     elixir_deps
     unity_library
     pycache
+    nvm_versions
     claude_cli
     go_build
     drkonqi
@@ -699,14 +701,70 @@ probe_pycache_total() {
 # Probe the pnpm content-addressed store. Located via `pnpm config get store-dir`,
 # falling back to CODE_ROOT/.pnpm-store (the layout dotfiles uses). Probe is a
 # size check only — actual prune happens via `pnpm store prune`.
+# Probe old nvm-installed Node versions (tier-2). Enumerates
+# ~/.nvm/versions/node/vX and returns the total size of everything except:
+#   - the version pointed to by `default` alias
+#   - the version currently in $PATH (if it lives under NVM_DIR)
+# `nvm install X` re-downloads on demand, so removing old versions is safe.
+probe_nvm_versions() {
+    local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+    local versions_dir="$nvm_dir/versions/node"
+    if [[ ! -d "$versions_dir" ]]; then
+        echo "0"
+        return
+    fi
+
+    # Resolve which versions to keep.
+    local keep_default=""
+    if [[ -f "$nvm_dir/alias/default" ]]; then
+        local default_alias
+        default_alias=$(<"$nvm_dir/alias/default")
+        # default may be a semver, a name (e.g. 'lts/*'), or a version string.
+        # We only handle the version-string case cheaply; anything else falls
+        # through and we skip the "in-use" filter for that entry.
+        [[ "$default_alias" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && {
+            [[ "$default_alias" == v* ]] || default_alias="v$default_alias"
+            keep_default="$default_alias"
+        }
+    fi
+    local keep_current=""
+    if command -v node &>/dev/null; then
+        local node_bin
+        node_bin=$(command -v node)
+        if [[ "$node_bin" == "$nvm_dir"/* ]]; then
+            # Extract v<X.Y.Z> from path like $NVM_DIR/versions/node/vX/bin/node.
+            keep_current=$(basename "$(dirname "$(dirname "$node_bin")")")
+        fi
+    fi
+
+    local total=0 v size
+    while IFS= read -r v; do
+        [[ -z "$v" ]] && continue
+        local name
+        name=$(basename "$v")
+        [[ "$name" == "$keep_default" || "$name" == "$keep_current" ]] && continue
+        size=$(du -sb "$v" 2>/dev/null | awk '{print $1}')
+        total=$((total + ${size:-0}))
+    done < <(find "$versions_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+
+    echo "$total"
+}
+
 probe_pnpm_store() {
     local store_dir=""
     if command -v pnpm &>/dev/null; then
         store_dir=$(pnpm config get store-dir 2>/dev/null | { grep -v '^undefined$' || true; } | head -1)
     fi
     if [[ -z "$store_dir" || ! -d "$store_dir" ]]; then
-        # Try the project-local store layout (pnpm with `store-dir=.pnpm-store`).
-        if [[ -d "$CODE_ROOT/.pnpm-store" ]]; then
+        # pnpm's actual default on Linux is $XDG_DATA_HOME/pnpm/store (i.e.
+        # ~/.local/share/pnpm/store). `pnpm config get store-dir` returns
+        # 'undefined' when not explicitly configured, so we must find it.
+        if [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/pnpm/store" ]]; then
+            store_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm/store"
+        elif [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/pnpm" ]]; then
+            store_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm"
+        elif [[ -d "$CODE_ROOT/.pnpm-store" ]]; then
+            # Project-local layout (pnpm with `store-dir=.pnpm-store`).
             store_dir="$CODE_ROOT/.pnpm-store"
         else
             echo "0"
@@ -836,6 +894,10 @@ check_cleanup() {
     ( probe_pnpm_store > "$TMPDIR_PARALLEL/pnpm_store" 2>/dev/null ) &
     pids+=($!)
 
+    # --- Old nvm-installed Node versions (tier-2) ---
+    ( probe_nvm_versions > "$TMPDIR_PARALLEL/nvm_versions" 2>/dev/null ) &
+    pids+=($!)
+
     # --- disabled snap revisions (tier-2) ---
     ( probe_snap_revs > "$TMPDIR_PARALLEL/snap_revs" 2>/dev/null ) &
     pids+=($!)
@@ -958,6 +1020,15 @@ check_cleanup() {
     : "${sr_count:=0}" "${sr_size:=0}"
     if (( sr_size > THRESH_SNAP_REVS )); then
         items+=("snap_revs:$sr_count:$sr_size")
+    fi
+
+    # nvm_versions — tier-2: old ~/.nvm/versions/node/vX; `nvm install X` re-downloads.
+    local nvm_size
+    nvm_size=$(cat "$TMPDIR_PARALLEL/nvm_versions" 2>/dev/null || echo 0)
+    : "${nvm_size:=0}"
+    if (( nvm_size > THRESH_NVM_VERSIONS )); then
+        # count=1 (single opt-in action; user picks which to keep interactively)
+        items+=("nvm_versions:1:$nvm_size")
     fi
 
     # pnpm_store — tier-1: `pnpm store prune` is a safe, store-aware operation.
@@ -1298,6 +1369,9 @@ show_suggestions() {
             snap_revs)
                 other_lines+=("  ${YELLOW}tier 2${NC} snap remove $count disabled revisions:   $(human_size "$size")  ${DIM}(drops rollback; needs sudo)${NC}")
                 ;;
+            nvm_versions)
+                other_lines+=("  ${YELLOW}tier 2${NC} nvm uninstall old Node versions:     $(human_size "$size")  ${DIM}(keeps default alias + current; nvm install X re-downloads)${NC}")
+                ;;
             pip_cache)
                 other_lines+=("    pip cache purge: $(human_size "$size")")
                 ;;
@@ -1633,16 +1707,44 @@ do_cleanup() {
     if is_enabled pnpm_store; then
         local ps_size
         ps_size=$(cache_size_for pnpm_store)
-        if (( ps_size > 0 )) && command -v pnpm &>/dev/null; then
-            if maybe_run "pnpm store prune" "$ps_size" "pnpm store prune"; then
-                # Re-measure to learn actual freed; if pnpm reports nothing,
-                # account it as 0 rather than the pre-prune size.
-                local store_dir new_size
-                store_dir=$(pnpm config get store-dir 2>/dev/null | { grep -v '^undefined$' || true; } | head -1)
-                [[ -z "$store_dir" || ! -d "$store_dir" ]] && store_dir="$CODE_ROOT/.pnpm-store"
-                if [[ -d "$store_dir" ]]; then
-                    new_size=$(du -sb "$store_dir" 2>/dev/null | cut -f1 || echo "$ps_size")
-                    freed=$((freed + ps_size - new_size))
+        if (( ps_size > 0 )); then
+            # Resolve store path once — used whether pnpm is available or not.
+            local store_dir
+            store_dir=$(command -v pnpm &>/dev/null \
+                && pnpm config get store-dir 2>/dev/null \
+                | { grep -v '^undefined$' || true; } | head -1)
+            if [[ -z "$store_dir" || ! -d "$store_dir" ]]; then
+                # Mirror probe_pnpm_store: check the XDG default path first
+                # (the actual default on Linux) before falling back to the
+                # project-local layout under CODE_ROOT.
+                if [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/pnpm/store" ]]; then
+                    store_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm/store"
+                elif [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/pnpm" ]]; then
+                    store_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm"
+                else
+                    store_dir="$CODE_ROOT/.pnpm-store"
+                fi
+            fi
+
+            if command -v pnpm &>/dev/null; then
+                if maybe_run "pnpm store prune" "$ps_size" "pnpm store prune"; then
+                    # Re-measure to learn actual freed; if pnpm reports nothing,
+                    # account it as 0 rather than the pre-prune size.
+                    local new_size
+                    if [[ -d "$store_dir" ]]; then
+                        new_size=$(du -sb "$store_dir" 2>/dev/null | cut -f1 || echo "$ps_size")
+                        freed=$((freed + ps_size - new_size))
+                    fi
+                fi
+            elif [[ -d "$store_dir" ]]; then
+                # No pnpm binary but the store exists — offer a direct rm so an
+                # abandoned store (e.g. after uninstalling all Node versions
+                # that shipped pnpm) can still be reclaimed. Not "prune", full
+                # delete: without pnpm we can't distinguish referenced from
+                # unreferenced packages.
+                if maybe_run "pnpm store: rm (no pnpm binary; full delete)" \
+                        "$ps_size" "rm -rf $(printf '%q' "$store_dir")"; then
+                    freed=$((freed + ps_size))
                 fi
             fi
         fi
@@ -1689,23 +1791,65 @@ do_cleanup() {
     fi
 
     # ----- npm cache -----
+    # `npm cache clean --force` (modern npm) prunes only entries the cache
+    # manager considers stale/invalid; content-addressed tarballs it deems
+    # valid are kept, so the on-disk size may barely change. We therefore
+    # ALWAYS re-measure and count only bytes that actually disappeared,
+    # never the pre-cleanup estimate. If a large fraction remains, offer
+    # `rm -rf ~/.npm` as a follow-up so the user can actually reclaim it.
     if is_enabled npm_cache; then
         local s; s=$(cache_size_for npm_cache)
         if (( s > 0 )); then
-            local cmd="npm cache clean --force"
-            command -v npm >/dev/null || cmd="rm -rf ~/.npm"
+            local have_npm=true
+            command -v npm >/dev/null || have_npm=false
+            local cmd
+            if $have_npm; then
+                cmd="npm cache clean --force"
+            else
+                cmd="rm -rf ~/.npm"
+            fi
+            local ran=false
             if maybe_run "npm cache" "$s" "$cmd"; then
-                freed=$((freed + s))
+                ran=true
+            fi
+            # Preview mode: maybe_run already reported; don't touch `freed`
+            # here (it doesn't move in preview by design for other blocks).
+            if [[ "$DRY_RUN" != "true" ]] && $ran; then
+                # Measure the whole ~/.npm tree, not just _cacache — that's
+                # what the probe measured and what the user thinks of as
+                # "the npm cache" on disk.
+                local after
+                after=$(du -sb "$HOME/.npm" 2>/dev/null | cut -f1)
+                : "${after:=0}"
+                local actually_freed=$(( s - after ))
+                (( actually_freed < 0 )) && actually_freed=0
+                freed=$((freed + actually_freed))
+                if (( actually_freed < s )); then
+                    echo -e "  ${DIM}actually freed: $(human_size "$actually_freed") of $(human_size "$s") (~/.npm now $(human_size "$after"))${NC}"
+                fi
+                # If npm cache clean left >=50% on disk (modern npm keeps
+                # valid content-addressed tarballs), offer a full rm as
+                # follow-up. Skip if we already did rm (no-npm path).
+                if $have_npm && (( after >= s / 2 )) && [[ -d "$HOME/.npm" ]]; then
+                    if maybe_run "npm cache: rm remaining ~/.npm" "$after" "rm -rf ~/.npm"; then
+                        local after2
+                        after2=$(du -sb "$HOME/.npm" 2>/dev/null | cut -f1)
+                        : "${after2:=0}"
+                        freed=$((freed + after - after2))
+                    fi
+                fi
             elif [[ "$DRY_RUN" != "true" ]]; then
-                # npm exits ENOTEMPTY when live npm/npx processes (e.g. agent
-                # MCP servers) write into _cacache mid-clean. If the cache
-                # still shrank substantially, count the partial clean as
-                # success instead of surfacing npm's scary stderr. A declined
-                # prompt leaves the size unchanged and takes neither branch.
-                local after; after=$(du -sb "$HOME/.npm/_cacache" 2>/dev/null | cut -f1); : "${after:=0}"
-                if (( after < s / 2 )); then
-                    echo -e "  ${DIM}npm raced live npm processes (ENOTEMPTY) but cache shrank $(human_size "$s") → $(human_size "$after"); counting as cleaned${NC}"
-                    freed=$((freed + s - after))
+                # `maybe_run` returned non-zero (user declined OR command
+                # errored). Still re-measure: npm may have partially freed
+                # via ENOTEMPTY race with live npm/npx processes. Count
+                # only real drop.
+                local after
+                after=$(du -sb "$HOME/.npm" 2>/dev/null | cut -f1)
+                : "${after:=0}"
+                local partial=$(( s - after ))
+                if (( partial > 0 )); then
+                    echo -e "  ${DIM}partial freed after decline/error: $(human_size "$partial") (~/.npm now $(human_size "$after"))${NC}"
+                    freed=$((freed + partial))
                 fi
             fi
         fi
@@ -2199,6 +2343,90 @@ do_cleanup() {
         fi
     fi
 
+    # ----- Old nvm Node versions (tier-2) -----
+    # Enumerates ~/.nvm/versions/node/vX, excludes the `default` alias target
+    # and the currently-active version, then offers to nvm-uninstall each of
+    # the rest. `nvm install X` re-downloads on demand, so this is safe.
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled nvm_versions; then
+        local nvm_size
+        nvm_size=$(cache_size_for nvm_versions)
+        if (( nvm_size > 0 )); then
+            local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+            local versions_dir="$nvm_dir/versions/node"
+            if [[ -d "$versions_dir" ]]; then
+                local keep_default="" keep_current=""
+                if [[ -f "$nvm_dir/alias/default" ]]; then
+                    local default_alias; default_alias=$(<"$nvm_dir/alias/default")
+                    [[ "$default_alias" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && {
+                        [[ "$default_alias" == v* ]] || default_alias="v$default_alias"
+                        keep_default="$default_alias"
+                    }
+                fi
+                if command -v node &>/dev/null; then
+                    local node_bin; node_bin=$(command -v node)
+                    if [[ "$node_bin" == "$nvm_dir"/* ]]; then
+                        keep_current=$(basename "$(dirname "$(dirname "$node_bin")")")
+                    fi
+                fi
+
+                local nvm_paths=() nvm_names=()
+                local v name
+                while IFS= read -r v; do
+                    [[ -z "$v" ]] && continue
+                    name=$(basename "$v")
+                    [[ "$name" == "$keep_default" || "$name" == "$keep_current" ]] && continue
+                    nvm_paths+=("$v")
+                    nvm_names+=("$name")
+                done < <(find "$versions_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+                if (( ${#nvm_paths[@]} > 0 )); then
+                    echo ""
+                    echo -e "${BOLD}Old nvm Node versions${NC}  (${YELLOW}$(human_size "$nvm_size")${NC}, ${#nvm_names[@]} versions)"
+                    [[ -n "$keep_default" ]] && echo -e "  ${DIM}(keeping default: $keep_default)${NC}"
+                    [[ -n "$keep_current" && "$keep_current" != "$keep_default" ]] && echo -e "  ${DIM}(keeping current: $keep_current)${NC}"
+                    local shown=0
+                    for name in "${nvm_names[@]}"; do
+                        echo -e "  ${DIM}$name${NC}"
+                        shown=$((shown+1))
+                        if (( shown >= 10 )); then
+                            local remaining=$(( ${#nvm_names[@]} - 10 ))
+                            (( remaining > 0 )) && echo -e "  ${DIM}... and $remaining more${NC}"
+                            break
+                        fi
+                    done
+                    if [[ "$DRY_RUN" == "true" ]]; then
+                        echo -e "  ${CYAN}[preview] would: nvm uninstall each${NC}  ${DIM}(nvm install X re-downloads)${NC}"
+                        freed=$((freed + nvm_size))
+                    elif confirm "  Uninstall all old Node versions?"; then
+                        # Source nvm in-process so `nvm uninstall` is available.
+                        # shellcheck disable=SC1090,SC1091
+                        [[ -s "$nvm_dir/nvm.sh" ]] && . "$nvm_dir/nvm.sh"
+                        local nvm_ok=0 nvm_freed=0
+                        for name in "${nvm_names[@]}"; do
+                            local v_path="$versions_dir/$name"
+                            local v_size; v_size=$(du -sb "$v_path" 2>/dev/null | awk '{print $1}')
+                            if command -v nvm &>/dev/null && nvm uninstall "$name" >/dev/null 2>&1; then
+                                echo -e "  ${GREEN}uninstalled${NC} $name"
+                                nvm_ok=$((nvm_ok+1))
+                                nvm_freed=$((nvm_freed + ${v_size:-0}))
+                            elif [[ -d "$v_path" ]] && rm -rf "$v_path" 2>/dev/null; then
+                                # Fallback for versions with root-owned files
+                                # or path-length issues that block `nvm uninstall`.
+                                echo -e "  ${GREEN}removed${NC} $name  ${DIM}(rm fallback)${NC}"
+                                nvm_ok=$((nvm_ok+1))
+                                nvm_freed=$((nvm_freed + ${v_size:-0}))
+                            else
+                                echo -e "  ${RED}failed${NC} $name"
+                            fi
+                        done
+                        echo -e "  ${GREEN}done${NC} (${nvm_ok} removed, freed $(human_size "$nvm_freed"))"
+                        freed=$((freed + nvm_freed))
+                    fi
+                fi
+            fi
+        fi
+    fi
+
     echo ""
     if [[ "$DRY_RUN" == "true" ]]; then
         echo -e "${BOLD}Preview total: $(human_size "$freed")${NC}"
@@ -2635,6 +2863,7 @@ CATEGORIES:
   elixir_build        tier 2, opt-in       (stale _build/; sibling mix.exs; mix compile)
   elixir_deps         tier 2, opt-in       (stale deps/; sibling mix.exs; needs network)
   unity_library       tier 2, opt-in       (stale Library/; sibling Assets/+ProjectSettings/)
+  nvm_versions        tier 2, opt-in       (old ~/.nvm/versions/node/vX; keeps default+current)
 
 EXAMPLES:
   cleanup --preview

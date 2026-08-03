@@ -63,8 +63,21 @@ under `~/applications/*/` and need their repos + models restored first.)
 ## Secrets (referenced, never committed)
 
 Restore these from your out-of-band store / NAS — values are NOT in this repo:
-- Infisical `personal-dev/dev` (global shell secrets; log in with
-  `infisical login --domain=https://secrets.vivid.fish`)
+- Infisical `personal-dev/dev` (global shell secrets). **Both steps:**
+  1. Create a per-host machine identity in the Infisical UI (`personal-dev` →
+     Access Control → Identities), role Viewer, auth method Universal Auth.
+     Write its credentials to `~/.config/infisical/machine-identity.env`,
+     chmod 600:
+     ```
+     INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=<uuid>
+     INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=<secret, shown once>
+     ```
+     This is the fast path; without it every shell falls back to the ~20s
+     keyring retry loop.
+  2. `infisical login` — populates the KWallet session. Required even with a
+     machine identity, because only the user-login path writes the CLI's
+     encrypted outage cache (see the Infisical offline-cache research note).
+     Expires ~14d and does not refresh on use; the shell nags when it lapses.
 - `~/sandbox/.coolify-token`
 - `~/sandbox/garage-credentials.txt`
 
@@ -99,6 +112,13 @@ Current: OOM safety net (earlyoom `-M 6291456,4194304 -s 100,100`) +
   `auto` is not fail-closed: Infisical can recreate its encrypted file vault
   after a system-keyring write failure. Strict KWallet-only behavior requires
   upstream support; see the Infisical offline-cache research note.
+- Since 2026-08-02 the shell's *primary* secret path is a machine identity,
+  which talks to Infisical directly and never touches the Secret Service. So a
+  wedged or locked KWallet no longer costs a shell its secrets — it only stops
+  the user-login session from refreshing, which in turn stops the offline cache
+  from being updated. The KWallet apparatus above still matters, but it is now
+  a durability concern (outage cache freshness) rather than an availability one
+  (shell startup).
 
 The SSH rule lives in `/etc/ssh/sshd_config.d/10-tnunamak-kwallet.conf`.
 The installer keeps one-time pre-change backups at

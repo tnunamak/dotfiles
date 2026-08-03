@@ -28,7 +28,9 @@ cd ~/code/dotfiles
 Create machine-local configs as needed:
 
 - `~/.shell_local` — machine-specific PATH, tool init (nvm, conda, etc.). See `shell/.shell_local.example`.
-- Infisical `personal-dev/dev` — canonical store for global API keys and tokens. Run `infisical login --domain=https://secrets.vivid.fish` once per machine; shell startup exports them and the CLI keeps an encrypted outage cache.
+- Infisical `personal-dev/dev` — canonical store for global API keys and tokens. Two auth paths, tried in order on every shell start:
+  1. **Machine identity** (preferred) — `~/.config/infisical/machine-identity.env` (chmod 600) holding `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` / `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` for a per-host, least-privilege (Viewer, `personal-dev/dev`) identity. Sub-second, no keyring dependency, no expiry.
+  2. **User login** — `infisical login`, once per machine. This is the fallback, *and* the only path that populates the CLI's encrypted outage cache, so it still matters even when the machine identity is working. The session hard-expires (~14d) and does not refresh on use, so shell startup runs a throttled background check and nags when it lapses.
 - `~/.gitconfig.local` — signing key, email. Copied from example on first run.
 - `~/.claude/CLAUDE.local.md` — private context (infrastructure details, IPs, etc.)
 

@@ -137,6 +137,16 @@ fi
 # keeps this same export path working during a server outage; there is no
 # plaintext fallback. Live export runs per shell (~100-300ms).
 #
+# Auth precedence (tried in order, first success wins):
+#   1. Machine identity Universal Auth via ~/.config/infisical/machine-identity.env
+#      Fast (~0.3s), no keyring dependency, no user-visible expiry. Preferred.
+#      Access token TTL is 30 days but is auto-refreshed on each `login` call,
+#      so this effectively never expires as long as the client secret is valid.
+#   2. User-login flow via the CLI's stored keyring session (legacy). Kept as
+#      a fallback so any host lacking a machine-identity file still works, and
+#      so a broken/rotated MI credential doesn't lock you out — the keyring
+#      session is the escape hatch. Same retry logic as before (see below).
+#
 # Pre-flight: kill ksecretd if it's alive but wedged (a DIFFERENT failure
 # mode than the boot-race crash-loop below — this is ksecretd successfully
 # starting, running fine for a while, then going silently unresponsive to
@@ -147,15 +157,46 @@ fi
 # crashing-then-recovering one does. Debounced internally (default 30s) and
 # bounded (default 8s Ping timeout) so this can't meaningfully slow shell
 # startup; a missing script or missing gdbus/pgrep is a silent no-op.
-command -v secrets-service-health-check >/dev/null 2>&1 && secrets-service-health-check
+# Pre-flight is only needed for the user-login path (keyring); the machine
+# identity path doesn't touch the Secret Service backend at all, so we skip
+# the health check when MI is going to succeed.
 if command -v infisical >/dev/null 2>&1; then
-  # timeout + </dev/null guard against infisical's expired-session re-auth: on a
-  # tty it spawns a blocking `login --silent` that never returns (hung every new
-  # terminal on 2026-07-23).
   _inf_timeout=timeout
   command -v "$_inf_timeout" >/dev/null 2>&1 || _inf_timeout=gtimeout
   _inf_ok=0
-  if command -v "$_inf_timeout" >/dev/null 2>&1; then
+
+  # ---- Path 1: Machine identity (Universal Auth) ----
+  # A single subshell login+export call: no retry loop needed (no keyring race,
+  # no D-Bus activation, no ksecretd). If it fails for any reason, fall through
+  # to the retry-based user-login path below.
+  _inf_mi_file="$HOME/.config/infisical/machine-identity.env"
+  if [[ -r "$_inf_mi_file" ]] && command -v "$_inf_timeout" >/dev/null 2>&1; then
+    _inf_secrets="$("$_inf_timeout" 10 bash -c '
+      set -e
+      set -a
+      . "$1"
+      set +a
+      TOKEN=$(infisical login --method=universal-auth \
+        --client-id="$INFISICAL_UNIVERSAL_AUTH_CLIENT_ID" \
+        --client-secret="$INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET" \
+        --domain=https://secrets.vivid.fish --silent --plain 2>/dev/null)
+      [[ -z "$TOKEN" ]] && exit 1
+      infisical export \
+        --projectId=894e048b-954c-4c5a-a1d0-888c54c9ce66 \
+        --env=dev --format=dotenv-export \
+        --domain=https://secrets.vivid.fish --token="$TOKEN" 2>/dev/null
+    ' _ "$_inf_mi_file" </dev/null 2>/dev/null)" && [[ -n "$_inf_secrets" ]] && {
+      eval "$_inf_secrets"
+      _inf_ok=1
+    }
+    unset _inf_mi_file
+  fi
+
+  # ---- Path 2: User-login (keyring) with retry — only if MI failed ----
+  if (( ! _inf_ok )); then
+    command -v secrets-service-health-check >/dev/null 2>&1 && secrets-service-health-check
+  fi
+  if (( ! _inf_ok )) && command -v "$_inf_timeout" >/dev/null 2>&1; then
     # At boot, many shells start in the same ~1s window and can race the
     # Secret Service backend
     # (org.freedesktop.secrets/ksecretd) before it's ready, which crashes
@@ -240,8 +281,63 @@ if command -v infisical >/dev/null 2>&1; then
     unset _inf_deadline _inf_remaining _inf_attempt_timeout
   fi
   if (( ! _inf_ok )) && [[ $- == *i* ]]; then
-    printf '%s\n' 'Infisical secrets unavailable. Run: infisical login --domain=https://secrets.vivid.fish'
+    if [[ -r "$HOME/.config/infisical/machine-identity.env" ]]; then
+      printf '%s\n' 'Infisical secrets unavailable. Machine identity failed — check ~/.config/infisical/machine-identity.env or rotate secret in UI.'
+    else
+      printf '%s\n' 'Infisical secrets unavailable. Run: infisical login'
+    fi
   fi
+
+  # Keyring-session staleness nag (separate from the failure nag above).
+  #
+  # The MI path above is what actually hydrates this shell, and it never
+  # expires. But ONLY the user-login path writes the CLI's encrypted offline
+  # cache (~/.infisical/secrets-backup/) — see Infisical/cli
+  # packages/util/secrets.go: WriteBackupSecrets is called solely in the
+  # user-login branch. That cache is what keeps this machine working when the
+  # Infisical origin is down (it runs on bravo, which wedges periodically).
+  #
+  # The CLI does not refresh the user session on use: PR #3797 implemented
+  # refresh-token support and was reverted in f167ba0 (2025-06-19), leaving
+  # the `// TODO: add refresh token` at packages/util/credentials.go:92. So
+  # the session hard-expires (~14d) no matter how often the CLI runs, and
+  # nothing tells you until you need the cache and it's stale.
+  #
+  # Hence: check session validity in the BACKGROUND, cache the verdict, and
+  # print the cached verdict on subsequent shells. Never blocks startup.
+  if [[ $- == *i* ]] && command -v infisical >/dev/null 2>&1; then
+    _inf_stale_dir="${XDG_CACHE_HOME:-$HOME/.cache}/infisical-session"
+    _inf_stale_flag="$_inf_stale_dir/stale"
+    _inf_stale_checked="$_inf_stale_dir/last-check"
+
+    # Show the cached verdict from the previous background probe.
+    [[ -f "$_inf_stale_flag" ]] &&
+      printf '%s\n' 'Infisical keyring session expired — offline secret cache is going stale. Run: infisical login'
+
+    # Re-probe at most every 6h, fully detached so it never costs startup time.
+    _inf_should_check=1
+    if [[ -f "$_inf_stale_checked" ]]; then
+      _inf_check_age=$(( $(date +%s) - $(date -r "$_inf_stale_checked" +%s 2>/dev/null || echo 0) ))
+      (( _inf_check_age < 21600 )) && _inf_should_check=0
+    fi
+    if (( _inf_should_check )); then
+      mkdir -p "$_inf_stale_dir" 2>/dev/null
+      (
+        # `login status` verifies against the backend, so a revoked or
+        # expired session is caught even when it looks fine locally.
+        # rc 0 = at least one valid session; non-zero = expired/absent.
+        if "${_inf_timeout:-timeout}" 15 infisical login status >/dev/null 2>&1 </dev/null; then
+          rm -f "$_inf_stale_flag"
+        else
+          : > "$_inf_stale_flag"
+        fi
+        : > "$_inf_stale_checked"
+      ) >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+    fi
+    unset _inf_stale_dir _inf_stale_flag _inf_stale_checked _inf_should_check _inf_check_age
+  fi
+
   unset _inf_secrets _inf_timeout _inf_ok
 elif [[ $- == *i* ]]; then
   printf '%s\n' 'Infisical CLI not installed; managed shell secrets are unavailable.'
@@ -262,3 +358,10 @@ fi
 # Remove these two functions to fully disable actuation.
 claude() { tokensmash-launch claude "$@"; }
 codex() { tokensmash-launch codex "$@"; }
+
+# Second Claude account (ODL). CLAUDE_CONFIG_DIR relocates the whole config tree
+# — credentials, .claude.json, projects/, sessions/ — so auth is fully isolated
+# from the default account. Shared config (skills/commands/hooks/CLAUDE.md) is
+# symlinked into ~/.claude-odl, so instructions stay identical across accounts.
+# Still routes through tokensmash-launch to keep the scratch-dir redirect.
+claude-odl() { CLAUDE_CONFIG_DIR="$HOME/.claude-odl" tokensmash-launch claude "$@"; }

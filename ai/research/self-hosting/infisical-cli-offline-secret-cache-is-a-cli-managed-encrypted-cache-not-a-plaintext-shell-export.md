@@ -89,3 +89,9 @@ configuration unit. Prefer a visible, version-controlled config file for
 numerous public defaults that benefit from review and history; do not split one
 endpoint from its credential merely to keep the secret manager semantically
 pure.
+
+UPDATE 2026-08-02: the offline cache proven here is written *only* by the
+user-login code path. A host authenticating by machine identity never populates
+it, and the user session that does populate it hard-expires (~14d) because the
+CLI's refresh call site is reverted upstream. See
+[infisical-cli-user-session-does-not-refresh-because-the-refresh-token-call-site-was-implemented-then-reverted.md](infisical-cli-user-session-does-not-refresh-because-the-refresh-token-call-site-was-implemented-then-reverted.md).

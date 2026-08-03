@@ -46,6 +46,14 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 SECRETS_BLOCK="$(sed -n '/^# Secrets — hydrate/,/^# Machine-specific config/p' "$SHELL_CONFIG")"
 grep -qF '_inf_deadline=$(( $(_inf_now_seconds) + 20 ))' <<<"$SECRETS_BLOCK" ||
   fail "could not extract the current Infisical retry block"
+grep -qF 'machine-identity.env' <<<"$SECRETS_BLOCK" ||
+  fail "machine-identity path not present in extracted block — did the fast-path get removed?"
+
+# The retry loop is the fallback; the machine-identity path is preferred.
+# The MI-absent tests below rely on HOME pointing at a scratch dir with no
+# ~/.config/infisical/machine-identity.env so the block falls through.
+MI_TEST_HOME="$WORK/home-no-mi"
+mkdir -p "$MI_TEST_HOME"
 
 # Fake infisical: fails the first N calls (tracked via a counter file),
 # succeeds after that. slow-boundary mode deliberately consumes about 18
@@ -98,7 +106,10 @@ chmod +x "$FIXTURE_BIN/date"
 run_case() {
   local fail_count="$1" mode="${2:-cascade}" outer_timeout="${3:-30}"
   rm -f "$COUNTER_FILE" "$TIMEOUT_LOG"
+  # Point HOME at a scratch dir with no machine-identity.env so the block
+  # falls through to the retry loop — that's what these cases are testing.
   PATH="$FIXTURE_BIN:/usr/bin:/bin" \
+    HOME="$MI_TEST_HOME" \
     INFISICAL_TEST_FAIL_COUNT="$fail_count" \
     INFISICAL_TEST_MODE="$mode" \
     /usr/bin/timeout "$outer_timeout" bash -c "$SECRETS_BLOCK
@@ -147,4 +158,127 @@ permanent_attempts="$(<"$COUNTER_FILE")"
 (( permanent_attempts >= 3 && permanent_attempts <= 12 )) ||
   fail "permanent failure launched $permanent_attempts attempts in 2s; retry throttle is missing or excessive"
 
-echo 'PASS: actual Infisical config block recovers from deep crash cascades, caps its 20s budget, ignores wall-clock jumps, cleans helpers, throttles permanent failures, and adds no happy-path latency'
+# ---- Machine-identity path (2026-08-02) ----
+# The MI path is a single subshell login+export call. On success, retry-loop
+# internals must not run. On failure, the block must fall through to the
+# existing retry logic. Both properties are load-bearing: if MI silently
+# succeeded with empty output, shells would appear healthy while getting no
+# secrets; if MI failure crashed the block, the keyring fallback would be
+# lost.
+MI_HOME="$WORK/home-with-mi"
+mkdir -p "$MI_HOME/.config/infisical"
+
+# Fake infisical that behaves like the real one for both `login` (returns a
+# JWT-shaped string) and `export --token=...` (returns dotenv). Counts calls
+# so we can distinguish MI-path success (2 calls total: login + export) from
+# retry-loop invocations (which don't use --token).
+cat >"$FIXTURE_BIN/infisical-mi" <<'EOF'
+#!/usr/bin/env bash
+COUNTER="__MI_COUNTER__"
+MODE="${INFISICAL_MI_TEST_MODE:-success}"
+count=0
+[[ -f "$COUNTER" ]] && count="$(cat "$COUNTER")"
+count=$((count + 1))
+echo "$count" >"$COUNTER"
+# `login --method=universal-auth` returns a JWT-shaped token on stdout
+if [[ "$1" == "login" ]]; then
+  [[ "$MODE" == "login-fail" ]] && exit 1
+  echo "fake.jwt.token"
+  exit 0
+fi
+if [[ "$1" == "export" ]]; then
+  [[ "$MODE" == "export-fail" ]] && exit 1
+  echo "export INFISICAL_TEST_VAR=success_from_mi"
+  exit 0
+fi
+exit 2
+EOF
+MI_COUNTER="$WORK/mi-counter"
+sed -i "s#__MI_COUNTER__#$MI_COUNTER#" "$FIXTURE_BIN/infisical-mi"
+chmod +x "$FIXTURE_BIN/infisical-mi"
+
+run_mi_case() {
+  local mi_mode="$1" retry_fail="${2:-0}" outer_timeout="${3:-10}"
+  rm -f "$COUNTER_FILE" "$TIMEOUT_LOG" "$MI_COUNTER"
+  # Write a valid-shape MI env file. Content doesn't need to be real — the
+  # infisical binary we hand the block is our stub, which ignores creds.
+  cat >"$MI_HOME/.config/infisical/machine-identity.env" <<MIENV
+INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=test-client-id
+INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=test-client-secret
+MIENV
+  chmod 600 "$MI_HOME/.config/infisical/machine-identity.env"
+  # Replace `infisical` on PATH with our MI-aware stub for this run only.
+  # The block calls `infisical` with `login ...` first, then `export ...`.
+  # When it falls through to the retry loop it calls `infisical export`
+  # WITHOUT --token — the original crash-cascade fixture handles that call.
+  cp "$FIXTURE_BIN/infisical-mi" "$FIXTURE_BIN/infisical"
+  # But the retry-loop's `infisical export` (no --token) still needs to
+  # come from the crash-cascade fixture if we want to test fallback.
+  # Solution: wrapper that dispatches based on args.
+  cat >"$FIXTURE_BIN/infisical" <<EOF2
+#!/usr/bin/env bash
+# If args contain --token, this is the MI path's export call; otherwise
+# it's the retry loop's export call.
+for a in "\$@"; do
+  if [[ "\$a" == --token=* ]]; then
+    exec "$FIXTURE_BIN/infisical-mi" "\$@"
+  fi
+done
+if [[ "\$1" == "login" ]]; then
+  exec "$FIXTURE_BIN/infisical-mi" "\$@"
+fi
+exec "$FIXTURE_BIN/infisical-cascade" "\$@"
+EOF2
+  chmod +x "$FIXTURE_BIN/infisical"
+  # Preserve the retry-loop fixture under its own name so the wrapper can find it.
+  [[ ! -x "$FIXTURE_BIN/infisical-cascade" ]] && {
+    # Re-generate the cascade binary at a distinct path so the wrapper can dispatch.
+    cat >"$FIXTURE_BIN/infisical-cascade" <<'CEOF'
+#!/usr/bin/env bash
+COUNTER_FILE="__COUNTER_FILE__"
+FAIL_COUNT="${INFISICAL_TEST_FAIL_COUNT:-0}"
+count=0
+[[ -f "$COUNTER_FILE" ]] && count="$(cat "$COUNTER_FILE")"
+count=$((count + 1))
+echo "$count" >"$COUNTER_FILE"
+(( count <= FAIL_COUNT )) && exit 1
+echo "export INFISICAL_TEST_VAR=success_after_retry_${count}_attempts"
+CEOF
+    sed -i "s#__COUNTER_FILE__#$COUNTER_FILE#" "$FIXTURE_BIN/infisical-cascade"
+    chmod +x "$FIXTURE_BIN/infisical-cascade"
+  }
+
+  PATH="$FIXTURE_BIN:/usr/bin:/bin" \
+    HOME="$MI_HOME" \
+    INFISICAL_MI_TEST_MODE="$mi_mode" \
+    INFISICAL_TEST_FAIL_COUNT="$retry_fail" \
+    INFISICAL_TEST_MODE=cascade \
+    /usr/bin/timeout "$outer_timeout" bash -c "$SECRETS_BLOCK
+printf 'var=%s mi_calls=%s retry_calls=%s\n' \
+  \"\${INFISICAL_TEST_VAR-}\" \
+  \"\$(cat '$MI_COUNTER' 2>/dev/null || echo 0)\" \
+  \"\$(cat '$COUNTER_FILE' 2>/dev/null || echo 0)\""
+}
+
+# Case A: MI success — retry loop must NOT run.
+start_ts=$(date +%s)
+out="$(run_mi_case success 0)"
+elapsed=$(( $(date +%s) - start_ts ))
+grep -q '^var=success_from_mi ' <<<"$out" || fail "MI success did not export the expected variable: $out"
+grep -q 'retry_calls=0' <<<"$out" || fail "MI succeeded but retry loop still ran: $out"
+(( elapsed <= 3 )) || fail "MI happy path took ${elapsed}s — should be sub-second"
+
+# Case B: MI login fails — retry loop must run and succeed.
+out="$(run_mi_case login-fail 0)"
+grep -qE '^var=success_after_retry_[0-9]+_attempts ' <<<"$out" ||
+  fail "MI-login failure did not fall through to retry loop: $out"
+
+# Case C: MI export fails after login succeeds — same fallthrough.
+out="$(run_mi_case export-fail 0)"
+grep -qE '^var=success_after_retry_[0-9]+_attempts ' <<<"$out" ||
+  fail "MI-export failure did not fall through to retry loop: $out"
+
+# Restore infisical binary for any subsequent tests
+cp "$FIXTURE_BIN/infisical-cascade" "$FIXTURE_BIN/infisical" 2>/dev/null || true
+
+echo 'PASS: actual Infisical config block recovers from deep crash cascades, caps its 20s budget, ignores wall-clock jumps, cleans helpers, throttles permanent failures, adds no happy-path latency, prefers machine identity when configured (sub-second, no retry loop), and falls back to keyring retry when MI fails at either login or export'
