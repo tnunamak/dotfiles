@@ -46,6 +46,14 @@
             "command": "bash '/home/tnunamak/.config/tmux/scripts/tmux-agent-label-hook.sh' codex idle"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/research-autocapture' 2>/dev/null"
+          }
+        ]
       }
     ]
   }
