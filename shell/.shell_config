@@ -314,9 +314,17 @@ if command -v infisical >/dev/null 2>&1; then
     [[ -f "$_inf_stale_flag" ]] &&
       printf '%s\n' 'Infisical keyring session expired — offline secret cache is going stale. Run: infisical login --domain=https://secrets.vivid.fish'
 
-    # Re-probe at most every 6h, fully detached so it never costs startup time.
+    # Re-probe in the background, fully detached so it never costs startup time.
+    #
+    # The 6h throttle applies only while the session is healthy — there is
+    # nothing to learn by re-checking a working session often. Once the flag
+    # is set, probe on every shell instead: the nag is the only signal that
+    # you need to re-login, so it has to stop as soon as you have, rather
+    # than persisting for up to 6h afterwards and training you to ignore it.
+    # The cost of that is one ~0.3s detached call per shell, and only while
+    # actually expired.
     _inf_should_check=1
-    if [[ -f "$_inf_stale_checked" ]]; then
+    if [[ ! -f "$_inf_stale_flag" && -f "$_inf_stale_checked" ]]; then
       _inf_check_age=$(( $(date +%s) - $(date -r "$_inf_stale_checked" +%s 2>/dev/null || echo 0) ))
       (( _inf_check_age < 21600 )) && _inf_should_check=0
     fi
