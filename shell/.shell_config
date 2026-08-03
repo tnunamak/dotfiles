@@ -284,7 +284,7 @@ if command -v infisical >/dev/null 2>&1; then
     if [[ -r "$HOME/.config/infisical/machine-identity.env" ]]; then
       printf '%s\n' 'Infisical secrets unavailable. Machine identity failed — check ~/.config/infisical/machine-identity.env or rotate secret in UI.'
     else
-      printf '%s\n' 'Infisical secrets unavailable. Run: infisical login'
+      printf '%s\n' 'Infisical secrets unavailable. Run: infisical login --domain=https://secrets.vivid.fish'
     fi
   fi
 
@@ -312,7 +312,7 @@ if command -v infisical >/dev/null 2>&1; then
 
     # Show the cached verdict from the previous background probe.
     [[ -f "$_inf_stale_flag" ]] &&
-      printf '%s\n' 'Infisical keyring session expired — offline secret cache is going stale. Run: infisical login'
+      printf '%s\n' 'Infisical keyring session expired — offline secret cache is going stale. Run: infisical login --domain=https://secrets.vivid.fish'
 
     # Re-probe at most every 6h, fully detached so it never costs startup time.
     _inf_should_check=1
