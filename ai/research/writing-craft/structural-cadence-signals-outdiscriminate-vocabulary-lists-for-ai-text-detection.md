@@ -1,12 +1,22 @@
 ---
-title: "Structural/cadence signals (sentence-length uniformity, repeated openers) outdiscriminate fixed vocabulary lists for AI-text detection by roughly an order of magnitude, and no surveyed tool does target-corpus-relative frequency detection"
+title: "Structural/cadence signals measured 11.7x stronger than vocabulary lists (0.9x) for AI-text detection on general prose (RAID+HC3/Pangram/StoryScope), but two of the three length-based cadence sub-rules failed to replicate against disciplined technical prose in our own local implementation test"
 date: 2026-08-04
 topic: writing-craft
-tags: [ai-detection, slop, vocabulary-lists, stylometry, corpus-relative, precision-over-recall]
+tags: [ai-detection, slop, vocabulary-lists, stylometry, corpus-relative, precision-over-recall, register-mismatch, failed-replication]
 status: draft
-sources: [avoid-ai-writing-changelog, avoid-ai-writing-categories, slopkit-cadence, pangram-labs, storyscope-paper, vale-issue-94]
+sources: [avoid-ai-writing-changelog, avoid-ai-writing-categories, slopkit-cadence, pangram-labs, storyscope-paper, vale-issue-94, slopgate-local-replication-2026-08-04]
 source_session: unknown
 ---
+
+**Amended 2026-08-04 (same day, later lane):** the original title/CLAIMS below correctly report a
+published measurement — general-prose cadence lift really is ~11.7x vs. ~0.9x for vocabulary, per
+`avoid-ai-writing` v3.22.0, Pangram Labs, and the StoryScope paper, and that part is NOT in question.
+What was wrong was treating that lift as a general-purpose, register-independent result. A separate
+local build-and-test lane implemented these exact cadence rules as a live detector and found two of
+the three length-based sub-signals do NOT transfer to disciplined technical prose — see the CLAIM
+tagged `[slopgate-local-replication-2026-08-04]` below and the SYNTHESIS section for the register-mismatch
+explanation. Read the full entry, not just the title, before using this finding to justify shipping a
+cadence-only detector against technical documentation.
 
 ## CLAIMS
 
@@ -56,6 +66,21 @@ source_session: unknown
   `substitution`, `occurrence`, `repetition`, and `readability` rule types — "no stylometry, no density
   gating across a document as far as I have checked" — confirming Vale itself has no corpus-relative or
   cadence-aware capability today. [vale-issue-94]
+- OUR OWN LOCAL TESTING, not a published study — a build lane ported slopkit's `cadence_score.py` into a
+  live Claude Code hook (`ai/skills/local/slopgate/detector/cadence.mjs`, branch `feat/slop-gate-0804`)
+  and ran it against real corpora. First pass produced 779 findings on the PDPP site-concept corpus,
+  almost all false positives from markdown legend lines, HTML tag soup, and whole-document (not
+  paragraph-local) phrase coincidence; fixed via markdown-aware prose extraction, HTML stripping, a
+  proximity window instead of whole-document scope, and raising the repeat threshold from 2 to 3. After
+  those fixes, the two LENGTH-BASED cadence sub-rules (`length_cv` / coefficient-of-variation and
+  `same_length_runs`) still fired on genuinely honest, disciplined technical prose — including a fresh
+  paragraph written by hand specifically to test them — and were DROPPED from the shipped gate. Only
+  `repeated_starts` (sentence-opener repetition) survived, and only as a corroborating signal that never
+  fires alone. Final confusion matrix on a 17-must-flag / 19-must-pass fixture set (deliberately including
+  non-native-English prose and a uniform RFC enumeration as must-pass controls): 100% precision, 100%
+  recall — but that number reflects the gate AFTER the two length-based sub-rules were removed, not the
+  original three-sub-rule design the published 11.7x figure would suggest shipping as-is.
+  [slopgate-local-replication-2026-08-04]
 
 ## SOURCES
 
@@ -89,6 +114,18 @@ URL: https://github.com/conorbronsdon/avoid-ai-writing/issues/94 (via `gh issue 
 Accessed: 2026-08-04
 Quote: "Vale's rule model is narrower than the detector's — no stylometry, no density gating across a document as far as I have checked." Issue also argues a Vale port "would be the only package in that registry with a measured false-positive rate rather than an asserted one. Every other one is asserted."
 
+**slopgate-local-replication-2026-08-04**
+Type: LOCAL EVIDENCE, our own testing — not a published/peer-reviewed source.
+Location: `/home/tnunamak/.tmp/pdpp-site-concept/SLOPGATE.md` (build report); shipped code +
+tests at `ai/skills/local/slopgate/` (`detector/cadence.mjs`, `tests/run.mjs`,
+`tests/fixtures.mjs`) on dotfiles branch `feat/slop-gate-0804`, NOT pushed/merged as of
+2026-08-04.
+Accessed: 2026-08-04 (same day as the original CLAIMS above, different build lane).
+Quote: "Two full cadence sub-rules (length-uniformity, same-length-run) were built, tested
+against fixtures, passed those fixtures, and were **still dropped** after I wrote a fresh
+honest paragraph by hand specifically to break them and it broke them." (SLOPGATE.md,
+"Confusion matrix" section)
+
 ## SYNTHESIS
 
 This consolidates and grounds two related findings that came up while extracting a merged anti-slop
@@ -114,3 +151,24 @@ general list or a generic trained human/AI distribution. This looks like a genui
 2026-08, not a solved problem hiding under different branding — worth remembering next time this space
 comes up, since it means a target-corpus-relative technique is differentiated rather than reinventing
 prior art.
+
+Third (added 2026-08-04, after the local-replication CLAIM above — this is OUR INFERENCE, not a sourced
+finding; we ran one implementation against one corpus, not a controlled study): the likely mechanism for
+why two of the three cadence sub-rules failed to transfer is REGISTER MISMATCH. The published 11.7x lift
+was measured on RAID+HC3 — essays, news, and general web text, registers where sentence-length variation
+is a stylistic norm and a human writer varies rhythm for effect. Normative technical documentation is a
+different register: it is naturally uniform because disciplined technical writing *should* be uniform —
+parallel structure, consistent clause length, and repeated syntactic shapes are signs of careful editing,
+not machine generation. In that register, low length-CV and same-length runs are indistinguishable from
+the AI-generated pattern the metric was built to catch, because the underlying behavior (uniform rhythm)
+is genuinely present in both populations for different reasons. A discriminator validated on one register
+does not automatically transfer to another; register needs to be an explicit variable in future
+cadence-detection work, not an assumed constant.
+
+**Scope of what this failure does and does NOT show:** the local test disproves TRANSFER of the two
+length-based cadence sub-rules TO TECHNICAL PROSE specifically. It does not disprove, retest, or cast
+doubt on the original RAID+HC3/Pangram/StoryScope measurement itself, which was made on a different
+register and stands as originally reported. It also does not indict the third sub-rule
+(`repeated_starts`), which survived local testing and shipped. Anyone citing the 11.7x figure to justify
+a cadence-only detector for technical/API/spec documentation should read this note first; anyone applying
+it to essay-like or general-audience prose has no contradicting evidence here.
