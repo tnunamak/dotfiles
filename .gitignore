@@ -23,5 +23,3 @@ tmux/.config/tmux/plugins/
 # Core dumps (kernel-crash debugging artifacts — contain raw process memory incl. secrets; NEVER commit)
 core.*
 
-# Auto-captured research drafts (triage → promote to real entry or delete; not committed)
-ai/research/_inbox/

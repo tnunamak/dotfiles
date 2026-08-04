@@ -15,6 +15,9 @@ CACHE_MAX_AGE=3600  # 1h — safety net only; state-changing actions (--clean,
                     # shell startup) refresh the cache proactively.
 REFRESH_CACHE_AFTER_CLEANUP="${REFRESH_CACHE_AFTER_CLEANUP:-true}"
 SUDO_KEEPALIVE_PID=""
+# Injectable for tests. Production always reads the kernel process table.
+PROC_ROOT="${PROC_ROOT:-/proc}"
+UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
 
 # Colors
 RED='\033[0;31m'
@@ -186,6 +189,33 @@ playwright_prunable_bytes() {
     echo "$total"
 }
 
+# Puppeteer stores multiple downloaded Chrome revisions. Keep one revision per
+# family; this selector is shared by the probe and action so its estimate is
+# exactly what the action can remove.
+puppeteer_prune_dirs() {
+    local root="$HOME/.cache/puppeteer"
+    [[ -d "$root" ]] || return 0
+    local family newest d
+    for family in chrome chrome-headless-shell; do
+        [[ -d "$root/$family" ]] || continue
+        newest=$(find "$root/$family" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -1)
+        [[ -n "$newest" ]] || continue
+        for d in "$root/$family"/*; do
+            [[ -d "$d" && "${d##*/}" != "$newest" ]] && printf '%s\n' "$d"
+        done
+    done
+}
+
+puppeteer_prunable_bytes() {
+    local total=0 d sz
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        sz=$(du -sbx "$d" 2>/dev/null | cut -f1)
+        total=$(( total + ${sz:-0} ))
+    done < <(puppeteer_prune_dirs)
+    echo "$total"
+}
+
 # Render age of a file as "Xs/Xm/Xh/Xd ago", or "" if file missing.
 file_age_human() {
     local path=$1
@@ -306,19 +336,37 @@ sum_size_null() {
 }
 
 # Probe Docker sizes per tier without running any deletions.
-# Outputs five lines:
+# Outputs six lines:
 #   containers_bytes
 #   builder_bytes
 #   images_bytes
-#   volumes_bytes
+#   prunable_volumes_bytes
 #   dangling_images_bytes  (subset of images; tier-1 safe)
+#   prunable_volumes_count
+docker_prunable_volume_stats() {
+    local count=0 total=0 name mountpoint size keep protected
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        protected=false
+        for keep in "${PROTECTED_VOLUMES[@]}"; do
+            [[ "$name" == "$keep" ]] && protected=true && break
+        done
+        [[ "$protected" == "true" ]] && continue
+        count=$((count + 1))
+        mountpoint=$(docker volume inspect --format '{{.Mountpoint}}' "$name" 2>/dev/null || true)
+        size=$(du -sbx "$mountpoint" 2>/dev/null | cut -f1 || echo 0)
+        total=$((total + ${size:-0}))
+    done < <(docker volume ls -qf dangling=true 2>/dev/null)
+    printf '%s|%s\n' "$count" "$total"
+}
+
 docker_tier_sizes() {
-    local containers=0 builder=0 images=0 volumes=0 dangling=0
+    local containers=0 builder=0 images=0 volumes=0 dangling=0 volume_count=0
     if ! command -v docker &>/dev/null; then
-        echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; return
+        echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; return
     fi
     if ! docker info &>/dev/null; then
-        echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; return
+        echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; echo "0"; return
     fi
 
     # `docker system df` is fast and authoritative for reclaimable space.
@@ -336,7 +384,7 @@ docker_tier_sizes() {
         case "$type" in
             "Images"|"images")            images=$b ;;
             "Containers"|"containers")    containers=$b ;;
-            "Local Volumes"|"local volumes"|"Local volumes") volumes=$b ;;
+            "Local Volumes"|"local volumes"|"Local volumes") : ;; # re-derived below without protected volumes
             "Build Cache"|"build cache")  builder=$b ;;
         esac
     done <<< "$df_out"
@@ -347,12 +395,18 @@ docker_tier_sizes() {
     local dangling_count
     dangling_count=$(docker images --filter dangling=true --quiet 2>/dev/null | wc -l)
     dangling=$dangling_count  # repurpose: store COUNT, not bytes
+    local volume_stats
+    volume_stats=$(docker_prunable_volume_stats)
+    volume_count=${volume_stats%%|*}
+    volumes=${volume_stats#*|}
+    : "${volume_count:=0}" "${volumes:=0}"
 
     echo "$containers"
     echo "$builder"
     echo "$images"
     echo "$volumes"
     echo "$dangling"
+    echo "$volume_count"
 }
 
 # Sum the size of one path. Args: <path>. Prints bytes, or "0" on missing.
@@ -1086,13 +1140,13 @@ check_cleanup() {
     fi
 
     # New tier-1 cache categories: claude-cli-nodejs, go-build, drkonqi,
-    # wrangler, puppeteer. All safe to delete (regenerate on next use).
+    # wrangler, puppeteer. Puppeteer is a prune, not a full-cache deletion.
     local claude_cli go_build drkonqi_cache wrangler_cache puppeteer_cache
     claude_cli=$(_du claude_cli)
     go_build=$(_du go_build)
     drkonqi_cache=$(_du drkonqi)
     wrangler_cache=$(_du wrangler)
-    puppeteer_cache=$(_du puppeteer)
+    puppeteer_cache=$(puppeteer_prunable_bytes)
     : "${claude_cli:=0}" "${go_build:=0}" "${drkonqi_cache:=0}"
     : "${wrangler_cache:=0}" "${puppeteer_cache:=0}"
 
@@ -1161,14 +1215,16 @@ check_cleanup() {
         items+=("bun_cache:1:$bun_c"); total_cleanable=$((total_cleanable + bun_c))
     fi
 
-    # Docker tier output: 5 lines (containers, builder, images, volumes, dangling-count)
-    local d_containers d_builder d_images d_volumes d_dangling
+    # Docker tier output: containers, builder, images, unprotected dangling
+    # volume bytes, dangling-image count, unprotected dangling-volume count.
+    local d_containers d_builder d_images d_volumes d_dangling d_volume_count
     d_containers=$(sed -n '1p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
     d_builder=$(sed -n '2p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
     d_images=$(sed -n '3p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
     d_volumes=$(sed -n '4p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
     d_dangling=$(sed -n '5p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
-    : "${d_containers:=0}" "${d_builder:=0}" "${d_images:=0}" "${d_volumes:=0}" "${d_dangling:=0}"
+    d_volume_count=$(sed -n '6p' "$TMPDIR_PARALLEL/docker" 2>/dev/null || echo 0)
+    : "${d_containers:=0}" "${d_builder:=0}" "${d_images:=0}" "${d_volumes:=0}" "${d_dangling:=0}" "${d_volume_count:=0}"
 
     if (( d_containers > THRESH_DOCKER )); then
         items+=("docker_containers:1:$d_containers")
@@ -1183,8 +1239,8 @@ check_cleanup() {
         items+=("docker_images:1:$d_images")
     fi
     # Tier 3: unused volumes. Risky; report only.
-    if (( d_volumes > 0 )); then
-        items+=("docker_volumes:1:$d_volumes")
+    if (( d_volume_count > 0 )); then
+        items+=("docker_volumes:$d_volume_count:$d_volumes")
     fi
     # d_dangling is a COUNT of dangling images (not bytes). Stored in `val`
     # column of the cache entry so renderers can show "N images".
@@ -1249,6 +1305,11 @@ check_cleanup() {
 ensure_cache() {
     local force="${1:-false}"
     local need_refresh=true
+    # `mv` publishes a rebuilt cache as a new inode. Use that identity rather
+    # than seconds-resolution mtime so simultaneous callers cannot both scan
+    # within the same second.
+    local cache_identity_before="missing"
+    cache_identity_before=$(stat -c '%d:%i:%s' "$CACHE_FILE" 2>/dev/null || echo missing)
 
     if [[ "$force" == "true" ]]; then
         need_refresh=true
@@ -1262,16 +1323,20 @@ ensure_cache() {
     fi
 
     if [[ "$need_refresh" == "true" ]]; then
-        # Serialize concurrent refreshes (multiple shells starting at once) to
-        # avoid the 0-byte-cache race where two writers truncate the same file
-        # via `>`. flock is non-blocking via -n: if another refresh is already
-        # running, skip and let it own the rebuild.
+        # Single-flight refresh: callers wait for the in-progress scan, then
+        # reuse its newer cache instead of silently reporting success with an
+        # old one or launching an identical second scan.
         local lock_file="${CACHE_FILE}.lock"
         local tmp_file
         tmp_file=$(mktemp "${CACHE_FILE}.XXXXXX")
         (
             exec 9>"$lock_file"
-            if flock -n 9; then
+            flock 9
+            local cache_identity_after_lock
+            cache_identity_after_lock=$(stat -c '%d:%i:%s' "$CACHE_FILE" 2>/dev/null || echo missing)
+            if [[ "$cache_identity_after_lock" != "$cache_identity_before" ]]; then
+                rm -f "$tmp_file"
+            else
                 run_log "PROBE start"
                 local _p0=$SECONDS
                 if check_cleanup > "$tmp_file"; then
@@ -1281,8 +1346,6 @@ ensure_cache() {
                     rm -f "$tmp_file"
                     run_log "PROBE end (failed, $((SECONDS - _p0))s)"
                 fi
-            else
-                rm -f "$tmp_file"
             fi
         )
     fi
@@ -1446,7 +1509,7 @@ show_suggestions() {
                 docker_t2+=("  ${YELLOW}tier 2${NC} docker image prune -af   (all unused images): $(human_size "$size")")
                 ;;
             docker_volumes)
-                docker_t3+=("  ${RED}tier 3${NC} docker volume rm         (unused, protected excluded):    $(human_size "$size")")
+                docker_t3+=("  ${RED}tier 3${NC} docker volume rm         (unused, protected excluded):    ${count} volume(s), $(human_size "$size")")
                 ;;
         esac
     done < <(tail -n +4 "$CACHE_FILE")
@@ -1561,6 +1624,7 @@ maybe_run() {
 
     local _rc=0
     eval "$cmd" || _rc=$?
+    (( _rc == 0 )) && CLEANUP_ACTION_RAN=true
     run_log "END $label (rc=$_rc, $((SECONDS - _t0))s)"
     return "$_rc"
 }
@@ -1573,8 +1637,59 @@ cache_size_for() {
     echo "${val:-0}"
 }
 
+# Print one line for each process executing from the uv cache. `uv cache clean`
+# blocks on these uvx environments. Do not use `pgrep ... | grep ...`: those
+# pattern-matcher processes can match their own command lines and turn the
+# safety guard into a permanent false positive.
+uv_cache_holders() {
+    local uv_root="$UV_CACHE_DIR"
+    # Some /proc/<pid> entries are deliberately unreadable even to the
+    # logged-in user. A failed `find` must mean "that entry was unavailable",
+    # not abort the entire cleaner under `set -e -o pipefail`.
+    { find "$PROC_ROOT" -mindepth 2 -maxdepth 2 -type l \
+        \( -name exe -o -name cwd \) -lname "$uv_root/*" \
+        -printf '%h\n' 2>/dev/null \
+        || true; } | sed 's#.*/##' | sort -u
+}
+
+# Delete a preselected directory list and expose verified, rather than
+# pre-scanned, accounting to the caller. `rm -rf` can fail partway through
+# read-only mounts or permission changes; never claim those bytes were freed.
+REMOVED_BYTES=0
+REMOVED_DIRS=0
+FAILED_DIRS=0
+remove_directories() {
+    local p before
+    REMOVED_BYTES=0
+    REMOVED_DIRS=0
+    FAILED_DIRS=0
+    for p in "$@"; do
+        if [[ ! -e "$p" ]]; then
+            FAILED_DIRS=$((FAILED_DIRS + 1))
+            continue
+        fi
+        before=$(du -sbx "$p" 2>/dev/null | cut -f1 || echo 0)
+        if rm -rf -- "$p" 2>/dev/null && [[ ! -e "$p" ]]; then
+            REMOVED_BYTES=$((REMOVED_BYTES + ${before:-0}))
+            REMOVED_DIRS=$((REMOVED_DIRS + 1))
+            CLEANUP_ACTION_RAN=true
+        else
+            FAILED_DIRS=$((FAILED_DIRS + 1))
+        fi
+    done
+}
+
+report_directory_removal() {
+    if (( FAILED_DIRS > 0 )); then
+        echo -e "  ${YELLOW}${REMOVED_DIRS} removed; ${FAILED_DIRS} failed${NC}"
+    else
+        echo -e "  ${GREEN}done${NC} (${REMOVED_DIRS} removed)"
+    fi
+}
+
 do_cleanup() {
     ensure_cache false
+    CLEANUP_ACTION_RAN=false
 
     if [[ "$DRY_RUN" == "true" ]]; then
         echo -e "${BOLD}${CYAN}Preview mode — no changes will be made.${NC}"
@@ -1616,11 +1731,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
                     freed=$((freed + nm_size))
                 elif confirm "  Delete all stale node_modules?"; then
-                    for p in "${nm_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + nm_size))
+                    remove_directories "${nm_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -1653,11 +1766,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
                     freed=$((freed + nc_size))
                 elif confirm "  Delete all .next/cache dirs?"; then
-                    for p in "${nc_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + nc_size))
+                    remove_directories "${nc_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -1693,11 +1804,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
                     freed=$((freed + pyc_size))
                 elif confirm "  Delete all Python caches?"; then
-                    for p in "${pyc_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + pyc_size))
+                    remove_directories "${pyc_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -1764,20 +1873,18 @@ do_cleanup() {
     if is_enabled uv_cache; then
         local s; s=$(cache_size_for uv_cache)
         if (( s > 0 )); then
-            # `uv cache clean` (without --force) blocks indefinitely while any
-            # process is executing from ~/.cache/uv — common when MCP servers
-            # spawned via `uvx` are alive. Detect and warn; prefer `rm -rf` as
-            # a fallback because it's non-blocking. Skipping is also fine —
-            # uv re-populates on next use.
-            local uv_holders
-            uv_holders=$(pgrep -af 'uv|/.cache/uv/' 2>/dev/null \
-                | grep -vE 'pgrep|cleanup' \
-                | grep -E '/.cache/uv/|^[[:space:]]*[0-9]+[[:space:]]+uv ' \
-                | wc -l)
-            if (( uv_holders > 0 )) && command -v uv >/dev/null; then
+            # `uv cache clean` (without --force) blocks while a process is
+            # executing from ~/.cache/uv — common for uvx-launched MCP tools.
+            # Inspect process identity directly so the detector cannot count
+            # its own grep/pgrep pipeline as a holder.
+            local uv_holders holder_count
+            uv_holders=$(uv_cache_holders)
+            holder_count=$(printf '%s\n' "$uv_holders" | sed '/^$/d' | wc -l)
+            if (( holder_count > 0 )) && command -v uv >/dev/null; then
                 echo ""
                 echo -e "${BOLD}uv cache${NC}  (${YELLOW}$(human_size "$s")${NC})"
-                echo -e "  ${YELLOW}skipped: ${uv_holders} process(es) are using ~/.cache/uv${NC}"
+                echo -e "  ${YELLOW}skipped: ${holder_count} process(es) are using ~/.cache/uv${NC}"
+                printf '%s\n' "$uv_holders" | sed 's/^/    /'
                 echo -e "  ${DIM}likely uvx-spawned tools (MCP servers, etc.). Close them and re-run,${NC}"
                 echo -e "  ${DIM}or run 'uv cache clean --force' manually to yank live archives.${NC}"
             else
@@ -1933,15 +2040,7 @@ do_cleanup() {
     if is_enabled puppeteer; then
         local s; s=$(cache_size_for puppeteer)
         if (( s > 0 )) && [[ -d "$HOME/.cache/puppeteer" ]]; then
-            # Compose a script that keeps the newest version per dir.
-            local prune_cmd='for sub in chrome chrome-headless-shell; do
-                d="$HOME/.cache/puppeteer/$sub"
-                [[ -d "$d" ]] || continue
-                latest=$(ls "$d" 2>/dev/null | sort -V | tail -1)
-                for v in "$d"/*; do
-                    [[ -d "$v" && "$(basename "$v")" != "$latest" ]] && rm -rf "$v"
-                done
-            done'
+            local prune_cmd='while IFS= read -r d; do [[ -n "$d" ]] && rm -rf "$d"; done < <(puppeteer_prune_dirs)'
             if maybe_run "Puppeteer Chrome (keep newest)" "$s" "$prune_cmd"; then
                 freed=$((freed + s))
             fi
@@ -2050,7 +2149,9 @@ do_cleanup() {
                 if [[ "$DRY_RUN" == "true" ]]; then
                     echo -e "  ${CYAN}[preview] would invoke huggingface-cli delete-cache${NC}"
                 elif confirm "  Run huggingface-cli delete-cache now?"; then
-                    huggingface-cli delete-cache || true
+                    if huggingface-cli delete-cache; then
+                        CLEANUP_ACTION_RAN=true
+                    fi
                 fi
             else
                 if maybe_run "HuggingFace cache (full rm)" "$s" "rm -rf ~/.cache/huggingface"; then
@@ -2088,7 +2189,9 @@ do_cleanup() {
             if [[ "$DRY_RUN" == "true" ]]; then
                 echo -e "  ${CYAN}[preview] would run${NC}"
             elif confirm "  Proceed?"; then
-                docker image prune -f
+                if docker image prune -f; then
+                    CLEANUP_ACTION_RAN=true
+                fi
             else
                 echo -e "  ${DIM}skipped${NC}"
             fi
@@ -2104,13 +2207,15 @@ do_cleanup() {
         fi
 
         if [[ "$INCLUDE_TIER_3" == "true" ]] && is_enabled docker_volumes; then
-            local dv; dv=$(cache_size_for docker_volumes)
-            if (( dv > 0 )); then
+            local dv dv_count
+            dv=$(cache_size_for docker_volumes)
+            dv_count=$(awk -F: '$1 == "docker_volumes" {print $2; exit}' "$CACHE_FILE" 2>/dev/null || echo 0)
+            if (( ${dv_count:-0} > 0 )); then
                 echo ""
                 echo -e "${RED}${BOLD}DESTRUCTIVE: deletes unreferenced volumes (except the protected list).${NC}"
                 # Per-volume rm instead of blanket prune so PROTECTED_VOLUMES
-                # (defined near the thresholds) are never offered. Estimate $dv
-                # still includes protected volumes; the delta is small.
+                # (defined near the thresholds) are never offered. The probe
+                # also excludes them, so $dv is an honest estimate.
                 local vol_cmd="{ docker volume ls -qf dangling=true | grep -vxF -f <(printf '%s\n' \"\${PROTECTED_VOLUMES[@]}\") || true; } | xargs -r docker volume rm"
                 if maybe_run "Docker tier 3: unused volumes (protected list excluded)" "$dv" "$vol_cmd"; then
                     freed=$((freed + dv))
@@ -2147,11 +2252,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
                     freed=$((freed + rt_size))
                 elif confirm "  Delete all Rust target/ dirs?"; then
-                    for p in "${rt_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + rt_size))
+                    remove_directories "${rt_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -2184,11 +2287,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}"
                     freed=$((freed + pv_size))
                 elif confirm "  Delete all stale venvs?"; then
-                    for p in "${pv_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + pv_size))
+                    remove_directories "${pv_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -2221,11 +2322,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}  ${DIM}(mix compile rebuilds)${NC}"
                     freed=$((freed + eb_size))
                 elif confirm "  Delete all stale Elixir _build/ dirs?"; then
-                    for p in "${eb_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + eb_size))
+                    remove_directories "${eb_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -2258,11 +2357,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}  ${DIM}(mix deps.get refetches; needs network)${NC}"
                     freed=$((freed + ed_size))
                 elif confirm "  Delete all stale Elixir deps/ dirs?"; then
-                    for p in "${ed_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + ed_size))
+                    remove_directories "${ed_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -2295,11 +2392,9 @@ do_cleanup() {
                     echo -e "  ${CYAN}[preview] would rm -rf each${NC}  ${DIM}(Unity reimports on reopen)${NC}"
                     freed=$((freed + ul_size))
                 elif confirm "  Delete all stale Unity Library/ dirs?"; then
-                    for p in "${ul_paths[@]}"; do
-                        rm -rf "$p" 2>/dev/null || true
-                    done
-                    echo -e "  ${GREEN}done${NC}"
-                    freed=$((freed + ul_size))
+                    remove_directories "${ul_paths[@]}"
+                    report_directory_removal
+                    freed=$((freed + REMOVED_BYTES))
                 fi
             fi
         fi
@@ -2436,7 +2531,7 @@ do_cleanup() {
         # Repopulate cache synchronously — same pattern as `updates --apply`.
         # Cheap (sub-second after `freed > 0` removed paths from the walk),
         # and guarantees the next bare invocation reflects post-cleanup state.
-        if (( freed > 0 )) && [[ "$REFRESH_CACHE_AFTER_CLEANUP" == "true" ]]; then
+        if [[ "$CLEANUP_ACTION_RAN" == "true" && "$REFRESH_CACHE_AFTER_CLEANUP" == "true" ]]; then
             echo "Refreshing cache..."
             ensure_cache true
         fi
@@ -2817,7 +2912,8 @@ CLEAN FLAGS:
   --preview                 Dry-run regardless of other flags
   --include-tier-2          Also run tier-2 actions: unused docker images,
                             Rust target/ dirs, stale Python venvs, stale Elixir
-                            _build/ + deps/, stale Unity Library/
+                            _build/ + deps/, stale Unity Library/, disabled snap
+                            revisions, old nvm Node versions
   --include-tier-3          Also run 'docker volume prune'    (DESTRUCTIVE)
   --skip-CATEGORY           Exclude a category (repeatable)
   --only-CATEGORY           Restrict to listed categories (repeatable)
@@ -2881,14 +2977,27 @@ EOF
 }
 
 parse_clean_args() {
+    local category
     while (( $# > 0 )); do
         case "$1" in
             --yes|-y)             ASSUME_YES=true ;;
             --dry-run|--preview)  DRY_RUN=true ;;
             --include-tier-2)     INCLUDE_TIER_2=true ;;
             --include-tier-3)     INCLUDE_TIER_3=true ;;
-            --skip-*)             SKIP_CAT["${1#--skip-}"]=1 ;;
-            --only-*)             ONLY_CAT["${1#--only-}"]=1; ONLY_MODE=true ;;
+            --skip-*|--only-*)
+                category=${1#--skip-}
+                category=${category#--only-}
+                if [[ " ${CATEGORIES[*]} " != *" $category "* ]]; then
+                    echo "Unknown cleanup category: $category" >&2
+                    exit 2
+                fi
+                if [[ "$1" == --skip-* ]]; then
+                    SKIP_CAT["$category"]=1
+                else
+                    ONLY_CAT["$category"]=1
+                    ONLY_MODE=true
+                fi
+                ;;
             *)                    echo "Unknown flag: $1" >&2; show_help >&2; exit 2 ;;
         esac
         shift

@@ -78,26 +78,6 @@
             "command": "bash '/home/tnunamak/.local/bin/research-capture-nudge' 2>/dev/null"
           }
         ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash '/home/tnunamak/.local/bin/research-autocapture' 2>/dev/null"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash '/home/tnunamak/.local/bin/research-autocapture-flush' 2>/dev/null"
-          }
-        ]
       }
     ]
   }
