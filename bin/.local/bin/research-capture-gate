@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# research-capture-gate — Claude Code Stop hook. Refuses to let an ORCHESTRATOR
+# session finish if it did web research and saved nothing to the corpus.
+#
+# WHY A GATE AND NOT A REMINDER: measured follow-through for the reminder-only
+# system was 24 corpus writes across 391 research sessions (~6%), which matches
+# the published range for "do this extra step" instructions (AGENTIF: all models
+# <=27% instruction-success; process-compliance 0-97% by type). Prompting cannot
+# get you reliability. The systems that work force the write (Letta's function
+# calls) or gate completion. See:
+#   ai/research/agentic-context-design/prompted-reminders-cannot-guarantee-agent-side-effects-*.md
+#
+# The AGENT still writes the entry, with ITS OWN permissions and judgment — it
+# simply cannot end the turn while research sits uncaptured. Nothing writes
+# autonomously behind its back.
+#
+# ORCHESTRATOR ONLY (this is what prevents fan-out fragmentation): if every
+# worker were gated, a 4-way fan-out would yield 4 shallow, overlapping entries
+# instead of one synthesis — the documented duplication/contradiction failure
+# mode (~79% of production multi-agent failures). Every production system
+# (Anthropic LeadResearcher, OpenAI DeepResearcher, CrewAI, LangGraph) has the
+# orchestrator do the consolidation. See:
+#   ai/research/agentic-context-design/fan-out-research-must-be-consolidated-*.md
+#
+# Contract (docs: code.claude.com/docs/en/hooks):
+#   exit 0 + {"decision":"block","reason":"..."}  -> Claude cannot stop, continues
+#   exit 0 + no JSON                              -> allowed to stop
+#   JSON is ONLY parsed on exit 0.
+# Loop safety: honour stop_hook_active (docs: "exit early if it's true"); Claude
+# Code also caps consecutive blocks at 8 (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP).
+#
+# Kill switch: $STATE_DIR/OFF or $STATE_DIR/GATE_OFF
+# Env: RESEARCH_CAPTURE_STATE_DIR, RESEARCH_CORPUS_DIR
+
+STATE_DIR="${RESEARCH_CAPTURE_STATE_DIR:-$HOME/.local/state/research-capture}"
+CORPUS_DIR="${RESEARCH_CORPUS_DIR:-$HOME/code/dotfiles/ai/research}"
+
+# Fail-open ALWAYS: a broken gate must never trap a session.
+allow() { exit 0; }
+trap 'allow' ERR
+
+[ -f "$STATE_DIR/OFF" ] && allow
+[ -f "$STATE_DIR/GATE_OFF" ] && allow
+command -v jq >/dev/null 2>&1 || allow
+
+input="$(cat 2>/dev/null || true)"
+[ -n "$input" ] || allow
+
+# --- Loop safety: already forced a continuation once? let it go. -------------
+sha="$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)"
+[ "$sha" = "true" ] && allow
+
+# --- Worker detection: gate the orchestrator ONLY ----------------------------
+# (a) Task-tool subagent: agent_id is present ONLY in subagent context. Its
+#     research already keys to the PARENT's session_id, so the parent's gate
+#     covers it — gating here would fragment.
+agent_id="$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)"
+[ -n "$agent_id" ] && allow
+# (b) Headless worker (`claude -p`, however spawned — no spawner dependency):
+#     empirically CLAUDE_CODE_ENTRYPOINT=sdk-cli for -p vs cli for interactive.
+#     Undocumented, so treat absence as "not a worker" (fail toward gating the
+#     orchestrator, which is the safe direction).
+case "${CLAUDE_CODE_ENTRYPOINT:-}" in
+    sdk-cli|sdk*) allow ;;
+esac
+
+session_id="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null)"
+[ -n "$session_id" ] || allow
+
+# --- Condition 1: did this session actually research? ------------------------
+flag="$STATE_DIR/research-pending-${session_id}"
+[ -f "$flag" ] || allow
+
+# --- Condition 2: did it write anything to the corpus since research began? --
+baseline="$STATE_DIR/corpus-baseline-${session_id}"
+[ -f "$baseline" ] || allow            # no baseline -> cannot judge -> don't trap
+read -r base_n base_newest < "$baseline" 2>/dev/null || allow
+[ -n "${base_n:-}" ] || allow
+
+captured=0
+
+# ATTRIBUTED CHECK (primary): does any corpus entry name THIS session in its
+# `source_session:` frontmatter? Corpus-wide "did anything change" is unusable
+# here — Tim runs many concurrent sessions, so another session writing an entry
+# would open everyone's gate. Attribution makes the check specific to this
+# session's own work.
+if grep -rqlF "source_session: ${session_id}" "$CORPUS_DIR" 2>/dev/null; then
+    captured=1
+fi
+
+# NO count/mtime fallback on purpose. Tim runs many concurrent sessions; any
+# corpus-wide signal ("a file appeared", "something changed") is tripped by an
+# UNRELATED session's write and would silently open this session's gate — the
+# exact failure this gate exists to prevent. Attribution via source_session is
+# the only check that is specific to this session, and the block reason tells
+# the agent to set it, so the condition is always satisfiable.
+# (base_n is retained only as the baseline-exists sanity check above.)
+
+[ "$captured" -eq 1 ] && {
+    # Captured: consume the flag/baseline so a later Stop doesn't re-gate.
+    rm -f "$flag" "$baseline" 2>/dev/null || true
+    allow
+}
+
+# --- Block once, with an explicit escape hatch -------------------------------
+# ~77% of research legitimately should NOT be captured (one-off ops, debug,
+# already-covered), so the agent MUST be able to decline — otherwise the gate
+# manufactures junk entries. Declining is satisfying the gate, not evading it:
+# stop_hook_active opens it on the next attempt regardless.
+tools="$(awk '{print $2}' "$flag" 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//')"
+[ -n "$tools" ] || tools="web-research tools"
+
+reason="This session used web-research tools ($tools) but nothing was written to ${CORPUS_DIR}. Before finishing, do ONE of:
+  (1) If the research produced durable, reusable findings (prior-art, library/tool evaluation, a non-obvious external fact), write a real entry now — see ${CORPUS_DIR}/README.md for the worthiness test and format, add one line to INDEX.md, and set source_session: ${session_id}.
+  (2) If it does NOT meet that bar (one-off ops, incident debugging, project-specific, or already covered by an existing INDEX.md entry), say so explicitly in one sentence and finish — that is a valid outcome for most research.
+This check will not block you again this turn."
+
+jq -cn --arg r "$reason" '{decision:"block", reason:$r}' 2>/dev/null || allow
+
+# Log the block so effectiveness is measurable (same spirit as fire-log).
+{
+    ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+    printf '%s\t%s\t%s\n' "$ts" "$session_id" "gate-blocked" >> "$STATE_DIR/gate-log.tsv"
+} 2>/dev/null || true
+
+exit 0

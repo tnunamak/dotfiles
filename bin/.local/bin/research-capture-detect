@@ -86,6 +86,21 @@ first_research=0
 
 ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 
+# CORPUS BASELINE: on the first research call, snapshot the corpus so the Stop
+# gate has a "before" to compare against ("did this session actually write an
+# entry?"). Without a baseline the gate cannot tell a new entry from a
+# pre-existing one. Cheap: a count + newest-mtime, not a full hash.
+if [ "$first_research" -eq 1 ]; then
+    corpus_dir="${RESEARCH_CORPUS_DIR:-$HOME/code/dotfiles/ai/research}"
+    if [ -d "$corpus_dir" ]; then
+        {
+            n="$(find "$corpus_dir" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+            newest="$(find "$corpus_dir" -name '*.md' -printf '%T@\n' 2>/dev/null | sort -rn | head -1)"
+            printf '%s %s\n' "${n:-0}" "${newest:-0}" > "$STATE_DIR/corpus-baseline-${session_id:-unknown}"
+        } 2>/dev/null || true
+    fi
+fi
+
 # Append a line; cap at 20 lines to keep the file tiny.
 printf '%s %s\n' "$ts" "$tool_name" >> "$flag_file" 2>/dev/null || exit 0
 
