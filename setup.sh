@@ -114,6 +114,13 @@ fi
 # NOTE: @anthropic-ai/claude-code is intentionally NOT listed — Claude Code
 # migrated from npm to a native installer (installs to ~/.local/bin/claude).
 # mise reads $HOME/.default-npm-packages (its nvm-compatible mechanism).
+# DEPRECATION: mise documents this file as legacy, targeted for removal late
+# 2027. The successor is a per-tool postinstall hook in ~/.config/mise/config.toml:
+#   node = { version = "lts", postinstall = "npm i -g <packages>" }
+# That syntax parses (verified with `mise config get`), but it was NOT verified
+# to actually fire on a clean install, so the migration is deliberately deferred.
+# Prove postinstall runs before switching, or globals will vanish silently on the
+# next node upgrade.
 {
   grep -v '^\s*#' "$DOTFILES_DIR/npm-global-packages.txt" | grep -v '^\s*$'
   echo "@devcontainers/cli"
