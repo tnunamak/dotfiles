@@ -109,24 +109,26 @@ if ! command -v mise &>/dev/null; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# Global npm packages, installed after every node version install.
-# Shared list lives in npm-global-packages.txt; host-only extras appended here.
+# Global npm packages, reinstalled on every node version install via a mise
+# postinstall hook. One source of truth: the shared npm-global-packages.txt,
+# plus host-only extras appended below.
 # NOTE: @anthropic-ai/claude-code is intentionally NOT listed — Claude Code
 # migrated from npm to a native installer (installs to ~/.local/bin/claude).
-# mise reads $HOME/.default-npm-packages (its nvm-compatible mechanism).
-# DEPRECATION: mise documents this file as legacy, targeted for removal late
-# 2027. The successor is a per-tool postinstall hook in ~/.config/mise/config.toml:
-#   node = { version = "lts", postinstall = "npm i -g <packages>" }
-# That syntax parses (verified with `mise config get`), but it was NOT verified
-# to actually fire on a clean install, so the migration is deliberately deferred.
-# Prove postinstall runs before switching, or globals will vanish silently on the
-# next node upgrade.
-{
-  grep -v '^\s*#' "$DOTFILES_DIR/npm-global-packages.txt" | grep -v '^\s*$'
-  echo "@devcontainers/cli"
-} > "$HOME/.default-npm-packages"
-
-mise use -g node@lts 2>/dev/null || true
+# Uses postinstall rather than mise's legacy $HOME/.default-npm-packages, which
+# upstream documents as deprecated with removal targeted for late 2027.
+# Verified by execution: `mise install` prints "running custom postinstall hook".
+NPM_GLOBALS="$(
+  { grep -v '^\s*#' "$DOTFILES_DIR/npm-global-packages.txt" | grep -v '^\s*$'
+    echo "@devcontainers/cli"; } | tr '\n' ' ' | sed 's/ *$//'
+)"
+# Written directly: `mise config set` quotes the whole value as a string, which
+# mise then rejects as an invalid version (verified). A TOML inline table has to
+# be written literally.
+mkdir -p "$HOME/.config/mise"
+cat > "$HOME/.config/mise/config.toml" <<MISECONF
+[tools]
+node = { version = "lts", postinstall = "npm i -g $NPM_GLOBALS" }
+MISECONF
 
 # NOTE on non-interactive callers (hooks, cron, systemd, /bin/sh):
 # `mise activate` in .zshrc is a shell hook and does not exist outside a shell,
