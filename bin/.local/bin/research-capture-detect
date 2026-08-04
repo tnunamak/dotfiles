@@ -78,6 +78,12 @@ fi
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 chmod 0700 "$STATE_DIR" 2>/dev/null || true
 
+# Is this the FIRST research call of the session? (flag didn't exist yet.) The
+# mid-session nudge fires ONCE per session on first research — not per call —
+# so the agent isn't spammed on every WebFetch.
+first_research=0
+[ -f "$flag_file" ] || first_research=1
+
 ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 
 # Append a line; cap at 20 lines to keep the file tiny.
@@ -89,6 +95,23 @@ if [ -f "$flag_file" ]; then
     if [ "$line_count" -gt 20 ]; then
         tmp_file="${flag_file}.tmp.$$"
         tail -20 "$flag_file" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$flag_file" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null
+    fi
+fi
+
+# MID-SESSION NUDGE (the fix for ~6% follow-through): the old exit-time reminder
+# fires when the agent is already done and won't act. Instead, the moment research
+# happens — while the agent is still working and can write the entry with its own
+# permissions — inject a reminder it sees. Claude PostToolUse reads
+# hookSpecificOutput.additionalContext from stdout as model-visible context.
+# Once per session (first_research), skip-honest so it never blocks.
+if [ "$first_research" -eq 1 ]; then
+    # Only Claude's PostToolUse consumes additionalContext; detect it by the wire
+    # field. Gemini/Codex ignore unknown stdout — their exit-time nudge still covers
+    # them — so emitting this is safe cross-agent (no-op where unsupported).
+    hook_event="$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)"
+    if [ "$hook_event" = "PostToolUse" ]; then
+        msg="You just did web research. If this turns up durable, reusable prior-art / library-eval / design findings (not one-off ops or debug), capture it to ai/research/ NOW while it is fresh — a real entry per ai/research/README.md + one INDEX.md line, with source_session: ${session_id:-this session}. Do it before moving on; do not defer to end-of-session. Skip only if there is nothing durable."
+        jq -cn --arg m "$msg" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$m}}' 2>/dev/null || true
     fi
 fi
 

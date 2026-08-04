@@ -193,6 +193,27 @@ done
 [ -f "$TEST_STATE/research-pending-session-fp" ] || pass "Test 8: browser-automation + metadata tools do not fire (no false positives)"
 rm -f "$TEST_STATE/research-pending-session-fp"
 
+# ── Test 9: mid-session nudge — fires ONCE on first research, silent after ────
+
+ptu_evt() {  # PostToolUse payload WITH hook_event_name (needed for the nudge)
+    printf '{"tool_name":"%s","session_id":"%s","hook_event_name":"PostToolUse"}' "$1" "$2"
+}
+rm -f "$TEST_STATE"/research-pending-session-t9 2>/dev/null || true
+
+out_first="$(ptu_evt "WebSearch" "session-t9" | "$DETECT" || true)"
+out_second="$(ptu_evt "WebFetch" "session-t9" | "$DETECT" || true)"
+
+if ! printf '%s' "$out_first" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null 2>&1; then
+    fail "Test 9: first research call did not emit an additionalContext nudge"
+elif ! printf '%s' "$out_first" | jq -e '.hookSpecificOutput.additionalContext | test("ai/research/")' >/dev/null 2>&1; then
+    fail "Test 9: nudge does not mention ai/research/"
+elif [ -n "$out_second" ]; then
+    fail "Test 9: second research call in same session should be silent, got: $out_second"
+else
+    pass "Test 9: mid-session nudge fires once on first research, silent after"
+fi
+rm -f "$TEST_STATE"/research-pending-session-t9 2>/dev/null || true
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 echo ""
