@@ -101,24 +101,35 @@ esac
 
 # --- Cross-platform tool installs ---
 
-# Node.js (via nvm)
-if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-  export NVM_DIR="$HOME/.nvm"
-  # shellcheck source=/dev/null
-  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+# Node.js (via mise). mise replaced nvm: nvm is a shell function, so it is
+# invisible to anything non-interactive (hooks, cron, systemd, /bin/sh). mise
+# ships real shims, and manages terraform/ansible/etc. from the same config.
+if ! command -v mise &>/dev/null; then
+  curl https://mise.run | sh
+  export PATH="$HOME/.local/bin:$PATH"
 fi
-# Ensure global npm packages survive nvm install (node upgrades).
+
+# Global npm packages, installed after every node version install.
 # Shared list lives in npm-global-packages.txt; host-only extras appended here.
 # NOTE: @anthropic-ai/claude-code is intentionally NOT listed — Claude Code
 # migrated from npm to a native installer (installs to ~/.local/bin/claude).
+# mise reads $HOME/.default-npm-packages (its nvm-compatible mechanism).
 {
   grep -v '^\s*#' "$DOTFILES_DIR/npm-global-packages.txt" | grep -v '^\s*$'
   echo "@devcontainers/cli"
-} > "$HOME/.nvm/default-packages"
-if ! command -v node &>/dev/null; then
-  nvm install --lts
-fi
+} > "$HOME/.default-npm-packages"
+
+mise use -g node@lts 2>/dev/null || true
+
+# NOTE on non-interactive callers (hooks, cron, systemd, /bin/sh):
+# `mise activate` in .zshrc is a shell hook and does not exist outside a shell,
+# so bare `node` will not resolve there. Do NOT try to fix this by exporting a
+# PATH from ~/.profile: that file sources .shell_config, which uses bash-only
+# syntax, aborts under dash, and resets PATH anyway (verified).
+# The working fix is an ABSOLUTE SHIM PATH in the caller's command:
+#   $HOME/.local/share/mise/shims/node
+# That shim resolves with an empty environment (verified: `env -i` runs it fine)
+# and stays correct across node upgrades, because it dispatches through mise.
 
 # uv (Python package manager)
 if ! command -v uv &>/dev/null; then
@@ -145,7 +156,7 @@ if ! command -v direnv &>/dev/null; then
 fi
 
 # Claude Code (native installer — no longer distributed via npm)
-# If an old npm-global copy exists in the nvm bin dir, remove it so the native
+# If an old npm-global copy exists in the node bin dir, remove it so the native
 # binary at ~/.local/bin/claude takes precedence.
 if npm ls -g --depth=0 @anthropic-ai/claude-code &>/dev/null; then
   npm uninstall -g @anthropic-ai/claude-code
