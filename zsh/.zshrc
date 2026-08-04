@@ -41,10 +41,12 @@ if command -v starship &>/dev/null; then
   eval "$(starship init zsh)"
 fi
 
-# NVM (must be before zoxide since nvm hooks cd)
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+# mise — polyglot version manager (node, terraform, ansible, ...).
+# Replaces nvm. Unlike nvm (a shell function), mise ships real shims, so tools
+# resolve in non-interactive contexts too: hooks, cron, systemd, /bin/sh.
+if command -v mise &>/dev/null; then
+  eval "$(mise activate zsh)"
+fi
 
 # zoxide (smarter cd) — must be last
 if command -v zoxide &>/dev/null; then
