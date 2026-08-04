@@ -25,6 +25,10 @@ FULL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --full) FULL=1; SYN_CAP=40000; URL_SAMPLE=100000; shift ;;
+    # --write: for RECOVERY workers that must author a cited entry. The 1500-char
+    # judge cap starves them ("synthesis truncated, cannot write durable entry"),
+    # so give a much larger findings budget while staying far below --full.
+    --write) SYN_CAP=12000; URL_SAMPLE=120; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) break ;;
   esac
