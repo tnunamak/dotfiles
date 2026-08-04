@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# slopgate-posttooluse — PostToolUse hook: run the deterministic slop gate
+# against content just written by Write/Edit, and surface high-confidence
+# findings back to the agent as non-blocking context.
+#
+# PostToolUse cannot block an already-completed tool call, so a finding here
+# never undoes the write — it emits additionalContext (a system reminder the
+# agent sees on its next turn) and prints to stderr so it's visible in the
+# transcript. Precision-first by design: see
+# ai/skills/local/slopgate/detector/cli.mjs for the gate logic and
+# ai/skills/local/slopgate/SLOPGATE.md for the measured confusion matrix.
+#
+# Kill switch: touch ~/.local/state/slopgate/OFF, or set SLOPGATE_DISABLE=1.
+# Per-file bypass: first line of the file is `slopgate:ignore` (any language
+# comment prefix), or the file is under node_modules/.git/vendor/dist/build.
+
+trap 'exit 0' ERR
+
+STATE_DIR="${SLOPGATE_STATE_DIR:-$HOME/.local/state/slopgate}"
+DETECTOR="$HOME/code/dotfiles/ai/skills/local/slopgate/detector/cli.mjs"
+
+[ -n "$SLOPGATE_DISABLE" ] && exit 0
+[ -f "$STATE_DIR/OFF" ] && exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+command -v node >/dev/null 2>&1 || exit 0
+[ -f "$DETECTOR" ] || exit 0
+
+input="$(cat)"
+[ -n "$input" ] || exit 0
+
+tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)"
+case "$tool_name" in
+  Write|Edit) ;;
+  *) exit 0 ;;
+esac
+
+file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
+[ -n "$file_path" ] || exit 0
+[ -f "$file_path" ] || exit 0
+
+case "$file_path" in
+  *node_modules/*|*/.git/*|*/vendor/*|*/dist/*|*/build/*) exit 0 ;;
+esac
+
+# Only check prose-shaped files — code files aren't in scope for this gate.
+case "$file_path" in
+  *.md|*.mdx|*.html|*.txt) ;;
+  *) exit 0 ;;
+esac
+
+# Per-file bypass: first line contains slopgate:ignore.
+first_line="$(head -n1 "$file_path" 2>/dev/null)"
+case "$first_line" in
+  *slopgate:ignore*) exit 0 ;;
+esac
+
+# cli.mjs exits 1 (not 0) when it finds slop — that is the expected,
+# meaningful case here, NOT a command failure. The `trap ERR` above fires on
+# ANY nonzero exit, including this one, before `$?` can be read — disable it
+# for this one command via `|| true`, which also prevents the trap firing.
+findings_json="$(node "$DETECTOR" check --file "$file_path" --json 2>/dev/null || true)"
+count="$(printf '%s' "$findings_json" | jq -r '.findings | length' 2>/dev/null)"
+[ -n "$count" ] && [ "$count" -gt 0 ] || exit 0
+
+summary="$(printf '%s' "$findings_json" | jq -r '.findings[] | "  [\(.rule)] \"\(.text)\" — \(.suggestion)"' 2>/dev/null)"
+context="slopgate flagged $count finding(s) in $(basename "$file_path"):
+$summary
+Fix if these are real slop, or bypass with a first-line \`slopgate:ignore\` if this file is an intentional exception."
+
+printf '%s\n' "$context" >&2
+
+jq -n --arg ctx "$context" '{hookSpecificOutput: {additionalContext: $ctx}}'
+exit 0

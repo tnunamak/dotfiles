@@ -73,6 +73,15 @@
             "command": "bash '/home/tnunamak/.local/bin/research-capture-gate'"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/slopgate-stop'"
+          }
+        ]
       }
     ],
     "Notification": [
@@ -102,6 +111,15 @@
           {
             "type": "command",
             "command": "bash '/home/tnunamak/.local/bin/research-capture-detect' 2>/dev/null"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/tnunamak/.local/bin/slopgate-posttooluse'"
           }
         ]
       }
