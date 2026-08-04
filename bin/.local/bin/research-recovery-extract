@@ -47,10 +47,29 @@ claude_queries() { jq -r --arg re "$CLAUDE_RE" '
   select(.message.content? | type=="array") | .message.content[]
   | select(.type=="tool_use" and (.name|test($re))) | .input
   | (.query // .q // .prompt // .search // empty)' "$f" 2>/dev/null; }
-claude_urls() { jq -r --arg re "$CLAUDE_RE" '
-  select(.message.content? | type=="array") | .message.content[]
-  | select(.type=="tool_use" and (.name|test($re))) | .input
-  | select(.url? or .URL?) | "\(.url // .URL)\t\(.prompt // "")"' "$f" 2>/dev/null; }
+# URLs come from TWO places and missing the second one made recovered briefs
+# uncitable: (1) tool_use .input.url — only present for WebFetch/url_read;
+# (2) the RESULTS of a WebSearch, where the actual sources live. A session that
+# searched but never fetched has all of its citations in (2), so extracting only
+# (1) yielded briefs with zero sources and made backfill impossible.
+claude_urls() {
+  # (1) explicit fetch targets, paired with the intent prompt
+  jq -r --arg re "$CLAUDE_RE" '
+    select(.message.content? | type=="array") | .message.content[]
+    | select(.type=="tool_use" and (.name|test($re))) | .input
+    | select(.url? or .URL?) | "\(.url // .URL)\t\(.prompt // "")"' "$f" 2>/dev/null
+  # (2) source URLs cited inside tool results (search hits). Content shape varies
+  # (string or array of blocks), so flatten to text and harvest, then drop local
+  # / infra / self-referential noise that is never a citable source.
+  jq -r 'select(.message.content? | type=="array") | .message.content[]
+    | select(.type=="tool_result") | .content
+    | if type=="array" then (map(.text? // "") | join("\n")) else (. // "") end' "$f" 2>/dev/null \
+    | grep -oE 'https?://[^"[:space:]\\)<>]+' 2>/dev/null \
+    | grep -viE 'localhost|127\.0\.0\.1|0\.0\.0\.0|\.local/|vercel\.app|ngrok|anthropic\.com|claude\.ai|w3\.org|schema\.org' \
+    | sed -E 's/[.,;:]+$//' \
+    | awk 'length($0) > 12' \
+    | sed 's/$/\t/'
+}
 claude_synth() { jq -r '
   select(.type=="assistant" or (.message.role?=="assistant"))
   | (.message.content? // []) | if type=="array" then .[] else empty end
