@@ -46,9 +46,24 @@ command -v jq >/dev/null 2>&1 || allow
 input="$(cat 2>/dev/null || true)"
 [ -n "$input" ] || allow
 
-# --- Loop safety: already forced a continuation once? let it go. -------------
+# --- Loop safety -------------------------------------------------------------
+# stop_hook_active means we already forced one continuation. We do NOT blindly
+# allow here: that made the gate unverifiable (a live test showed it block once,
+# the agent write a non-conforming file, and the session finish anyway without
+# the capture ever being confirmed). Instead we permit ONE re-check, then always
+# release — bounded at 2 blocks total, far under Claude Code's 8-block cap.
 sha="$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)"
-[ "$sha" = "true" ] && allow
+session_id_early="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null)"
+recheck_marker="$STATE_DIR/gate-rechecked-${session_id_early:-unknown}"
+if [ "$sha" = "true" ]; then
+    # Second time through: if we've already used our one re-check, release for good.
+    if [ -f "$recheck_marker" ]; then
+        rm -f "$recheck_marker" 2>/dev/null || true
+        allow
+    fi
+    # Otherwise fall through and re-evaluate once; mark that we spent the re-check.
+    : > "$recheck_marker" 2>/dev/null || allow
+fi
 
 # --- Worker detection: gate the orchestrator ONLY ----------------------------
 # (a) Task-tool subagent: agent_id is present ONLY in subagent context. Its
@@ -97,8 +112,12 @@ fi
 # (base_n is retained only as the baseline-exists sanity check above.)
 
 [ "$captured" -eq 1 ] && {
-    # Captured: consume the flag/baseline so a later Stop doesn't re-gate.
-    rm -f "$flag" "$baseline" 2>/dev/null || true
+    # Captured: consume the flag/baseline/marker so a later Stop doesn't re-gate.
+    rm -f "$flag" "$baseline" "$recheck_marker" 2>/dev/null || true
+    {
+        ts="$(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+        printf '%s\t%s\t%s\n' "$ts" "$session_id" "capture-verified" >> "$STATE_DIR/gate-log.tsv"
+    } 2>/dev/null || true
     allow
 }
 
@@ -110,9 +129,41 @@ fi
 tools="$(awk '{print $2}' "$flag" 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//')"
 [ -n "$tools" ] || tools="web-research tools"
 
-reason="This session used web-research tools ($tools) but nothing was written to ${CORPUS_DIR}. Before finishing, do ONE of:
-  (1) If the research produced durable, reusable findings (prior-art, library/tool evaluation, a non-obvious external fact), write a real entry now — see ${CORPUS_DIR}/README.md for the worthiness test and format, add one line to INDEX.md, and set source_session: ${session_id}.
-  (2) If it does NOT meet that bar (one-off ops, incident debugging, project-specific, or already covered by an existing INDEX.md entry), say so explicitly in one sentence and finish — that is a valid outcome for most research.
+# The reason must be PRESCRIPTIVE, not a pointer. A live test showed an agent
+# told to "see README.md" invent its own memory-file schema instead (no
+# source_session, no CLAIMS/SOURCES/SYNTHESIS), so the exact required shape is
+# inlined here and the file path is pre-computed.
+reason="This session used web-research tools ($tools) but wrote nothing to ${CORPUS_DIR}. Before finishing, do ONE of:
+
+(1) CAPTURE — if the research produced durable, reusable findings (prior-art sweep, library/tool evaluation, a design investigation, or a non-obvious external fact that cost real search and will still be true next month), write ONE file at:
+      ${CORPUS_DIR}/<topic>/<claim-as-kebab-case-filename>.md
+    The filename must BE the finding, not a topic label. Use EXACTLY this shape — do not invent your own frontmatter:
+---
+title: \"Full declarative sentence stating the finding\"
+date: $(date +%Y-%m-%d)
+topic: <same as the directory>
+tags: [3-6 keywords]
+status: draft
+sources: [slug-1, slug-2]
+source_session: ${session_id}
+---
+
+## CLAIMS
+- One verifiable statement per bullet, each tagged [slug].
+
+## SOURCES
+**slug**
+URL: https://...
+Accessed: $(date +%Y-%m-%d)
+Quote: \"verbatim line that grounds the claim\"
+
+## SYNTHESIS
+Your interpretation and what it means for future work.
+
+    Then add one line to ${CORPUS_DIR}/INDEX.md under the matching '## <topic>' heading. The source_session line is REQUIRED — it is how this check verifies capture.
+
+(2) SKIP — if it does NOT meet that bar (one-off ops, incident debugging, project-specific work, or already covered by an existing INDEX.md entry), say so explicitly in one sentence and finish. Most research correctly ends here.
+
 This check will not block you again this turn."
 
 jq -cn --arg r "$reason" '{decision:"block", reason:$r}' 2>/dev/null || allow
