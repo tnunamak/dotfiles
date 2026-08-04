@@ -1,3 +1,13 @@
+---
+title: "A working non-slop prose system is a pipeline (constrain input, generate, then mechanically lint for AI tells) rather than a better prompt"
+date: 2026-08-04
+topic: writing-craft
+tags: [writing, prose, pipeline, linting, ai-tells]
+status: draft
+sources: [human-craft-research, owner-rules, ai-tells-research]
+source_session: unknown
+---
+
 # Non-Slop Prose Production System for Frontier LLMs
 
 **Date:** 2026-08-04  

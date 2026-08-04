@@ -1,3 +1,13 @@
+---
+title: "AI prose reads as machine-generated mainly through invented names, hedging density and uniform rhythm; the fixable parts are mechanizable, the rest is craft"
+date: 2026-08-03
+topic: writing-craft
+tags: [writing, prose, ai-tells, style, editing]
+status: draft
+sources: [practitioner-diagnosis, pre-ai-writing-theory]
+source_session: unknown
+---
+
 # Human Craft Research: Making Prose Not Read as Machine-Generated
 
 Research date: 2026-08-03. Commissioned to answer a concrete complaint: frontier-model prose reads as "robotic," "speaks jargon," "spits out verbose text," and — the flagship example — invents names for things that have no name in the real system (a section titled "The proof loop" on the owner's own site, describing a mechanism that isn't actually called that anywhere else). The owner has limited time and cannot hand-write everything, so this report also asks what can be mechanized and what can't, and whether smaller/older/differently-prompted models help.
