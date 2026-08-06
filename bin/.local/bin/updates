@@ -2,14 +2,40 @@
 # Show available upgrades, optionally pick and run them.
 #
 # Usage:
-#   updates              # show details
-#   updates --apply      # pick upgrades to run via fzf, then refresh cache
-#   updates --refresh    # re-scan and show details
+#   updates                    # show details
+#   updates --apply            # pick upgrades to run via fzf, then refresh cache
+#   updates --apply --yes      # ...and auto-confirm prompts within each upgrade
+#   updates --refresh          # re-scan and show details
 set -euo pipefail
 
 CACHE_DIR="$HOME/.cache/shell-status"
 DETAIL_FILE="$CACHE_DIR/details"
 COMMANDS_FILE="$CACHE_DIR/commands"
+
+# --yes/-y auto-confirms prompts *inside* each upgrade command (nala, flatpak).
+# It does not skip the fzf picker: choosing what to upgrade stays deliberate.
+ASSUME_YES=false
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y) ASSUME_YES=true ;;
+    *)        args+=("$arg") ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+
+# Cached upgrade commands stay promptable by default; the non-interactive flag
+# is injected here so the cache serves both modes.
+autoyes_cmd() {
+  local cmd="$1"
+  [[ "$ASSUME_YES" != "true" ]] && { printf '%s' "$cmd"; return; }
+  case "$cmd" in
+    *"nala upgrade"*)   cmd="${cmd/nala upgrade/nala upgrade --assume-yes}" ;;
+    *"apt-get upgrade"*) cmd="${cmd/apt-get upgrade/apt-get upgrade -y}" ;;
+    *"flatpak update"*) cmd="${cmd/flatpak update/flatpak update --noninteractive}" ;;
+  esac
+  printf '%s' "$cmd"
+}
 
 case "${1:-}" in
   --refresh)
@@ -44,11 +70,13 @@ case "${1:-}" in
     done <<< "$selected"
 
     for i in "${!cmds[@]}"; do
+      run_cmd=$(autoyes_cmd "${cmds[$i]}")
       echo ""
       echo "==> ${labels[$i]}"
-      echo "  \$ ${cmds[$i]}"
+      echo "  \$ ${run_cmd}"
+      [[ "$ASSUME_YES" == "true" && "$run_cmd" != "${cmds[$i]}" ]] && echo "  [auto-yes]"
       echo ""
-      eval "${cmds[$i]}" || echo "  (exited with status $?)"
+      eval "$run_cmd" || echo "  (exited with status $?)"
     done
 
     echo ""
