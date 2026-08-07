@@ -1,0 +1,2013 @@
+{
+  "meta": {
+    "title": "PDPP RI Public-Contract Inventory (B-minimum)",
+    "generated": "2026-07-01",
+    "branch": "refactor/code-quality-sweep",
+    "doctrine": "THE-PROJECT-QUALITY-PORTFOLIO-MACHINE.md §6 step4 + §2 B row",
+    "read_only": true,
+    "counts": {
+      "routes": 100,
+      "public_routes": 30,
+      "control_plane_routes": 70,
+      "mcp_tools": 6,
+      "error_codes": 47
+    },
+    "coverage_caveat": "testFilesByOpIdName is a WEAK by-name signal; tests build URLs dynamically & call operation modules directly. 0 != untested. Behavioral: aggregate=31, blob=49, search=35, field_not_granted=10, ambiguous_connection=10, content_ladder=0.",
+    "error_envelope": "{ error:{ type, code, message, param?, available_connections?, retry_with?, resource_metadata?(401), next_step?(401), request_id } } via server/request-helpers.js pdppError()",
+    "error_status_sot": "server/routes/ref-error-status.ts codeToStatus+typeFor"
+  },
+  "http_routes": [
+    {
+      "surface": "GET /",
+      "operationId": "getRsDiscoveryIndex",
+      "public": true,
+      "tags": [
+        "metadata"
+      ],
+      "declaredResponseCodes": [
+        "200"
+      ],
+      "handler": "server/routes/root-and-discovery.ts:194",
+      "operationModule": "rs-discovery-index",
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "GET /.well-known/oauth-authorization-server",
+      "operationId": "getAuthorizationServerMetadata",
+      "public": true,
+      "tags": [
+        "metadata",
+        "oauth"
+      ],
+      "declaredResponseCodes": [
+        "200"
+      ],
+      "handler": "server/routes/root-and-discovery.ts:132",
+      "operationModule": "as-authorization-server-metadata",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /.well-known/oauth-protected-resource",
+      "operationId": "getProtectedResourceMetadata",
+      "public": true,
+      "tags": [
+        "metadata"
+      ],
+      "declaredResponseCodes": [
+        "200"
+      ],
+      "handler": "server/routes/root-and-discovery.ts:294",
+      "operationModule": "rs-protected-resource-metadata",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /.well-known/oauth-protected-resource/mcp",
+      "operationId": "getMcpProtectedResourceMetadata",
+      "public": true,
+      "tags": [
+        "metadata",
+        "mcp",
+        "oauth"
+      ],
+      "declaredResponseCodes": [
+        "200"
+      ],
+      "handler": "server/routes/root-and-discovery.ts:385",
+      "operationModule": "rs-protected-resource-metadata",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /oauth/register",
+      "operationId": "registerDynamicClient",
+      "public": true,
+      "tags": [
+        "oauth"
+      ],
+      "declaredResponseCodes": [
+        "201",
+        "400",
+        "401",
+        "404"
+      ],
+      "handler": "server/routes/as-dcr.ts:212",
+      "operationModule": "as-dcr-register",
+      "testFilesByOpIdName": 8
+    },
+    {
+      "surface": "POST /oauth/par",
+      "operationId": "createPushedAuthorizationRequest",
+      "public": true,
+      "tags": [
+        "grants"
+      ],
+      "declaredResponseCodes": [
+        "201",
+        "400",
+        "403"
+      ],
+      "handler": "server/routes/as-par.ts:86",
+      "operationModule": "as-par-create",
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "POST /consent/approve",
+      "operationId": "approveConsent",
+      "public": true,
+      "tags": [
+        "grants"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/as-consent.ts:567",
+      "operationModule": "as-consent-decision",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /consent/exchange",
+      "operationId": "exchangeConsentCode",
+      "public": true,
+      "tags": [
+        "grants"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "410"
+      ],
+      "handler": "server/routes/as-consent.ts:690",
+      "operationModule": "as-consent-exchange",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /oauth/device_authorization",
+      "operationId": "startOwnerDeviceAuthorization",
+      "public": true,
+      "tags": [
+        "oauth"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400"
+      ],
+      "handler": "server/routes/as-oauth.ts:218",
+      "operationModule": "as-device-authorization-init",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /oauth/token",
+      "operationId": "exchangeOwnerDeviceToken",
+      "public": true,
+      "tags": [
+        "oauth"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "500"
+      ],
+      "handler": "server/routes/as-oauth.ts:372",
+      "operationModule": "as-device-token-exchange",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /introspect",
+      "operationId": "introspectToken",
+      "public": true,
+      "tags": [
+        "oauth"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400"
+      ],
+      "handler": "server/routes/as-oauth.ts:402",
+      "operationModule": "as-introspect",
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "POST /grants/{grantId}/revoke",
+      "operationId": "revokeGrant",
+      "public": true,
+      "tags": [
+        "grants"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "403"
+      ],
+      "handler": "server/routes/as-grant-revoke.ts:164",
+      "operationModule": "as-grant-revoke",
+      "testFilesByOpIdName": 6
+    },
+    {
+      "surface": "GET /v1/connectors",
+      "operationId": "listConnectors",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-read.ts:629",
+      "operationModule": "rs-connectors-list",
+      "testFilesByOpIdName": 3
+    },
+    {
+      "surface": "GET /v1/schema",
+      "operationId": "getSchema",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-read.ts:984",
+      "operationModule": "rs-schema-get",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/streams",
+      "operationId": "listStreams",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-read.ts:1348",
+      "operationModule": "rs-streams-list",
+      "testFilesByOpIdName": 5
+    },
+    {
+      "surface": "GET /v1/streams/{stream}",
+      "operationId": "getStreamMetadata",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-read.ts:1428",
+      "operationModule": "rs-streams-detail",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/streams/{stream}/records",
+      "operationId": "listRecords",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "410"
+      ],
+      "handler": "server/routes/rs-read.ts:1737",
+      "operationModule": "rs-records-list",
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "GET /v1/streams/{stream}/aggregate",
+      "operationId": "aggregateStream",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-read.ts:1593",
+      "operationModule": "rs-streams-aggregate",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/streams/{stream}/records/{id}",
+      "operationId": "getRecord",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/rs-read.ts:1852",
+      "operationModule": "rs-records-detail",
+      "testFilesByOpIdName": 12
+    },
+    {
+      "surface": "GET /v1/search",
+      "operationId": "searchRecordsLexical",
+      "public": true,
+      "tags": [
+        "records",
+        "lexical-retrieval"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "410"
+      ],
+      "handler": "server/routes/rs-read.ts:2250",
+      "operationModule": "rs-search-lexical",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/search/semantic",
+      "operationId": "searchRecordsSemantic",
+      "public": true,
+      "tags": [
+        "records",
+        "semantic-retrieval"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "410"
+      ],
+      "handler": "server/routes/rs-read.ts:2275",
+      "operationModule": "rs-search-semantic",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/search/hybrid",
+      "operationId": "searchRecordsHybrid",
+      "public": true,
+      "tags": [
+        "records",
+        "hybrid-retrieval"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-read.ts:2302",
+      "operationModule": "rs-search-hybrid",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/blobs",
+      "operationId": "uploadBlob",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-mutation.ts:412",
+      "operationModule": "rs-blobs-upload",
+      "testFilesByOpIdName": 2
+    },
+    {
+      "surface": "GET /v1/blobs/{blob_id}",
+      "operationId": "getBlob",
+      "public": true,
+      "tags": [
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/rs-read.ts:2561",
+      "operationModule": "rs-blobs-read",
+      "testFilesByOpIdName": 4
+    },
+    {
+      "surface": "GET /_ref/search",
+      "operationId": "refSearch",
+      "public": false,
+      "tags": [
+        "reference",
+        "search"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-admin.ts:248",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/connectors",
+      "operationId": "refListConnectors",
+      "public": false,
+      "tags": [
+        "reference",
+        "connectors"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:319",
+      "operationModule": null,
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "GET /_ref/connectors/{connectorId}",
+      "operationId": "refGetConnector",
+      "public": false,
+      "tags": [
+        "reference",
+        "connectors"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:362",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/connections",
+      "operationId": "refListConnections",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:441",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/connector-instances",
+      "operationId": "refListConnectorInstances",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:481",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/owner/connections",
+      "operationId": "ownerListConnections",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connections.ts:301",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/owner/connector-templates",
+      "operationId": "ownerListConnectorTemplates",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connector-templates.ts:241",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/owner/control",
+      "operationId": "ownerControlCapabilities",
+      "public": false,
+      "tags": [
+        "reference",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-control.ts:72",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "PATCH /v1/owner/connections/{connectionId}",
+      "operationId": "ownerSetConnectionDisplayName",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connections.ts:364",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "DELETE /v1/owner/connections/{connectionId}",
+      "operationId": "ownerDeleteConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-delete.ts:338",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connections/intents",
+      "operationId": "ownerCreateConnectionIntent",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "201",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-intent.ts:269",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connections/{connectionId}/schedule/pause",
+      "operationId": "ownerPauseConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-schedule.ts:376",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connections/{connectionId}/schedule/resume",
+      "operationId": "ownerResumeConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-schedule.ts:383",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connectors/{connectorId}/schedule/pause",
+      "operationId": "ownerPauseConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-schedule.ts:390",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connectors/{connectorId}/schedule/resume",
+      "operationId": "ownerResumeConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-schedule.ts:397",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "DELETE /v1/owner/connections/{connectionId}/schedule",
+      "operationId": "ownerDeleteConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "204",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-schedule.ts:404",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "DELETE /v1/owner/connectors/{connectorId}/schedule",
+      "operationId": "ownerDeleteConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "204",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-schedule.ts:411",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connections/{connectionId}/run",
+      "operationId": "ownerRunConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "202",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-run.ts:376",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connectors/{connectorId}/run",
+      "operationId": "ownerRunConnector",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "202",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-run.ts:383",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connections/{connectionId}/revoke",
+      "operationId": "ownerRevokeConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-revoke.ts:353",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connectors/{connectorId}/revoke",
+      "operationId": "ownerRevokeConnector",
+      "public": false,
+      "tags": [
+        "reference",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-revoke.ts:360",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connections/{connectionId}/reactivate",
+      "operationId": "ownerReactivateConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-reactivate.ts:373",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/owner/connectors/{connectorId}/reactivate",
+      "operationId": "ownerReactivateConnector",
+      "public": false,
+      "tags": [
+        "reference",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-reactivate.ts:380",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "DELETE /v1/owner/connectors/{connectorId}",
+      "operationId": "ownerDeleteConnector",
+      "public": false,
+      "tags": [
+        "reference",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-delete.ts:345",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/owner/connections/{connectionId}/diagnostics",
+      "operationId": "ownerInspectConnectionDiagnostics",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-diagnostics.ts:337",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/owner/connectors/{connectorId}/diagnostics",
+      "operationId": "ownerInspectConnectorDiagnostics",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections",
+        "owner-agent"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/owner-connection-diagnostics.ts:344",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/connections/{connectorInstanceId}",
+      "operationId": "refGetConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:511",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "PATCH /_ref/connections/{connectorInstanceId}",
+      "operationId": "refSetConnectionDisplayName",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:551",
+      "operationModule": null,
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "DELETE /_ref/connections/{connectorInstanceId}",
+      "operationId": "refDeleteConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:1116",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/connector-instances/{connectorInstanceId}",
+      "operationId": "refGetConnectorInstance",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:527",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/approvals",
+      "operationId": "refListApprovals",
+      "public": false,
+      "tags": [
+        "reference",
+        "grants"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-admin.ts:271",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/device-exporters/enrollment-codes",
+      "operationId": "refCreateDeviceExporterEnrollmentCode",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "201",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1050",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/device-exporters/enroll",
+      "operationId": "refExchangeDeviceExporterEnrollmentCode",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "201",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1117",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/device-exporters",
+      "operationId": "refListDeviceExporters",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1242",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/device-exporters/source-instances",
+      "operationId": "refListDeviceExporterSourceInstances",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1261",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/device-exporters/diagnostics",
+      "operationId": "refListDeviceExporterDiagnostics",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1296",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/device-exporters/{deviceId}/revoke",
+      "operationId": "refRevokeDeviceExporter",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1315",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/device-exporters/{deviceId}/heartbeat",
+      "operationId": "refHeartbeatDeviceExporter",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1379",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/device-exporters/{deviceId}/ingest-batches",
+      "operationId": "refIngestDeviceExporterBatch",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "201",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1419",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state",
+      "operationId": "refGetDeviceExporterSourceInstanceState",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1543",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "PUT /_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state",
+      "operationId": "refPutDeviceExporterSourceInstanceState",
+      "public": false,
+      "tags": [
+        "reference",
+        "device-exporters"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-device-exporters.ts:1586",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/schedules",
+      "operationId": "refListSchedules",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-admin.ts:328",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connectors/{connectorId}/run",
+      "operationId": "refRunConnector",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "202",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:679",
+      "operationModule": null,
+      "testFilesByOpIdName": 1
+    },
+    {
+      "surface": "POST /_ref/connections/{connectorInstanceId}/run",
+      "operationId": "refRunConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "202",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:696",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "PUT /_ref/connectors/{connectorId}/schedule",
+      "operationId": "refPutConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:715",
+      "operationModule": null,
+      "testFilesByOpIdName": 2
+    },
+    {
+      "surface": "DELETE /_ref/connectors/{connectorId}/schedule",
+      "operationId": "refDeleteConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "204",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:916",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "PUT /_ref/connections/{connectorInstanceId}/schedule",
+      "operationId": "refPutConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:749",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "DELETE /_ref/connections/{connectorInstanceId}/schedule",
+      "operationId": "refDeleteConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "204",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:933",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connectors/{connectorId}/schedule/pause",
+      "operationId": "refPauseConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:800",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connections/{connectorInstanceId}/schedule/pause",
+      "operationId": "refPauseConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:823",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connectors/{connectorId}/schedule/resume",
+      "operationId": "refResumeConnectorSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:846",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connections/{connectorInstanceId}/schedule/resume",
+      "operationId": "refResumeConnectionSchedule",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:869",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connections/{connectorInstanceId}/revoke",
+      "operationId": "refRevokeConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:1047",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/connections/{connectorInstanceId}/reactivate",
+      "operationId": "refReactivateConnection",
+      "public": false,
+      "tags": [
+        "reference",
+        "connections"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-connectors.ts:1183",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/runs/{runId}/interaction",
+      "operationId": "refRunInteraction",
+      "public": false,
+      "tags": [
+        "reference",
+        "runs"
+      ],
+      "declaredResponseCodes": [
+        "202",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/run-interaction.ts:64",
+      "operationModule": null,
+      "testFilesByOpIdName": 2
+    },
+    {
+      "surface": "GET /_ref/records/timeline",
+      "operationId": "refRecordsTimeline",
+      "public": false,
+      "tags": [
+        "reference",
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-admin.ts:293",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/dataset/summary",
+      "operationId": "refDatasetSummary",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:313",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/dataset/summary/streams",
+      "operationId": "refDatasetSummaryStreams",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:346",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/dataset/summary/rebuild",
+      "operationId": "refDatasetSummaryRebuild",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:409",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/dataset/summary/reconcile",
+      "operationId": "refDatasetSummaryReconcile",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:466",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/dataset/size",
+      "operationId": "refDatasetSize",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:535",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/dataset/top",
+      "operationId": "refDatasetTop",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:583",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/records/version-stats",
+      "operationId": "refRecordsVersionStats",
+      "public": false,
+      "tags": [
+        "reference",
+        "records"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:617",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/dataset/size/rebuild",
+      "operationId": "refDatasetSizeRebuild",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:642",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/dataset/size/reconcile",
+      "operationId": "refDatasetSizeReconcile",
+      "public": false,
+      "tags": [
+        "reference",
+        "dataset"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-dataset.ts:658",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/explore/records/buckets",
+      "operationId": "refExploreRecordBuckets",
+      "public": false,
+      "tags": [
+        "explore",
+        "reference"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/ref-admin.ts:464",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/explore/records",
+      "operationId": "refExploreRecords",
+      "public": false,
+      "tags": [
+        "explore",
+        "reference"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400"
+      ],
+      "handler": "server/routes/ref-admin.ts:513",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/event-subscriptions",
+      "operationId": "createEventSubscription",
+      "public": true,
+      "tags": [
+        "event-subscriptions"
+      ],
+      "declaredResponseCodes": [
+        "201",
+        "400",
+        "401",
+        "403"
+      ],
+      "handler": "server/routes/rs-mutation.ts:587",
+      "operationModule": "as-client-event-subscriptions",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/event-subscriptions",
+      "operationId": "listEventSubscriptions",
+      "public": true,
+      "tags": [
+        "event-subscriptions"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "401",
+        "403"
+      ],
+      "handler": "server/routes/rs-mutation.ts:633",
+      "operationModule": "as-client-event-subscriptions",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /v1/event-subscriptions/{subscription_id}",
+      "operationId": "getEventSubscription",
+      "public": true,
+      "tags": [
+        "event-subscriptions"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-mutation.ts:655",
+      "operationModule": "as-client-event-subscriptions",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "PATCH /v1/event-subscriptions/{subscription_id}",
+      "operationId": "updateEventSubscription",
+      "public": true,
+      "tags": [
+        "event-subscriptions"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/rs-mutation.ts:678",
+      "operationModule": "as-client-event-subscriptions",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "DELETE /v1/event-subscriptions/{subscription_id}",
+      "operationId": "deleteEventSubscription",
+      "public": true,
+      "tags": [
+        "event-subscriptions"
+      ],
+      "declaredResponseCodes": [
+        "204",
+        "401",
+        "403",
+        "404"
+      ],
+      "handler": "server/routes/rs-mutation.ts:706",
+      "operationModule": "as-client-event-subscriptions",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /v1/event-subscriptions/{subscription_id}/test-event",
+      "operationId": "sendTestEvent",
+      "public": true,
+      "tags": [
+        "event-subscriptions"
+      ],
+      "declaredResponseCodes": [
+        "202",
+        "401",
+        "403",
+        "404",
+        "409"
+      ],
+      "handler": "server/routes/rs-mutation.ts:729",
+      "operationModule": "rs-client-event-deliver",
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/event-subscriptions",
+      "operationId": "refListEventSubscriptions",
+      "public": false,
+      "tags": [
+        "event-subscriptions",
+        "reference"
+      ],
+      "declaredResponseCodes": [
+        "200"
+      ],
+      "handler": "server/routes/ref-grants.ts:361",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "GET /_ref/event-subscriptions/{subscription_id}",
+      "operationId": "refGetEventSubscription",
+      "public": false,
+      "tags": [
+        "event-subscriptions",
+        "reference"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "404"
+      ],
+      "handler": "server/routes/ref-grants.ts:388",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    },
+    {
+      "surface": "POST /_ref/event-subscriptions/{subscription_id}/disable",
+      "operationId": "refDisableEventSubscription",
+      "public": false,
+      "tags": [
+        "event-subscriptions",
+        "reference"
+      ],
+      "declaredResponseCodes": [
+        "200",
+        "400",
+        "404"
+      ],
+      "handler": "server/routes/ref-grants.ts:412",
+      "operationModule": null,
+      "testFilesByOpIdName": 0
+    }
+  ],
+  "mcp_tools": [
+    {
+      "name": "schema",
+      "loc": "packages/mcp-server/src/tools.js:450",
+      "rest": "GET /v1/schema",
+      "input": "{ detail?:compact|full, stream?, connection_id? } .strict()",
+      "semantics": "grant-scoped capability doc; compact default; full only with stream; discovery ladder schema->schema(stream)->schema(stream,connection_id)->query_records"
+    },
+    {
+      "name": "query_records",
+      "loc": "packages/mcp-server/src/tools.js:500",
+      "rest": "GET /v1/streams/{stream}/records",
+      "input": "{ stream, limit?<=100, cursor?, order?, sort?, count?, filter?, fields?, view?, expand?, expand_limit?, changes_since?, connection_id? } .strict()",
+      "semantics": "default 25; limit>100->limit_clamped/capped; content[] previews first 5; content_ladder for long fields"
+    },
+    {
+      "name": "aggregate",
+      "loc": "packages/mcp-server/src/tools.js:548",
+      "rest": "GET /v1/streams/{stream}/aggregate",
+      "input": "{ stream, metric(count|sum|min|max|count_distinct), field?, group_by? XOR group_by_time?, granularity?, time_zone?, limit?<=100, filter?, connection_id? } .strict()",
+      "semantics": "never returns record bodies; grouped includes other_count"
+    },
+    {
+      "name": "search",
+      "loc": "packages/mcp-server/src/tools.js:607",
+      "rest": "GET /v1/search|/semantic|/hybrid by mode",
+      "input": "{ q, streams?, limit?<=100, cursor?, mode?(lexical|semantic|hybrid), filter?, connection_id? } .strict()",
+      "semantics": "hit ids self-contained fetch handles; hybrid no paging; evidence before wrappers"
+    },
+    {
+      "name": "fetch",
+      "loc": "packages/mcp-server/src/tools.js:641",
+      "rest": "GET /v1/streams/{stream}/records/{record_id}",
+      "input": "{ id, expand?, expand_limit?, fields?, connection_id? } .strict()",
+      "semantics": "OpenAI doc {id,title,text,url,metadata}; ambiguous_connection(409)->retry available_connections; self-contained/legacy/pdpp:// ids"
+    },
+    {
+      "name": "read_record_field",
+      "loc": "packages/mcp-server/src/tools.js:685",
+      "rest": "GET /v1/streams/{stream}/records/{record_id}/field-window",
+      "input": "oneOf({id,field_path}|{connection_id,stream,record_id,field_path}) + one window selector(cursor XOR offset_chars/limit_chars XOR q/before_chars/after_chars) .strict()",
+      "semantics": "Tier-2 content ladder; limit_chars 4096/16384; before/after 2048/8192; next/previous_cursor; cursor bound to record+field+revision+grant"
+    }
+  ],
+  "content_ladder": {
+    "design": "openspec/changes/archive/2026-06-29-add-mcp-content-ladder/design.md",
+    "spec": "openspec/changes/archive/2026-06-29-complete-mcp-read-evidence-ladder/specs/mcp-adapter/spec.md",
+    "impl_constants": "packages/mcp-server/src/tools.js:1447+ (RECORD_LIMIT=5,FIELD_LIMIT=5,WINDOW_LIMIT_CHARS=4096,BINARY_FIELD_LIMIT=5)",
+    "tiers": {
+      "tier0": "compact content[] text: handle,field_path,preview range,read_record_field hint w/args,resource URI",
+      "tier1": "structuredContent.content_ladder block per long field: record+field identity, preview status, continuation handles, digest/revision",
+      "tier2": "read_record_field bounded field-window tool (only progressive-disclosure TOOL)",
+      "tier3": "MCP resources pdpp://record/... & pdpp://field-window/...; self-contained ids preferred; raw URI is compatibility input",
+      "tier4": "binary/export: resource_link/file materialization for bulk/large/binary"
+    },
+    "invariant": "every visible incomplete text preview has a MODEL-CALLABLE continuation (not resource-only); search evidence before wrappers"
+  },
+  "error_model": {
+    "envelope": "{ error:{ type, code, message, param?, available_connections?, retry_with?, resource_metadata?, next_step?, request_id } }",
+    "builder": "server/request-helpers.js pdppError(res,status,code,message,param,extras)",
+    "typeFor": {
+      "400": "invalid_request_error",
+      "401": "authentication_error",
+      "403": "permission_error",
+      "404": "not_found_error",
+      "410": "gone_error",
+      "429": "rate_limit_error",
+      "default": "api_error"
+    },
+    "codeToStatus": {
+      "grant_stream_not_allowed": 403,
+      "grant_expired": 403,
+      "grant_revoked": 403,
+      "grant_consumed": 403,
+      "grant_invalid": 403,
+      "field_not_granted": 403,
+      "insufficient_scope": 403,
+      "invalid_field_path": 400,
+      "invalid_window": 400,
+      "invalid_argument": 400,
+      "invalid_cursor": 400,
+      "invalid_request": 400,
+      "invalid_client": 400,
+      "invalid_client_metadata": 400,
+      "connector_invalid": 400,
+      "invalid_record": 400,
+      "invalid_record_identity": 400,
+      "invalid_expand": 400,
+      "invalid_sort": 400,
+      "ambiguous_connector_instance": 400,
+      "ambiguous_connection": 409,
+      "ambiguous_schema_detail": 409,
+      "connection_not_found": 404,
+      "connection_run_active": 409,
+      "default_account_delete_unsupported": 409,
+      "connector_instance_connector_mismatch": 400,
+      "connector_instance_inactive": 400,
+      "connector_instance_not_revoked": 409,
+      "connector_instance_selector_required": 400,
+      "connector_instance_store_required": 500,
+      "owner_subject_required": 400,
+      "unknown_field": 400,
+      "unsupported_version": 400,
+      "authentication_error": 401,
+      "connector_instance_owner_mismatch": 403,
+      "field_not_found": 404,
+      "query_not_found": 404,
+      "blob_not_found": 404,
+      "connector_instance_not_found": 404,
+      "not_found": 404,
+      "field_not_text": 422,
+      "run_already_active": 409,
+      "no_pending_interaction": 409,
+      "interaction_id_mismatch": 409,
+      "invalid_status": 400,
+      "cursor_expired": 410,
+      "provider_pressure_cooldown": 425
+    },
+    "typed_error_schemas": {
+      "AmbiguousConnectionErrorSchema": "packages/reference-contract/src/public/index.ts:1409 (409; required type,code,message,request_id,available_connections,retry_with; emitted by getRecord+getBlob; search/query fan in instead)",
+      "OAuthErrorSchema": "reference-contract OAuth-shaped envelope for /oauth/*,/consent/*,DCR — distinct from PDPP envelope"
+    },
+    "soft_signals": {
+      "related_stream_not_granted": "NOT a thrown code; only expand_capabilities[].reason in server/schema-capabilities.js:216. Sibling field_not_granted IS a thrown 403 — asymmetry."
+    }
+  },
+  "grant_model_caller_experiences": {
+    "grant_schema": "reference-contract GrantSchema: {version,grant_id,issued_at,subject.id,client.client_id,source,manifest_version,purpose_code,purpose_description,access_mode(single_use|continuous),streams[],retention,expires_at}",
+    "authorization_detail": "AuthorizationDetailSchema (RFC9396): {type:'https://pdpp.org/data-access',source,purpose_code,purpose_description,access_mode,retention,streams[]}",
+    "what_caller_sees": [
+      "GET /v1/schema returns ONLY granted streams/fields/connections (scopeConnectors); ungranted never advertised",
+      "granted connections surface as connection_id+display_name; stream names not globally unique->disambiguate via connection_id",
+      "ungranted field projection -> field_not_granted (403)",
+      "ungranted related-stream expand -> schema expand_capabilities[].reason=related_stream_not_granted (inert, not thrown)",
+      "ambiguous id across >1 granted connection -> ambiguous_connection(409)+available_connections+retry_with (getRecord/getBlob); search/query fan in",
+      "grant lifecycle: grant_expired/revoked/consumed/invalid/stream_not_allowed + insufficient_scope (all 403)",
+      "cold-start: GET / and /.well-known/* name next hop; 401 carries resource_metadata+next_step"
+    ]
+  },
+  "findings": {
+    "highest_value": [
+      "content_ladder has 0 by-keyword test coverage despite MODIFIED openspec no-dead-end scenarios",
+      "two error envelopes on one public surface (PDPP vs OAuthErrorSchema)",
+      "related_stream_not_granted is a public noun that is NOT an error code (asymmetric w/ field_not_granted)",
+      "/_ref and /v1/owner near-duplicate control planes (70/100 ops control plane) — noun-conflation candidate",
+      "several read/oauth/consent/event-sub ops have 0 by-name tests; getStreamMetadata/getMcpProtectedResourceMetadata/sendTestEvent contract-shape assertions UNKNOWN"
+    ]
+  },
+  "seam_hypothesis_collector": {
+    "format": "see markdown §7 SHP-<n> YAML packet",
+    "preseeded": [
+      {
+        "id": "SHP-001",
+        "hypothesis": "/_ref/* and /v1/owner/* overlapping control capabilities — one concept two skins",
+        "routes": [
+          "refRunConnection",
+          "ownerRunConnection",
+          "refPauseConnectorSchedule",
+          "ownerPauseConnectorSchedule"
+        ],
+        "proposed_class": "B-proposal",
+        "confidence": "med",
+        "status": "collected"
+      },
+      {
+        "id": "SHP-002",
+        "hypothesis": "field_not_granted (403) vs related_stream_not_granted (schema-only inert) — asymmetric names for same concept at field vs relation granularity",
+        "proposed_class": "B-proposal",
+        "confidence": "med",
+        "status": "collected"
+      },
+      {
+        "id": "SHP-003",
+        "hypothesis": "two error envelopes (PDPP vs OAuthErrorSchema) on one public surface; verify crossover is only shape-change point",
+        "proposed_class": "B-proposal",
+        "confidence": "low",
+        "status": "collected"
+      }
+    ]
+  }
+}
