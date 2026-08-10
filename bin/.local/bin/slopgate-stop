@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# slopgate-stop — Stop hook: run the deterministic slop gate against the
+# agent's own final chat message (surface A: talking TO the user), using the
+# stricter chat-mode gate (requires density/corroboration, not a single
+# stray word — see cli.mjs's gate() for the exact bar).
+#
+# Only blocks (exit 2, decision:block) on HIGH-CONFIDENCE findings per the
+# chat-mode gate — never on a single soft signal. This asks the agent to
+# redo ONE turn; it is not a silent auto-rewrite.
+#
+# Kill switch: touch ~/.local/state/slopgate/OFF, or set SLOPGATE_DISABLE=1.
+
+trap 'exit 0' ERR
+
+STATE_DIR="${SLOPGATE_STATE_DIR:-$HOME/.local/state/slopgate}"
+DETECTOR="$HOME/code/dotfiles/ai/skills/local/slopgate/detector/cli.mjs"
+
+[ -n "$SLOPGATE_DISABLE" ] && exit 0
+[ -f "$STATE_DIR/OFF" ] && exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+command -v node >/dev/null 2>&1 || exit 0
+[ -f "$DETECTOR" ] || exit 0
+
+input="$(cat)"
+[ -n "$input" ] || exit 0
+
+message="$(printf '%s' "$input" | jq -r '.last_assistant_message // empty' 2>/dev/null)"
+[ -n "$message" ] || exit 0
+
+# cli.mjs exits 1 (not 0) when it finds slop — that is the expected,
+# meaningful case here, NOT a command failure. The `trap ERR` above fires on
+# ANY nonzero exit, including this one, before `$?` can be read — disable it
+# for this one command via `|| true`, which also prevents the trap firing.
+findings_json="$(printf '%s' "$message" | node "$DETECTOR" check --stdin --chat --json 2>/dev/null || true)"
+count="$(printf '%s' "$findings_json" | jq -r '.findings | length' 2>/dev/null)"
+[ -n "$count" ] && [ "$count" -gt 0 ] || exit 0
+
+summary="$(printf '%s' "$findings_json" | jq -r '.findings[] | "  [\(.rule)] \"\(.text)\" — \(.suggestion)"' 2>/dev/null)"
+reason="Your last message reads as AI slop (slopgate, chat-mode gate — requires 2+ corroborating signals, not a single stray word):
+$summary
+Rewrite the message plainly before finishing this turn."
+
+jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
+exit 2

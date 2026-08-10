@@ -1,0 +1,11 @@
+[Unit]
+Description=Sweep stray core dumps and re-assert core_pattern
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/core-guard.sh
+# Restoring core_pattern needs root; as a user unit that half is a no-op and the
+# script says so on stderr. The sweep — which is what actually reclaims the disk —
+# works fine unprivileged, since the dumps land in $HOME.
+Nice=10
+IOSchedulingClass=idle

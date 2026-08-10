@@ -98,6 +98,29 @@
         "claude",
         "gemini"
       ]
+    },
+    "google-workspace": {
+      "transport": "stdio",
+      "command": "workspace-mcp",
+      "args": [
+        "--single-user",
+        "--tools",
+        "slides",
+        "drive",
+        "docs"
+      ],
+      "env": {
+        "GOOGLE_CLIENT_SECRET_PATH": "/home/tnunamak/.config/gogcli/client_secret_432753364585-pags30i1jc73ccco315b5qqvfqjsonn3.apps.googleusercontent.com.json",
+        "GOOGLE_MCP_CREDENTIALS_DIR": "/home/tnunamak/.config/workspace-mcp/credentials",
+        "USER_GOOGLE_EMAIL": "tim@opendatalabs.xyz",
+        "OAUTHLIB_INSECURE_TRANSPORT": "1"
+      },
+      "agents": [
+        "claude",
+        "codex",
+        "gemini"
+      ],
+      "reason": "Slides/Docs/Drive text-level read and write; gog covers slide-level operations but cannot edit text inside shapes."
     }
   }
 }

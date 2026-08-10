@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly sweep of stray core dumps
+
+[Timer]
+# Hourly, not daily: a crash loop produced ~9.6G every 2 minutes on 2026-08-05.
+# A daily sweep would still let a single loop fill the disk before it ran.
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

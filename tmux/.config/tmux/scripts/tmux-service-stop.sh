@@ -56,12 +56,6 @@ fi
 run ps -eo user:20,pid,ppid,pgid,sid,stat,lstart,etimes,comm,args --cols 320
 run journalctl --user --since '3 min ago' --no-pager -o short-iso
 
-section "recent root audit records, if readable"
-if command -v ausearch >/dev/null 2>&1; then
-  ausearch -k tmux-systemctl -ts recent -i 2>/dev/null || true
-  ausearch -k tmux-control -ts recent -i 2>/dev/null || true
-fi
-
 section "tmux-resurrect save"
 if (( ! tmux_server_responsive )); then
   printf 'skipping tmux-resurrect save because tmux server is not responsive; preserving previous last save\n'

@@ -283,6 +283,9 @@ individual_tools=(
   "bun;bun --version 2>/dev/null | head -1;gh api repos/oven-sh/bun/releases/latest --jq .tag_name;bun upgrade"
   "immich-go;go version -m \"\$(command -v immich-go)\" 2>/dev/null | awk '\$1 == \"mod\" && \$2 == \"github.com/simulot/immich-go\" {print \$3}';gh api repos/simulot/immich-go/releases/latest --jq .tag_name;go install github.com/simulot/immich-go@latest"
   "clawmeter;clawmeter --version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/tnunamak/clawmeter/releases/latest --jq .tag_name;go install github.com/tnunamak/clawmeter/cmd/clawmeter@latest"
+  # ds installs into /usr/local/bin (root-owned), so the installer needs sudo.
+  # `ds update` is guidance-only and misreports the install source as homebrew.
+  "ds;ds version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/devspecs-com/devspecs-cli/releases/latest --jq .tag_name;curl -fsSL https://raw.githubusercontent.com/devspecs-com/devspecs-cli/main/install.sh | sudo sh"
   # .deb from GitHub releases
   "sunshine;dpkg-query -W -f='\${Version}' sunshine 2>/dev/null;gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name | ltrimstr(\"v\")';TAG=\$(gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name') && gh release download \$TAG --repo LizardByte/Sunshine --pattern 'sunshine-debian-trixie-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/sunshine-debian-trixie-amd64.deb"
   "firefoxpwa;dpkg-query -W -f='\${Version}' firefoxpwa 2>/dev/null;gh api repos/filips123/PWAsForFirefox/releases/latest --jq '.tag_name | ltrimstr(\"v\")';mkdir -p \"\$HOME/.tmp\" && D=\$(mktemp -d -p \"\$HOME/.tmp\") && (trap 'rm -rf \"\$D\"' EXIT; gh release download --repo filips123/PWAsForFirefox --pattern 'firefoxpwa_*_amd64.deb' --dir \"\$D\" --clobber && sudo dpkg -i \"\$D\"/firefoxpwa_*_amd64.deb)"

@@ -568,6 +568,7 @@ echo "Installing upstream skills via npx skills..."
 UPSTREAM_SKILLS=(
   pbakaus/impeccable
   forrestchang/andrej-karpathy-skills
+  conorbronsdon/avoid-ai-writing
 )
 for src in "${UPSTREAM_SKILLS[@]}"; do
   npx -y skills add "$src" -g -a claude-code -a codex -a gemini-cli -a qwen-code --skill '*' -y
