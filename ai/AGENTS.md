@@ -28,6 +28,7 @@ if something looks risky, over-complex, or inconsistent with the codebase, say s
   question; otherwise make a reasonable assumption and state it.
 - Break work into small, testable pieces; integrate incrementally; add tests/checks early.
 - Use existing linters/formatters and run relevant tests before stating code is ready.
+- For technical prose, prefer ASD-STE100 (Simplified Technical English) and Zinsser's clarity, simplicity, brevity, and humanity.
 - For PDP-Connect contributions meaningfully assisted by AI, add `Assisted-by: AI` to
   each assisted commit and as a standalone final line in the PR description.
 
