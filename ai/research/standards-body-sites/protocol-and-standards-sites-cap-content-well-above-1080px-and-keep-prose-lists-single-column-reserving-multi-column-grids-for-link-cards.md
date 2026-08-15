@@ -4,7 +4,7 @@ date: 2026-08-14
 topic: standards-body-sites
 tags: [layout, docs-sites, measure, responsive, pdpp-site, information-design]
 status: verified
-sources: [w3c-standards, w3c-get-involved, ietf-process, ietf-participate, mcp-spec, mcp-contribute, mcp-intro, matrix-spec, matrix-contribute, openapi, openapi-community, oauth-net, activitypub, opentelemetry-community, otel-docs, cncf-community, k8s-contribute, k8s-docs, rust-governance, nodejs-about, deno-manual, astro-docs, sqlite, letsencrypt-docs, tailscale-community, proton-community, cloudflare-docs, cloudflare-plans, stripe-docs, stripe-pricing, betterstack-docs, betterstack-uptime, mdn-grid, github-docs-workflow]
+sources: [figure-ratio-2026-08-14, postgresql-docs, django-topics, terraform-docs, w3c-standards, w3c-get-involved, ietf-process, ietf-participate, mcp-spec, mcp-contribute, mcp-intro, matrix-spec, matrix-contribute, openapi, openapi-community, oauth-net, activitypub, opentelemetry-community, otel-docs, cncf-community, k8s-contribute, k8s-docs, rust-governance, nodejs-about, deno-manual, astro-docs, sqlite, letsencrypt-docs, tailscale-community, proton-community, cloudflare-docs, cloudflare-plans, stripe-docs, stripe-pricing, betterstack-docs, betterstack-uptime, mdn-grid, github-docs-workflow]
 source_session: b74defed-7075-46ee-9496-cdf4b082dd4d
 ---
 
@@ -75,12 +75,25 @@ visible children; "link card" = >=80% of direct children are or contain <a>.
 - OpenTelemetry keeps a 19-item list whose items are 15/19 links in a single
   column at 1220px — link-ness alone does not force a grid. [opentelemetry-community]
 
-### Table width relative to prose
+### Figure width relative to prose
 
-- Docs sites do not give tables a large outset from the prose measure. Stripe
-  renders a table at 797px against 799px of prose (flush); GitHub at 720
-  against 720 (flush); MDN outsets by 77px (768 against 691). [stripe-docs]
-  [github-docs-workflow] [mdn-grid]
+- Figures do not meaningfully outset from the prose measure. Measured as a
+  ratio of each page's median figure width to its median prose width, across
+  the 24 pages: tables median 1.00x (n=6, min 1.00, max 1.50), code blocks
+  median 1.00x (n=11, min 0.96, max 1.25), images/diagrams median 0.76x (n=7,
+  min 0.11, max 1.00). No figure of any kind anywhere in the sample exceeded
+  1.50x. [figure-ratio-2026-08-14]
+- Exactly-flush (1.00x) is the modal treatment and appears at scale, not just
+  in one-off blocks: GitHub across 135 code blocks and 11 tables, PostgreSQL
+  across 37 code blocks and 2 tables, Deno across 10, plus Node.js, Matrix
+  (tables), OpenTelemetry and Better Stack (images). [github-docs-workflow]
+  [postgresql-docs] [deno-manual] [nodejs-about] [matrix-spec] [otel-docs]
+  [betterstack-docs]
+- Images and diagrams were narrower than prose on 7 of 7 pages where they
+  appeared — they never once ran wider. [figure-ratio-2026-08-14]
+- The single widest table observed was Terraform's at 1.50x; the widest code
+  block Matrix's at 1.25x. These are the outer edge of the class, not the
+  centre. [terraform-docs] [matrix-spec]
 
 ## SOURCES
 
@@ -225,6 +238,25 @@ Accessed: 2026-08-14
 URL: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
 Accessed: 2026-08-14
 
+**figure-ratio-2026-08-14**
+Method: second Playwright pass at 1920x1000 over the same class, computing each
+page's MEDIAN prose width (all <p> over 90 chars) and median width per figure
+kind (table / pre / img+svg), then the per-page ratio. Medians rather than
+first-match, so a stray wide or narrow element cannot set the value.
+Accessed: 2026-08-14
+
+**postgresql-docs**
+URL: https://www.postgresql.org/docs/current/sql-select.html
+Accessed: 2026-08-14
+
+**django-topics**
+URL: https://docs.djangoproject.com/en/stable/topics/db/models/
+Accessed: 2026-08-14
+
+**terraform-docs**
+URL: https://developer.hashicorp.com/terraform/language/resources/syntax
+Accessed: 2026-08-14
+
 ## SYNTHESIS
 
 Two separable decisions get conflated as "how wide should the page be," and the
@@ -250,6 +282,14 @@ enough for two columns. The discriminator that survives scrutiny is not
 "among standards/governance pages, the stack is the convention, and the
 strongest evidence is that these sites have the content and the room and still
 choose one column."
+
+**Figure width** turned out to be the most clear-cut of the three and the one
+most likely to be guessed wrong. The intuition that "tables are data, so give
+them room" is not what this class does: the median table, code block and image
+are all at or below the prose measure, and images are reliably *narrower*.
+Where a figure does outset, it is by a small amount (1.1-1.25x), and 1.50x is
+the observed ceiling rather than a normal value. A design that gives figures
+1.5x prose is at the outer edge of the class even though it feels moderate.
 
 Method caution: absence of a grid is weak evidence on its own. It only became
 informative after separately confirming that the zero-grid sites *have*
