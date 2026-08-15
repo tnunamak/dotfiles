@@ -1,5 +1,5 @@
 ---
-title: "DrKonqi pickup needs an explicit successful idle bound when journal metadata outlives its core files"
+title: "DrKonqi pickup's intentional runtime bound produces a benign failed-unit timeout"
 date: 2026-07-24
 topic: systemd
 tags: [drkonqi, systemd, coredump, journal, kubuntu]
@@ -65,11 +65,11 @@ generally unresolved. Community responses split between ignoring the harmless
 timeout and masking DrKonqi when crash pickup is not wanted; masking sacrifices
 useful crash handling.
 
-The local user-unit drop-in is therefore a custom, narrow workaround rather than
-established practice. It replaces systemd's failing 30-minute runtime ceiling
-with an explicit 30-minute GNU `timeout`, then marks that timeout's conventional
-status 124 successful. This preserves the vendor's runtime bound and keeps early
-processor failures visible, but it cannot distinguish expected expiration from
-a real 30-minute hang. If a clean failed-unit list is not operationally
-important, retaining the vendor unit and treating this exact timeout as benign
-has less maintenance cost.
+A local user-unit drop-in was tested that replaced systemd's failing 30-minute
+runtime ceiling with an explicit 30-minute GNU `timeout` and marked status 124
+successful. It preserved the vendor's runtime bound and kept early processor
+failures visible, but it could not distinguish expected expiration from a real
+30-minute hang. The drop-in was removed because it was a custom workaround for
+cosmetic state. The chosen local policy is to retain KDE's vendor unit and
+manually recognize this exact 30-minute timeout signature as benign. No status
+collector or automatic exception was added.
