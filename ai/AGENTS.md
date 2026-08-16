@@ -29,6 +29,9 @@ if something looks risky, over-complex, or inconsistent with the codebase, say s
 - Break work into small, testable pieces; integrate incrementally; add tests/checks early.
 - Use existing linters/formatters and run relevant tests before stating code is ready.
 - For technical prose, prefer ASD-STE100 (Simplified Technical English) and Zinsser's clarity, simplicity, brevity, and humanity.
+- Before opening a PR or writing a non-trivial commit body, use the `pr-writing` skill —
+  write for a reader with zero session context, not a peer verifier; a single draft
+  plateaus around 7/10, use the skill's grade-then-revise loop, not a longer prompt.
 - For PDP-Connect contributions meaningfully assisted by AI, add `Assisted-by: AI` to
   each assisted commit and as a standalone final line in the PR description.
 
@@ -95,6 +98,7 @@ Expensive research (prior-art sweeps, library evals, design investigations) live
 - **After real research, capture it** there (new entry + `INDEX.md` line).
 
 Format: `ai/research/README.md` (copy `ai/research/_template.md`).
+For X/Twitter research, read `ai/research/search-infrastructure/x-post-research-works-best-by-combining-search-indexes-topic-trackers-and-official-oembed.md`.
 
 ## Dogfooding tools (devspecs + roster)
 
