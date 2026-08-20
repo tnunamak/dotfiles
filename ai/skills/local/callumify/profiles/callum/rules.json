@@ -1,0 +1,48 @@
+{
+  "critical_rules": [
+    {
+      "id": "avoid-boolean-props",
+      "description": "architecture-avoid-boolean-props (CRITICAL): component prop types/interfaces should not declare bare `?: boolean` fields — prefer explicit string-literal variants (e.g. `variant: \"compact\" | \"default\"`).",
+      "grep": {
+        "pattern": "\\?\\s*:\\s*boolean",
+        "glob": "*.tsx",
+        "context": "Matches any `?: boolean` occurrence in .tsx files, which in practice is almost always a prop-type/interface field since that's the dominant use of optional-boolean syntax in component files. False-positive sources: (1) non-component inline object types that happen to declare an optional boolean field (e.g. config objects, hook option bags) unrelated to JSX props; (2) `useState<boolean>`-adjacent local type aliases. Spot-checked on PDPP site: real hits include `showThemeToggle?: boolean` (site-header.tsx), `accent?: boolean` (reference-app.tsx), `wide?: boolean` (reference-app.tsx) — all genuine component prop declarations."
+      },
+      "expect_violations": 0
+    },
+    {
+      "id": "no-forwardref",
+      "description": "react19-no-forwardref: React 19 forwards `ref` as a normal prop, so `React.forwardRef` / bare `forwardRef` wrapping is legacy and should be removed.",
+      "grep": {
+        "pattern": "forwardRef",
+        "glob": "*.{ts,tsx}",
+        "context": "Matches the literal identifier `forwardRef`, whether imported bare or via `React.forwardRef`. False-positive sources: comments/docstrings mentioning forwardRef, and vendored/third-party code inadvertently included in the scan glob (shadcn/ui-generated primitives sometimes still use it pre-React-19 migration — treat those as lower priority, not false positives, since they are real violations of the target rule)."
+      },
+      "expect_violations": 0
+    },
+    {
+      "id": "explicit-variants",
+      "description": "patterns-explicit-variants: bare JSX boolean attributes on custom (capitalized-tag) components — e.g. `<Foo bar>` with no `={...}` — should be explicit variant props instead of implicit true-shorthand flags.",
+      "grep": {
+        "pattern": "<[A-Z][A-Za-z0-9]*(\\s+[a-zA-Z][a-zA-Z0-9]*)+\\s*/?>",
+        "glob": "*.tsx",
+        "context": "Matches an opening JSX tag starting with an uppercase letter (custom component, not a native DOM element) followed by one or more bare (unvalued) attribute names, e.g. `<PdppConceptPage home>` or `<Button disabled>`. This pattern also matches tags with only string/expression-valued props if a bare-name run happens to appear before them — post-filter is needed to keep only lines where at least one attribute lacks `=`. False-positive sources: (1) native-like custom components that legitimately accept HTML boolean attributes matching platform semantics (e.g. a wrapped `<Button disabled>` where `disabled` mirrors the native attribute and is arguably fine — this is a judgment call the rule surfaces, not auto-fails); (2) multi-line tags where the regex only catches the first line and may under- or over-count; (3) generic/type-argument syntax on a capitalized identifier that isn't JSX at all (rare in .tsx but possible in odd formatting). Spot-checked on PDPP site: `<PdppConceptPage home>` (app/not-found.tsx, app/(concept)/page.tsx) and `<LongviewWordmark compact />` (reference-hero-proof.tsx, reference-app.tsx) are genuine bare-flag hits; `<Button disabled>` (app/design/page.tsx) is a borderline case (mirrors native semantics)."
+      },
+      "expect_violations": 0
+    }
+  ],
+  "taxonomy": {
+    "expected_dirs": ["elements", "layout", "sections", "typography"],
+    "wrapper_dir_smell": "A components/<name>/ directory that duplicates the flat taxonomy's roles behind one extra level of nesting for a single page-family — i.e. it contains its own button/text/footer/header-shaped files instead of reusing elements/layout/sections/typography. Heuristic used by the scanner: any top-level dir under a components root, other than the expected_dirs and common exemptions (ui, mdx, docs, theme, ai — utility/vendor/content dirs, not page-family wrappers), that contains >= 5 files. On PDPP this flags `pdpp-concept/` (27 files, includes its own button.tsx/text.tsx/footer.tsx/masthead.tsx — a shadow taxonomy for the home page family), matching the profile's named example."
+  },
+  "conformance": {
+    "note": "Per-target pattern pairs; seed values are examples from the PDPP engagement. Each pair's blessed/legacy patterns are matched with `grep -E` (not full-line class parsing), so counts are occurrences of the pattern per file, not deduplicated per-component. Counts are split by path so internal/tooling dirs (dashboard, sandbox, design, palette, specification) can be separated from public routes later.",
+    "pairs": [
+      {
+        "name": "type-system",
+        "blessed": "<Text\\b",
+        "legacy": "class(Name)?=\"[^\"]*pdpp-(display|title|body-lg|eyebrow|caption)[^\"]*\""
+      }
+    ]
+  }
+}
