@@ -1,15 +1,16 @@
 #!/bin/bash
-# Proves the three new cleanup categories (mise_prune, nvidia_cache,
-# apt_cache) probe correctly and are gated by the right thresholds/tiers —
-# WITHOUT ever running a real deletion. This is deliberately probe-level
-# only: these categories operate on real machine-global paths (mise's data
-# dir, ~/.cache/nvidia, /var/cache/apt/archives), not anything CODE_ROOT-
-# scoped, so exercising their actual action blocks end-to-end would mean
-# either mocking three different real external tools convincingly (mise,
-# apt-get, and a real ~/.cache/nvidia layout) or risking real deletions —
-# not worth it for what's fundamentally the same maybe_run/confirm wrapper
-# every other tier-1/tier-2 category already uses and already has coverage
-# for. See ai/research/dev-tool-caches/ for the safety research behind each.
+# Proves the five new cleanup categories (mise_prune, nvidia_cache,
+# apt_cache, rstring_cache, prisma_python) probe correctly and are gated by
+# the right thresholds/tiers — WITHOUT ever running a real deletion. This is
+# deliberately probe-level only: these categories operate on real
+# machine-global paths (mise's data dir, ~/.cache/nvidia,
+# /var/cache/apt/archives, ~/.cache/rstring, ~/.cache/prisma-python), not
+# anything CODE_ROOT-scoped, so exercising their actual action blocks
+# end-to-end would mean either mocking real external tools convincingly or
+# risking real deletions — not worth it for what's fundamentally the same
+# maybe_run/confirm wrapper every other tier-1/tier-2 category already uses
+# and already has coverage for. See ai/research/dev-tool-caches/ for the
+# safety research/verification behind each.
 
 set -euo pipefail
 
@@ -68,11 +69,61 @@ out=$(PATH=/nonexistent probe_apt_cache 2>/dev/null)
 [[ "$out" == "0" ]] || fail "probe_apt_cache did not no-op cleanly without apt-get on PATH: [$out]"
 echo "ok - probe_apt_cache no-ops cleanly when apt-get is absent (non-Debian machines)"
 
+# --- probe_rstring_cache: reports 0 when the directory doesn't exist ---
+out=$(HOME="$TEST_ROOT/empty-home-rstring" probe_rstring_cache 2>/dev/null)
+[[ "$out" == "0" ]] || fail "probe_rstring_cache did not report 0 for a HOME with no rstring cache: [$out]"
+echo "ok - probe_rstring_cache reports 0 when ~/.cache/rstring doesn't exist"
+
+# --- probe_rstring_cache: measures real content when present ---
+fake_home_rs="$TEST_ROOT/fake-home-rstring"
+mkdir -p "$fake_home_rs/.cache/rstring/some_repo"
+dd if=/dev/zero of="$fake_home_rs/.cache/rstring/some_repo/file.bin" bs=1024 count=100 status=none
+out=$(HOME="$fake_home_rs" probe_rstring_cache 2>/dev/null)
+if (( out < 100000 )); then
+    fail "probe_rstring_cache did not measure real cache content (got $out bytes, expected >=100000)"
+fi
+echo "ok - probe_rstring_cache measures real leftover clone content"
+
+# --- probe_prisma_python: reports 0 when the directory doesn't exist ---
+out=$(HOME="$TEST_ROOT/empty-home-prisma" CODE_ROOT="$TEST_ROOT/code" probe_prisma_python 2>/dev/null)
+[[ "$out" == "0" ]] || fail "probe_prisma_python did not report 0 for a HOME with no prisma-python cache: [$out]"
+echo "ok - probe_prisma_python reports 0 when ~/.cache/prisma-python doesn't exist"
+
+# --- probe_prisma_python: reports 0 (not stale-eligible) when recently touched ---
+fake_home_pp="$TEST_ROOT/fake-home-prisma-fresh"
+mkdir -p "$fake_home_pp/.cache/prisma-python/binaries"
+dd if=/dev/zero of="$fake_home_pp/.cache/prisma-python/binaries/engine.bin" bs=1024 count=200 status=none
+out=$(HOME="$fake_home_pp" CODE_ROOT="$TEST_ROOT/code" probe_prisma_python 2>/dev/null)
+[[ "$out" == "0" ]] || fail "probe_prisma_python did not stay 0 for a freshly-touched cache (got: [$out])"
+echo "ok - probe_prisma_python does not flag a recently-touched cache as stale"
+
+# --- probe_prisma_python: reports real size when stale (>30d) AND unreferenced ---
+fake_home_pp2="$TEST_ROOT/fake-home-prisma-stale"
+mkdir -p "$fake_home_pp2/.cache/prisma-python/binaries"
+dd if=/dev/zero of="$fake_home_pp2/.cache/prisma-python/binaries/engine.bin" bs=1024 count=200 status=none
+old_date="2000-01-01 00:00:00 UTC"
+touch -d "$old_date" "$fake_home_pp2/.cache/prisma-python/binaries/engine.bin"
+touch -d "$old_date" "$fake_home_pp2/.cache/prisma-python/binaries"
+touch -d "$old_date" "$fake_home_pp2/.cache/prisma-python"
+out=$(HOME="$fake_home_pp2" CODE_ROOT="$TEST_ROOT/code" probe_prisma_python 2>/dev/null)
+if (( out < 200000 )); then
+    fail "probe_prisma_python did not flag a genuinely stale, unreferenced cache (got $out bytes, expected >=200000)"
+fi
+echo "ok - probe_prisma_python flags a stale (>30d), unreferenced cache for cleanup"
+
+# --- probe_prisma_python: never flags stale if a schema.prisma exists under CODE_ROOT ---
+proj_code_root="$TEST_ROOT/code-with-prisma-project"
+mkdir -p "$proj_code_root/myproj"
+touch "$proj_code_root/myproj/schema.prisma"
+out=$(HOME="$fake_home_pp2" CODE_ROOT="$proj_code_root" probe_prisma_python 2>/dev/null)
+[[ "$out" == "0" ]] || fail "probe_prisma_python flagged a stale cache even though a live schema.prisma exists: [$out]"
+echo "ok - probe_prisma_python never flags the cache while a schema.prisma project exists under CODE_ROOT"
+
 # --- new categories appear in the CATEGORIES array (is_enabled/--skip-/--only- wiring) ---
-for cat in mise_prune nvidia_cache apt_cache; do
+for cat in mise_prune nvidia_cache apt_cache rstring_cache prisma_python; do
     [[ " ${CATEGORIES[*]} " == *" $cat "* ]] || fail "$cat missing from CATEGORIES array"
 done
-echo "ok - mise_prune, nvidia_cache, apt_cache are registered in CATEGORIES"
+echo "ok - all five new categories are registered in CATEGORIES"
 
 # --- needs_sudo_priming must also fire for apt_cache, not just snap_revs ---
 CACHE_FILE="$TEST_ROOT/cache-apt"
@@ -98,4 +149,4 @@ if ! needs_sudo_priming_notty_stubbed; then
 fi
 echo "ok - sudo priming also covers apt_cache, not just snap_revs"
 
-echo "ok - cleanup new categories (mise_prune, nvidia_cache, apt_cache)"
+echo "ok - cleanup new categories (mise_prune, nvidia_cache, apt_cache, rstring_cache, prisma_python)"

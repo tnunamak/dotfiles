@@ -76,6 +76,16 @@ THRESH_NVM_VERSIONS=1073741824 # 1G (tier-2 — old ~/.nvm/versions/node/vX; `nv
 THRESH_MISE_PRUNE=524288000    # 500M (tier-1 — delegates to `mise prune`; mise re-fetches on demand)
 THRESH_NVIDIA_CACHE=104857600  # 100M (tier-1 — GLCache/ComputeCache; driver regenerates automatically)
 THRESH_APT_CACHE=524288000     # 500M (tier-2 — /var/cache/apt/archives; needs sudo)
+THRESH_RSTRING_CACHE=52428800  # 50M (tier-1 — rstring's own clone_repository()
+                                # unconditionally rmtree+re-clones its target dir
+                                # on every invocation, verified by reading its
+                                # source; anything present is dead leftover)
+THRESH_PRISMA_PYTHON=104857600 # 100M (tier-1 — Prisma Python client's cached
+                                # engine binaries; a fresh `prisma generate`
+                                # re-downloads the pinned version on demand.
+                                # Stale-gated (>30d) unlike NVIDIA's cache, since
+                                # this one IS a plain download cache with no
+                                # documented cache-hit-preserves-mtime ambiguity)
 
 # Volumes tier-3 must NEVER offer for deletion, even when dangling — "dangling"
 # only means no container references them right now; these hold real data
@@ -139,6 +149,8 @@ CATEGORIES=(
     mise_prune
     nvidia_cache
     apt_cache
+    rstring_cache
+    prisma_python
 )
 
 human_size() {
@@ -557,6 +569,43 @@ probe_nvidia_cache() {
 probe_apt_cache() {
     command -v apt-get >/dev/null 2>&1 || { echo 0; return; }
     probe_du_path /var/cache/apt/archives
+}
+
+# Probe rstring's own repo-clone cache (~/.cache/rstring). Verified by reading
+# rstring's own clone_repository() source (rstring/utils.py): every clone
+# target dir is unconditionally `shutil.rmtree`'d and re-cloned fresh on each
+# invocation, so anything present between runs is dead leftover with zero
+# recovery cost — not a "regenerable if you re-run the tool" cache like most
+# others here, but literally never read back once a run completes. No-op if
+# rstring was never used on this machine.
+probe_rstring_cache() {
+    probe_du_path "$HOME/.cache/rstring"
+}
+
+# Probe the Prisma Python client's cached engine binaries (a plain download
+# cache, unlike NVIDIA's — no documented cache-hit-preserves-mtime ambiguity
+# here, so age IS a meaningful staleness signal). Only counts if nothing on
+# this machine references Prisma at all: no `schema.prisma` file, no prisma
+# package under pip, and the cache itself hasn't been touched in 30+ days —
+# `prisma generate` re-downloads the pinned version transparently if a
+# project resumes needing it.
+probe_prisma_python() {
+    local cache_dir="$HOME/.cache/prisma-python"
+    [[ -d "$cache_dir" ]] || { echo 0; return; }
+    pip show prisma >/dev/null 2>&1 && { echo 0; return; }
+    if command -v find >/dev/null && find "$CODE_ROOT" -maxdepth 4 -iname 'schema.prisma' -print -quit 2>/dev/null | grep -q .; then
+        echo 0
+        return
+    fi
+    local newest now_s age_days
+    newest=$(find "$cache_dir" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+    now_s=$(date +%s)
+    age_days=$(( (now_s - ${newest:-now_s}) / 86400 ))
+    if (( age_days < 30 )); then
+        echo 0
+        return
+    fi
+    probe_du_path "$cache_dir"
 }
 
 # Sum sizes of dirs matching a name under CODE_ROOT. Args: <name> [<name>...].
@@ -1068,6 +1117,14 @@ check_cleanup() {
     ( probe_apt_cache > "$TMPDIR_PARALLEL/apt_cache" 2>/dev/null ) &
     pids+=($!)
 
+    # --- rstring's own repo-clone cache (tier-1: always dead leftover) ---
+    ( probe_rstring_cache > "$TMPDIR_PARALLEL/rstring_cache" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- Prisma Python client cache (tier-1: stale-gated) ---
+    ( probe_prisma_python > "$TMPDIR_PARALLEL/prisma_python" 2>/dev/null ) &
+    pids+=($!)
+
     # --- Docker probes ---
     ( docker_tier_sizes > "$TMPDIR_PARALLEL/docker" 2>/dev/null ) &
     pids+=($!)
@@ -1214,6 +1271,24 @@ check_cleanup() {
     : "${apt_size:=0}"
     if (( apt_size > THRESH_APT_CACHE )); then
         items+=("apt_cache:1:$apt_size")
+    fi
+
+    # rstring_cache — tier-1: verified dead leftover (see probe function).
+    local rs_size
+    rs_size=$(cat "$TMPDIR_PARALLEL/rstring_cache" 2>/dev/null || echo 0)
+    : "${rs_size:=0}"
+    if (( rs_size > THRESH_RSTRING_CACHE )); then
+        items+=("rstring_cache:1:$rs_size")
+        total_cleanable=$((total_cleanable + rs_size))
+    fi
+
+    # prisma_python — tier-1: stale-gated (probe already checks 30d + no live ref).
+    local pp_size
+    pp_size=$(cat "$TMPDIR_PARALLEL/prisma_python" 2>/dev/null || echo 0)
+    : "${pp_size:=0}"
+    if (( pp_size > THRESH_PRISMA_PYTHON )); then
+        items+=("prisma_python:1:$pp_size")
+        total_cleanable=$((total_cleanable + pp_size))
     fi
 
     # nvm_versions — tier-2: old ~/.nvm/versions/node/vX; `nvm install X` re-downloads.
@@ -1580,6 +1655,12 @@ show_suggestions() {
                 ;;
             apt_cache)
                 other_lines+=("  ${YELLOW}tier 2${NC} apt-get autoclean:                    $(human_size "$size")  ${DIM}(needs sudo)${NC}")
+                ;;
+            rstring_cache)
+                other_lines+=("    rm -rf ~/.cache/rstring: $(human_size "$size")  ${DIM}(rstring rmtree+re-clones every run; dead leftover)${NC}")
+                ;;
+            prisma_python)
+                other_lines+=("    rm -rf ~/.cache/prisma-python: $(human_size "$size")  ${DIM}(no live prisma project; >30d stale)${NC}")
                 ;;
             nvm_versions)
                 other_lines+=("  ${YELLOW}tier 2${NC} nvm uninstall old Node versions:     $(human_size "$size")  ${DIM}(keeps default alias + current; nvm install X re-downloads)${NC}")
@@ -2066,6 +2147,33 @@ do_cleanup() {
         if (( s > 0 )); then
             if maybe_run "NVIDIA GLCache/ComputeCache" "$s" \
                 "rm -rf ~/.cache/nvidia ~/.nv/ComputeCache"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- rstring's own repo-clone cache -----
+    # Verified by reading rstring's clone_repository() source: every clone
+    # target is unconditionally rmtree'd and re-cloned fresh per invocation,
+    # so anything sitting here between runs is already-dead leftover, not a
+    # "will need to redo work" cache like the others in this script.
+    if is_enabled rstring_cache; then
+        local s; s=$(cache_size_for rstring_cache)
+        if (( s > 0 )); then
+            if maybe_run "rstring clone cache" "$s" "rm -rf ~/.cache/rstring"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- Prisma Python client cache -----
+    # Probe already gated on: no `prisma` pip package installed, no
+    # schema.prisma found under CODE_ROOT, and >30 days untouched. A fresh
+    # `prisma generate` re-downloads the pinned engine binary on demand.
+    if is_enabled prisma_python; then
+        local s; s=$(cache_size_for prisma_python)
+        if (( s > 0 )); then
+            if maybe_run "Prisma Python client cache" "$s" "rm -rf ~/.cache/prisma-python"; then
                 freed=$((freed + s))
             fi
         fi
