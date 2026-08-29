@@ -22,6 +22,18 @@ source_session: b9e12532-351b-43c0-a858-171dee902cb9
 - "Present in a repo" is NOT sufficient for deletion: 59 bundles' tips were present as objects but unreachable from any ref, so a `git gc` would drop them and leave the bundle as the only copy [measured-host]
 - "Reachable from a ref" is also NOT sufficient: of the 12 largest ref-reachable bundles, 5 were held exclusively by local `waspflow/*` branches with no remote, tag, or main containing them — deleting the branch would make the bundle the only copy [measured-host]
 - Durability therefore requires reachability from a ref that outlives local cleanup — `refs/remotes/*`, `refs/tags/*`, or `refs/heads/{main,master}` — not from any ref whatsoever [measured-host]
+- Testing durability of the bundle's TIP is still insufficient: of the 6 largest bundles whose tip was durable, 3 had `git rev-list <tip> --not <durable-refs>` return 4 commits each, i.e. commits the bundle carries that live on no durable ref [measured-host]
+- A bundle is only fully redundant when `git rev-list <tip> --not <durable-refs>` is EMPTY; a durable tip can sit atop commits that are themselves only on a deletable local branch [measured-host]
+- Applying the strict per-commit gate to the full population: 324 bundles (5.31 GB) fully durable and deletable; 295 (5.33 GB) durable-tipped but carrying non-durable commits; 796 (3.31 GB) only-copy risk; 110 (0.44 GB) no local repo [measured-host]
+- The tip-level gate would have authorized deleting 10.64 GB; the per-commit gate authorizes 5.31 GB — the weaker gate was wrong about 5.33 GB, exactly half of what it approved [measured-host]
+
+## FALSIFIED ALONG THE WAY
+
+Each of these looked sufficient and was disproven by the next test, in order:
+
+- "98.8% of tips are present in a live repo, so the archive is redundant" — presence ignores reachability; 59 bundles' tips were unreachable from any ref [measured-host]
+- "Reachable from a ref is safe" — 5 of the 12 largest ref-reachable bundles were held only by local `waspflow/*` branches [measured-host]
+- "A durable tip means a redundant bundle" — 3 of the 6 largest durable-tip bundles still carried 4 non-durable commits each; across the full population this gate over-approved by 5.33 GB, half of its own verdict [measured-host]
 
 ## SOURCES
 
@@ -51,7 +63,9 @@ The reusable lesson is about eligibility gates, not about git.
 
 A cleanup gate has to answer "is there another copy that will still exist after the cleanup I am about to do?" It is tempting to answer with the cheapest available test — does the object exist somewhere? — because that test is fast and almost always true. On this host it was true for 98.8% of bytes. But it is the wrong question twice over. An object can be present yet unreachable, so the next `git gc` collects it. A ref can hold it yet be deleted, so branch cleanup collects it. Each weaker test looks like the strong one right up until the moment the other cleanup runs, which is precisely when you need the archive.
 
-Ordering the tests by strength — object present, reachable from any ref, reachable from a ref that survives local cleanup — the population shrinks at each step, and the last step is the only one that supports deletion. Skipping to the easy test would have classified 9.24 GB as redundant when a measurable fraction of it was the only copy. The strong test cost one extra pass over data already gathered.
+Ordering the tests by strength — object present, reachable from any ref, tip reachable from a durable ref, *every carried commit* reachable from a durable ref — the population shrinks at each step, and only the last supports deletion. Skipping to the easy test would have classified 9.24 GB as redundant when a measurable fraction of it was the only copy. Each strengthening cost one more pass over data already gathered.
+
+The instructive part is that four successive gates each looked sufficient. Presence is nearly always true; ref-reachability sounds like the definition of safe; a durable tip feels conclusive. Each was disproven only by running the next test, and none of the failures would have announced themselves — a wrongly deleted archive is discovered when someone needs it, long after the evidence of the mistake is gone. Where the cost of a false positive is silent and permanent, the gate should be strengthened until it stops finding new counterexamples, not until it stops being convenient. The stopping rule is empirical, not aesthetic: keep tightening while each new test still reclassifies something.
 
 The archival bug underneath has the same shape. The guard tested `base != tip` as a proxy for "is there a fork point", and that proxy is correct for the case the author had in mind (an orphan branch) and silently inverted for the case they did not (a fully merged branch). Both fail the same predicate for opposite reasons, and the fallback — chosen to be safe — was maximally expensive exactly where it was least necessary. When a guard's else-branch is described in a comment by a single scenario, it is worth asking what else satisfies it; a proxy that stands in for the real condition will eventually meet an input where the two diverge.
 
