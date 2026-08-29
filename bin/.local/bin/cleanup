@@ -10,10 +10,19 @@
 set -euo pipefail
 
 CACHE_VERSION=6
-CACHE_FILE="/tmp/.cleanup-cache-$(id -u)"
+# Injectable for tests, mirroring PROC_ROOT/CODE_ROOT/UV_CACHE_DIR below.
+# Production always uses the real per-uid path.
+CACHE_FILE="${CLEANUP_CACHE_FILE:-/tmp/.cleanup-cache-$(id -u)}"
 CACHE_MAX_AGE=3600  # 1h — safety net only; state-changing actions (--clean,
                     # shell startup) refresh the cache proactively.
 REFRESH_CACHE_AFTER_CLEANUP="${REFRESH_CACHE_AFTER_CLEANUP:-true}"
+# Re-entrancy guard for `--clean`'s destructive action path (separate from
+# ensure_cache's own flock single-flight on the read/probe path). flock
+# releases automatically on process death (crash or SIGKILL — the kernel
+# closes the fd), so unlike a PID file this can never wedge from an unclean
+# exit. $XDG_RUNTIME_DIR is tmpfs, per-user, mode 700. Injectable for tests.
+# See ai/research/shell-scripting/flock-not-pid-files-...
+CLEANUP_LOCK_FILE="${CLEANUP_LOCK_FILE:-${XDG_RUNTIME_DIR:-/tmp}/.cleanup-clean-$(id -u).lock}"
 SUDO_KEEPALIVE_PID=""
 # Injectable for tests. Production always reads the kernel process table.
 PROC_ROOT="${PROC_ROOT:-/proc}"
@@ -64,6 +73,9 @@ THRESH_ELIXIR_DEPS=524288000   # 500M (tier-2 — deps/; `mix deps.get` needs ne
 THRESH_UNITY_LIBRARY=2147483648 # 2G (tier-2 — Library/; Unity reimports on reopen, slow)
 THRESH_PYCACHE=52428800     # 50M (tier-1 — __pycache__/.pytest_cache/.mypy_cache/.ruff_cache; instant regen, numerous)
 THRESH_NVM_VERSIONS=1073741824 # 1G (tier-2 — old ~/.nvm/versions/node/vX; `nvm install X` re-downloads)
+THRESH_MISE_PRUNE=524288000    # 500M (tier-1 — delegates to `mise prune`; mise re-fetches on demand)
+THRESH_NVIDIA_CACHE=104857600  # 100M (tier-1 — GLCache/ComputeCache; driver regenerates automatically)
+THRESH_APT_CACHE=524288000     # 500M (tier-2 — /var/cache/apt/archives; needs sudo)
 
 # Volumes tier-3 must NEVER offer for deletion, even when dangling — "dangling"
 # only means no container references them right now; these hold real data
@@ -124,6 +136,9 @@ CATEGORIES=(
     tsc_cache
     bun_cache
     snap_revs
+    mise_prune
+    nvidia_cache
+    apt_cache
 )
 
 human_size() {
@@ -288,6 +303,30 @@ classify_node_modules() {
 # Stale  = newest source file is >180d old.
 # Outputs NUL-terminated paths.
 #
+# Prune a PID array (nameref $1) down to still-alive entries. Called after
+# `wait -n "${pids[@]}"` to keep the array in sync with the real job table.
+#
+# `wait -n` with NO pid arguments returns immediately (exit 127, empty job
+# table) once every job it could have waited for is gone — a bounded-fan-out
+# throttle that tracks liveness via a counter (`inflight=$((inflight+1))`,
+# decremented once per throttle-check) can desync from the real table and
+# then call bare `wait -n` forever, which busy-spins at 100% CPU with zero
+# children instead of blocking (confirmed by direct reproduction: this is
+# what actually happened to 7 orphaned `cleanup` instances). Passing the
+# exact PID list to `wait -n` avoids the empty-table case entirely, and
+# kill -0 pruning (not `jobs -p`, which can include stale/reparented entries)
+# keeps that list honest. See:
+# ai/research/shell-scripting/bash-wait-n-with-an-empty-job-table-returns-immediately-turning-a-swallowed-error-into-a-100-percent-cpu-busy-spin.md
+_prune_dead_pids() {
+    local -n _arr="$1"
+    local p
+    local alive=()
+    for p in "${_arr[@]}"; do
+        kill -0 "$p" 2>/dev/null && alive+=("$p")
+    done
+    _arr=("${alive[@]}")
+}
+
 # Parallelism: each candidate parent project is classified concurrently, bounded
 # by $((nproc * 2)) to avoid fork-storms on machines with hundreds of projects.
 find_stale_node_modules() {
@@ -304,16 +343,16 @@ find_stale_node_modules() {
 
     local tmp
     tmp=$(mktemp -d)
-    local i=0 inflight=0
+    local i=0
+    local pids=()
     while IFS= read -r -d '' nm; do
         classify_node_modules "$nm" "$active_thresh" "$stale_thresh" \
             > "$tmp/nm-$i" 2>/dev/null &
+        pids+=("$!")
         i=$((i+1))
-        inflight=$((inflight+1))
-        # Throttle: when in-flight jobs hit cap, wait for any to finish.
-        if (( inflight >= max_jobs )); then
-            wait -n 2>/dev/null || true
-            inflight=$((inflight-1))
+        if (( ${#pids[@]} >= max_jobs )); then
+            wait -n "${pids[@]}" 2>/dev/null || true
+            _prune_dead_pids pids
         fi
     done < <(find "$CODE_ROOT" -maxdepth 5 -name node_modules -type d -prune -print0 2>/dev/null)
     wait 2>/dev/null || true
@@ -413,7 +452,16 @@ docker_tier_sizes() {
 probe_du_path() {
     local p="$1"
     [[ -e "$p" ]] || { echo 0; return; }
-    du -sb "$p" 2>/dev/null | cut -f1 || echo 0
+    # `du` can print a real total to stdout and still exit non-zero (e.g. one
+    # unreadable subdirectory under a root-owned path like
+    # /var/cache/apt/archives/partial when running unprivileged) — under
+    # `set -o pipefail` that non-zero status would otherwise fire the `|| echo
+    # 0` fallback IN ADDITION to the real value already printed, emitting two
+    # lines and breaking every `(( $(...) > N ))` caller downstream. Always
+    # take exactly one line.
+    local sz
+    sz=$(du -sb "$p" 2>/dev/null | cut -f1 | head -1)
+    echo "${sz:-0}"
 }
 
 # Probe the total size of stale node_modules and emit "count|bytes".
@@ -459,6 +507,56 @@ probe_snap_revs() {
         fi
     done < <(snap list --all 2>/dev/null | awk '$NF ~ /disabled/ {print $1, $3}')
     echo "${count}|${total}"
+}
+
+# Probe mise-managed tool versions no longer referenced by any tracked config.
+# Delegates entirely to `mise ls --prunable` rather than reimplementing
+# version-liveness detection — mise tracks every config file it has been
+# invoked against in ~/.local/state/mise/tracked-configs, which is more
+# authoritative than a filesystem scan could be. tier-1: mise re-fetches a
+# pruned version transparently on next `mise install`/use. No-op on machines
+# without mise. Emits "count|bytes" (bytes summed via the real install dirs
+# since `mise ls --prunable` doesn't itself report size).
+# See ai/research/dev-tool-caches/mise-has-a-built-in-prune-command-...
+probe_mise_prune() {
+    command -v mise >/dev/null 2>&1 || { echo "0|0"; return; }
+    local data_dir="${MISE_DATA_DIR:-$HOME/.local/share/mise}"
+    local count=0 total=0 tool version dir sz
+    while read -r tool version; do
+        [[ -z "$tool" || -z "$version" ]] && continue
+        dir="$data_dir/installs/$tool/$version"
+        [[ -d "$dir" ]] || continue
+        sz=$(du -sb "$dir" 2>/dev/null | cut -f1)
+        total=$((total + ${sz:-0}))
+        count=$((count + 1))
+    done < <(mise ls --prunable 2>/dev/null)
+    echo "${count}|${total}"
+}
+
+# Probe NVIDIA GLCache (OpenGL shader cache) and ComputeCache (CUDA JIT
+# kernel cache) — two separate, real locations (~/.cache/nvidia and
+# ~/.nv/ComputeCache respectively; NOT co-located). tier-1: NVIDIA's own
+# support documentation recommends deleting these as standard troubleshooting
+# and states they regenerate automatically. No-op on machines without an
+# NVIDIA cache present (harmless on non-NVIDIA machines — both paths simply
+# won't exist). Emits total bytes across both paths.
+# See ai/research/dev-tool-caches/nvidia-shader-and-cuda-jit-caches-...
+probe_nvidia_cache() {
+    local total=0 sz
+    for p in "$HOME/.cache/nvidia" "$HOME/.nv/ComputeCache"; do
+        [[ -d "$p" ]] || continue
+        sz=$(du -sb "$p" 2>/dev/null | cut -f1)
+        total=$((total + ${sz:-0}))
+    done
+    echo "$total"
+}
+
+# Probe the apt package archive cache (/var/cache/apt/archives). tier-2:
+# needs sudo to clean (root-owned path) and only makes sense on Debian/Ubuntu.
+# No-op on machines without apt.
+probe_apt_cache() {
+    command -v apt-get >/dev/null 2>&1 || { echo 0; return; }
+    probe_du_path /var/cache/apt/archives
 }
 
 # Sum sizes of dirs matching a name under CODE_ROOT. Args: <name> [<name>...].
@@ -581,15 +679,16 @@ find_stale_venvs() {
 
     local tmp
     tmp=$(mktemp -d)
-    local i=0 inflight=0
+    local i=0
+    local pids=()
     while IFS= read -r -d '' v; do
         classify_venv "$v" "$stale_thresh" \
             > "$tmp/v-$i" 2>/dev/null &
+        pids+=("$!")
         i=$((i+1))
-        inflight=$((inflight+1))
-        if (( inflight >= max_jobs )); then
-            wait -n 2>/dev/null || true
-            inflight=$((inflight-1))
+        if (( ${#pids[@]} >= max_jobs )); then
+            wait -n "${pids[@]}" 2>/dev/null || true
+            _prune_dead_pids pids
         fi
     # Discover by the pyvenv.cfg marker (present in every venv regardless of
     # dir name) — name-based matching missed e.g. rdatadao-shitposting/env (5.4G).
@@ -675,18 +774,19 @@ find_stale_project_artifacts() {
 
     local tmp
     tmp=$(mktemp -d)
-    local i=0 inflight=0 parent
+    local i=0 parent
+    local pids=()
     while IFS= read -r -d '' a; do
         parent=$(dirname "$a")
         # Sibling-manifest validation: skip dirs that aren't the project type.
         "$manifest_fn" "$parent" || continue
         classify_project_artifact "$a" "$stale_thresh" \
             > "$tmp/a-$i" 2>/dev/null &
+        pids+=("$!")
         i=$((i+1))
-        inflight=$((inflight+1))
-        if (( inflight >= max_jobs )); then
-            wait -n 2>/dev/null || true
-            inflight=$((inflight-1))
+        if (( ${#pids[@]} >= max_jobs )); then
+            wait -n "${pids[@]}" 2>/dev/null || true
+            _prune_dead_pids pids
         fi
     done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name "$art_name" -prune -print0 2>/dev/null)
     wait 2>/dev/null || true
@@ -828,10 +928,10 @@ probe_pnpm_store() {
     probe_du_path "$store_dir"
 }
 
-# Probe git bloat under ~/code. Emits zero or more "repo_name:size" lines.
+# Probe git bloat under CODE_ROOT. Emits zero or more "repo_name:size" lines.
 probe_git_bloat() {
     local raw
-    raw=$(find ~/code -maxdepth 2 -name ".git" -type d -exec du -sb {} \; 2>/dev/null \
+    raw=$(find "$CODE_ROOT" -maxdepth 2 -name ".git" -type d -exec du -sb {} \; 2>/dev/null \
         | awk -v t="$THRESH_GIT_BLOAT" '$1 > t {print $2 ":" $1}' || true)
     [[ -z "$raw" ]] && return 0
     while IFS=: read -r path size; do
@@ -956,6 +1056,18 @@ check_cleanup() {
     ( probe_snap_revs > "$TMPDIR_PARALLEL/snap_revs" 2>/dev/null ) &
     pids+=($!)
 
+    # --- mise prunable tool versions (tier-1: delegates to `mise prune`) ---
+    ( probe_mise_prune > "$TMPDIR_PARALLEL/mise_prune" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- NVIDIA GLCache + ComputeCache (tier-1: driver regenerates) ---
+    ( probe_nvidia_cache > "$TMPDIR_PARALLEL/nvidia_cache" 2>/dev/null ) &
+    pids+=($!)
+
+    # --- apt package archive cache (tier-2: needs sudo) ---
+    ( probe_apt_cache > "$TMPDIR_PARALLEL/apt_cache" 2>/dev/null ) &
+    pids+=($!)
+
     # --- Docker probes ---
     ( docker_tier_sizes > "$TMPDIR_PARALLEL/docker" 2>/dev/null ) &
     pids+=($!)
@@ -1074,6 +1186,34 @@ check_cleanup() {
     : "${sr_count:=0}" "${sr_size:=0}"
     if (( sr_size > THRESH_SNAP_REVS )); then
         items+=("snap_revs:$sr_count:$sr_size")
+    fi
+
+    # mise_prune — tier-1: delegates to `mise prune`; mise re-fetches on demand.
+    local mp_raw mp_count mp_size
+    mp_raw=$(cat "$TMPDIR_PARALLEL/mise_prune" 2>/dev/null || echo "0|0")
+    mp_count="${mp_raw%%|*}"
+    mp_size="${mp_raw#*|}"
+    : "${mp_count:=0}" "${mp_size:=0}"
+    if (( mp_size > THRESH_MISE_PRUNE )); then
+        items+=("mise_prune:$mp_count:$mp_size")
+        total_cleanable=$((total_cleanable + mp_size))
+    fi
+
+    # nvidia_cache — tier-1: NVIDIA's own docs endorse deleting as troubleshooting.
+    local nv_size
+    nv_size=$(cat "$TMPDIR_PARALLEL/nvidia_cache" 2>/dev/null || echo 0)
+    : "${nv_size:=0}"
+    if (( nv_size > THRESH_NVIDIA_CACHE )); then
+        items+=("nvidia_cache:1:$nv_size")
+        total_cleanable=$((total_cleanable + nv_size))
+    fi
+
+    # apt_cache — tier-2: needs sudo (root-owned path).
+    local apt_size
+    apt_size=$(cat "$TMPDIR_PARALLEL/apt_cache" 2>/dev/null || echo 0)
+    : "${apt_size:=0}"
+    if (( apt_size > THRESH_APT_CACHE )); then
+        items+=("apt_cache:1:$apt_size")
     fi
 
     # nvm_versions — tier-2: old ~/.nvm/versions/node/vX; `nvm install X` re-downloads.
@@ -1432,6 +1572,15 @@ show_suggestions() {
             snap_revs)
                 other_lines+=("  ${YELLOW}tier 2${NC} snap remove $count disabled revisions:   $(human_size "$size")  ${DIM}(drops rollback; needs sudo)${NC}")
                 ;;
+            mise_prune)
+                other_lines+=("    mise prune: $count unused tool versions, $(human_size "$size")  ${DIM}(mise re-fetches on demand)${NC}")
+                ;;
+            nvidia_cache)
+                other_lines+=("    rm NVIDIA GLCache/ComputeCache: $(human_size "$size")  ${DIM}(driver regenerates automatically)${NC}")
+                ;;
+            apt_cache)
+                other_lines+=("  ${YELLOW}tier 2${NC} apt-get autoclean:                    $(human_size "$size")  ${DIM}(needs sudo)${NC}")
+                ;;
             nvm_versions)
                 other_lines+=("  ${YELLOW}tier 2${NC} nvm uninstall old Node versions:     $(human_size "$size")  ${DIM}(keeps default alias + current; nvm install X re-downloads)${NC}")
                 ;;
@@ -1562,6 +1711,30 @@ is_enabled() {
     fi
     [[ -n "${SKIP_CAT[$cat]:-}" ]] && return 1
     return 0
+}
+
+# True iff this run will actually need sudo, so main() should prime
+# credentials upfront (ask once, before any deletions) instead of blocking
+# unannounced mid-run. Only snap_revs and apt_cache (both tier-2) need sudo
+# today.
+#
+# A bare unconditional `sudo -v` here once hung 15h+ on a --clean
+# --include-tier-2 --yes run that had nothing sudo-related to do at all —
+# this must stay narrowly scoped to "is there real sudo work pending",
+# not "could this flag combination ever need sudo".
+needs_sudo_priming() {
+    [[ "$DRY_RUN" != "true" ]] || return 1
+    (( EUID != 0 )) || return 1
+    [[ -t 0 ]] || return 1
+    [[ "$INCLUDE_TIER_2" == "true" ]] || return 1
+    ensure_cache false
+    if is_enabled snap_revs && (( $(cache_size_for snap_revs) > 0 )); then
+        return 0
+    fi
+    if is_enabled apt_cache && (( $(cache_size_for apt_cache) > 0 )); then
+        return 0
+    fi
+    return 1
 }
 
 # Returns 0 if the user confirms (or --yes is set).
@@ -1864,6 +2037,35 @@ do_cleanup() {
         local s; s=$(cache_size_for pip_cache)
         if (( s > 0 )); then
             if maybe_run "pip cache" "$s" "rm -rf ~/.cache/pip"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- mise prunable tool versions -----
+    # Delegates fully to `mise prune -y`: mise tracks every config it's been
+    # invoked against and knows exactly which versions are superseded — a
+    # bash re-scan would be a strictly worse second source of truth. `-y`
+    # answers mise's own confirmation prompts (this action's `maybe_run`
+    # confirm already gated running it at all).
+    if is_enabled mise_prune; then
+        local s; s=$(cache_size_for mise_prune)
+        if (( s > 0 )) && command -v mise >/dev/null; then
+            if maybe_run "mise prune (unused tool versions)" "$s" "mise prune -y"; then
+                freed=$((freed + s))
+            fi
+        fi
+    fi
+
+    # ----- NVIDIA GLCache + ComputeCache -----
+    # Two separate real locations, not co-located. NVIDIA's own support KB
+    # recommends deleting both as troubleshooting; the driver regenerates
+    # transparently on next shader compile / CUDA kernel launch.
+    if is_enabled nvidia_cache; then
+        local s; s=$(cache_size_for nvidia_cache)
+        if (( s > 0 )); then
+            if maybe_run "NVIDIA GLCache/ComputeCache" "$s" \
+                "rm -rf ~/.cache/nvidia ~/.nv/ComputeCache"; then
                 freed=$((freed + s))
             fi
         fi
@@ -2434,6 +2636,44 @@ do_cleanup() {
                     echo -e "  ${GREEN}done${NC} (${sr_ok} removed)"
                     (( sr_ok > 0 )) && freed=$((freed + sr_size))
                 fi
+            fi
+        fi
+    fi
+
+    # ----- apt package archive cache (tier-2) -----
+    # `apt-get autoclean` removes only superseded/undownloadable cached .deb
+    # files (never the reusable ones), and `apt-get autoremove --purge` is
+    # kernel-protected by APT::Protect-Kernels (default true — keeps the
+    # running kernel + 1 rollback). Both need sudo (root-owned paths).
+    #
+    # Deliberately does NOT touch manually-marked (`apt-mark showmanual`)
+    # kernel packages even if old: autoremove's candidate pool excludes them
+    # entirely regardless of age, and reclaiming that space needs an explicit
+    # `apt-mark auto` relabel — a bigger, more consequential action (changes
+    # package installation-reason metadata) than a passive --yes cleanup
+    # tool should take unprompted. Surfaced as an info-only note instead.
+    # See ai/research/dev-tool-caches/apt-autoremove-is-kernel-protected...
+    if [[ "$INCLUDE_TIER_2" == "true" ]] && is_enabled apt_cache; then
+        local apt_size
+        apt_size=$(cache_size_for apt_cache)
+        if (( apt_size > 0 )) && command -v apt-get >/dev/null; then
+            if maybe_run "apt cache (autoclean + autoremove)" "$apt_size" \
+                "sudo apt-get autoclean && sudo apt-get autoremove --purge -y"; then
+                freed=$((freed + apt_size))
+            fi
+        fi
+        local manual_kernels
+        manual_kernels=$(apt-mark showmanual 2>/dev/null | grep -E '^linux-image-[0-9]' || true)
+        if [[ -n "$manual_kernels" ]]; then
+            local running_kernel; running_kernel=$(uname -r)
+            local mk_other
+            mk_other=$(printf '%s\n' "$manual_kernels" | grep -v "$running_kernel" || true)
+            if [[ -n "$mk_other" ]]; then
+                echo ""
+                echo -e "${BOLD}Manually-installed kernel packages${NC}  ${DIM}(not touched by autoremove regardless of age)${NC}"
+                printf '%s\n' "$mk_other" | sed 's/^/  /'
+                echo -e "  ${DIM}If any of these are unwanted, review and 'sudo apt-mark auto <pkg>' yourself,${NC}"
+                echo -e "  ${DIM}then re-run cleanup --clean --include-tier-2 to let autoremove reclaim them.${NC}"
             fi
         fi
     fi
@@ -3016,9 +3256,61 @@ main() {
             ;;
         --clean|-c)
             shift
+            # Containment: re-exec the whole --clean action under a systemd
+            # user-session unit with a CPU quota and a wall-clock ceiling, so
+            # ANY future runaway bug (busy-spin or hang, known or not yet
+            # found) self-limits at the OS level instead of depending on a
+            # human to notice — 7 orphaned instances of this exact command
+            # once accumulated 1000+ CPU-minutes before anyone did.
+            # Service mode (--unit=), not scope mode: scope mode cannot
+            # connect a real TTY (needed for the interactive sudo -v prompt
+            # below), verified empirically — see the systemd-run research
+            # entry's correction. CLEANUP_CONTAINED is the re-exec sentinel.
+            # CLEANUP_NO_CONTAIN opts out (e.g. no systemd, or already
+            # contained by a caller) without needing to edit this script.
+            if [[ -z "${CLEANUP_CONTAINED:-}" ]] && [[ -z "${CLEANUP_NO_CONTAIN:-}" ]] \
+                && command -v systemd-run &>/dev/null && [[ -t 0 || -t 1 ]]; then
+                # systemd-run --user does NOT inherit the caller's environment
+                # (verified: a plain `export`ed var does not cross) — every
+                # var the script actually reads must be passed explicitly via
+                # --setenv=NAME (no "=VALUE" pulls the current value). PATH in
+                # particular resets to systemd's own default otherwise, which
+                # would silently break docker/snap/tool discovery.
+                exec systemd-run --user \
+                    --unit="cleanup-clean-$$" --pty --quiet \
+                    -p "CPUQuota=${CLEANUP_CPU_QUOTA:-50%}" \
+                    -p "RuntimeMaxSec=${CLEANUP_RUNTIME_MAX:-3600}" \
+                    --setenv=CLEANUP_CONTAINED=1 \
+                    --setenv=PATH \
+                    --setenv=CODE_ROOT \
+                    --setenv=CLEANUP_CACHE_FILE \
+                    --setenv=CLEANUP_LOCK_FILE \
+                    --setenv=REFRESH_CACHE_AFTER_CLEANUP \
+                    --setenv=PROC_ROOT \
+                    --setenv=UV_CACHE_DIR \
+                    --setenv=NESTED_ARTIFACT_MAXDEPTH \
+                    --setenv=XDG_STATE_HOME \
+                    -- "$0" --clean "$@"
+            fi
             parse_clean_args "$@"
-            if [[ "$DRY_RUN" != "true" ]] && (( EUID != 0 )) && [[ -t 0 ]]; then
-                # Cache sudo credentials upfront so cleanup doesn't prompt mid-run.
+            # Re-entrancy guard: refuse to start a second --clean while one is
+            # already running, rather than letting instances pile up (7 were
+            # once found running concurrently, some for 38+ hours). Fail fast
+            # (non-blocking) fits an interactive CLI — see the flock research
+            # entry for why this beats both queueing and a PID file.
+            exec 200>"$CLEANUP_LOCK_FILE"
+            if ! flock -n 200; then
+                echo "cleanup --clean is already running (lock: $CLEANUP_LOCK_FILE)." >&2
+                echo "Wait for it to finish, or find and stop it: pgrep -af 'bin/cleanup'" >&2
+                exit 1
+            fi
+            # needs_sudo_priming (and do_cleanup right after it) both call
+            # ensure_cache, which rescans from scratch on a stale/missing
+            # cache and can take tens of seconds — print something immediately
+            # so a cold-cache run never sits silent before its first real line.
+            echo "Checking what's cleanable..."
+            if needs_sudo_priming; then
+                echo "Some tier-2 items (disabled snap revisions and/or apt cache) need sudo to remove."
                 sudo -v
                 while sudo -n -v; do sleep 60; done &
                 SUDO_KEEPALIVE_PID=$!
