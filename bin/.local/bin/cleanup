@@ -339,6 +339,72 @@ _prune_dead_pids() {
     _arr=("${alive[@]}")
 }
 
+# Diagnostic-only wrapper around `wait -n "${pids[@]}"` for the three
+# throttled fan-out loops below. Logs to run.log (same file/format as
+# maybe_run's START/END lines) if a single throttle wait takes suspiciously
+# long (>10s), and separately tracks CONSECUTIVE instant (0s) returns across
+# calls sharing the same label — a single instant return is normal (a job
+# legitimately finished right as the throttle check ran); the actual
+# busy-spin signature already fixed once in this script is instant returns
+# repeating with no progress, which this counts via a label-keyed global
+# associative array. Overhead is one `date` call per throttle trigger
+# (already an infrequent event, not per-loop-iteration), so this is safe to
+# leave on permanently rather than only enabling under a debug flag.
+#
+# Added after two real hangs where the process was confirmed CPU-bound with
+# zero children for 9+ minutes but run.log had no evidence of which loop or
+# call was responsible — this closes that evidence gap for next time.
+declare -A _DIAG_INSTANT_STREAK
+declare -A _DIAG_LAST_LOG_AT
+_diag_wait_n() {
+    local label="$1"
+    shift
+    local n_before=$#
+    local t0=$SECONDS
+    wait -n "$@" 2>/dev/null
+    local rc=$?
+    local dt=$((SECONDS - t0))
+    if (( dt > 10 )); then
+        run_log "DIAG $label: wait -n on $n_before pids took ${dt}s (rc=$rc)"
+        _DIAG_INSTANT_STREAK["$label"]=0
+    elif (( dt == 0 )); then
+        _DIAG_INSTANT_STREAK["$label"]=$(( ${_DIAG_INSTANT_STREAK["$label"]:-0} + 1 ))
+        # Rate-limited: log once on crossing the threshold, then at most once
+        # per 5s of continued spinning — a genuine busy-spin calls this
+        # thousands of times/sec, and logging every single one would flood
+        # run.log (and add its own I/O load) during the very incident this
+        # exists to diagnose.
+        if (( ${_DIAG_INSTANT_STREAK["$label"]} >= 5 )) \
+            && (( SECONDS - ${_DIAG_LAST_LOG_AT["$label"]:-0} >= 5 )); then
+            run_log "DIAG $label: wait -n returned instantly ${_DIAG_INSTANT_STREAK[$label]} times in a row on $n_before pids (rc=$rc) — this is the busy-spin signature (a stale/already-reaped pid stuck in the array, or the array never shrinking)"
+            _DIAG_LAST_LOG_AT["$label"]=$SECONDS
+        fi
+    else
+        _DIAG_INSTANT_STREAK["$label"]=0
+    fi
+    return "$rc"
+}
+
+# Diagnostic-only wrapper around the final bare `wait` (no -n, no pid list)
+# each of the three fan-out loops does after their input is exhausted, to
+# drain any still-running jobs. Unlike the throttle-loop `wait -n` above,
+# there's no "returned suspiciously fast" failure mode here — the only risk
+# is a single straggler job (e.g. `du`/`find`/`stat` wedged on a slow/dead
+# network mount, a pathological symlink loop, or similar) taking far longer
+# than the rest of the batch. Logs only if the drain itself is slow, so a
+# normal fast finish stays silent.
+_diag_wait_all() {
+    local label="$1"
+    local t0=$SECONDS
+    wait 2>/dev/null
+    local rc=$?
+    local dt=$((SECONDS - t0))
+    if (( dt > 15 )); then
+        run_log "DIAG $label: final drain wait took ${dt}s (rc=$rc) — a straggler job ran long after the rest of the batch finished"
+    fi
+    return "$rc"
+}
+
 # Parallelism: each candidate parent project is classified concurrently, bounded
 # by $((nproc * 2)) to avoid fork-storms on machines with hundreds of projects.
 find_stale_node_modules() {
@@ -363,11 +429,11 @@ find_stale_node_modules() {
         pids+=("$!")
         i=$((i+1))
         if (( ${#pids[@]} >= max_jobs )); then
-            wait -n "${pids[@]}" 2>/dev/null || true
+            _diag_wait_n find_stale_node_modules "${pids[@]}" || true
             _prune_dead_pids pids
         fi
     done < <(find "$CODE_ROOT" -maxdepth 5 -name node_modules -type d -prune -print0 2>/dev/null)
-    wait 2>/dev/null || true
+    _diag_wait_all find_stale_node_modules || true
 
     # Concatenate NUL-separated outputs in stable order.
     for ((j=0; j<i; j++)); do
@@ -736,13 +802,13 @@ find_stale_venvs() {
         pids+=("$!")
         i=$((i+1))
         if (( ${#pids[@]} >= max_jobs )); then
-            wait -n "${pids[@]}" 2>/dev/null || true
+            _diag_wait_n find_stale_venvs "${pids[@]}" || true
             _prune_dead_pids pids
         fi
     # Discover by the pyvenv.cfg marker (present in every venv regardless of
     # dir name) — name-based matching missed e.g. rdatadao-shitposting/env (5.4G).
     done < <(find "$CODE_ROOT" -maxdepth 6 -name pyvenv.cfg -printf '%h\0' 2>/dev/null)
-    wait 2>/dev/null || true
+    _diag_wait_all find_stale_venvs || true
 
     for ((j=0; j<i; j++)); do
         [[ -s "$tmp/v-$j" ]] && cat "$tmp/v-$j"
@@ -834,11 +900,11 @@ find_stale_project_artifacts() {
         pids+=("$!")
         i=$((i+1))
         if (( ${#pids[@]} >= max_jobs )); then
-            wait -n "${pids[@]}" 2>/dev/null || true
+            _diag_wait_n "find_stale_project_artifacts($art_name)" "${pids[@]}" || true
             _prune_dead_pids pids
         fi
     done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name "$art_name" -prune -print0 2>/dev/null)
-    wait 2>/dev/null || true
+    _diag_wait_all "find_stale_project_artifacts($art_name)" || true
 
     for ((j=0; j<i; j++)); do
         [[ -s "$tmp/a-$j" ]] && cat "$tmp/a-$j"
