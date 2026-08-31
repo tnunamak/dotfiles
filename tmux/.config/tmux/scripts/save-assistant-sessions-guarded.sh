@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Wraps tmux-assistant-resurrect's save script with two safety guards:
+# Wraps tmux-assistant-resurrect's save script with three safety guards:
 #
-# 1. Cliff guard: refuse a zero save or a sudden drop below the configured
+# 1. Identity guard: validate each saved provider/PID/session against the live
+#    pane process. Any entry without PID-bound identity evidence, or with a
+#    provider, PID, or session mismatch, rejects the candidate.
+#
+# 2. Cliff guard: refuse a zero save or a sudden drop below the configured
 #    minimum percent of the previous sidecar. Normal periodic saves use 20%;
 #    stop-time saves can export TMUX_RESURRECT_SAVE_MIN_PCT=80.
 #
-# 2. Rotate a sidecar backup alongside each tmux-resurrect save — so if a
-#    bad save slips through (e.g. a legit "no assistants running" moment
+# 3. Rotate a sidecar backup alongside each accepted tmux-resurrect save — so
+#    if a bad save slips through (e.g. a legit "no assistants running" moment
 #    that's not a crash), we can still recover from the backup dir.
 #
 # Invoked by post-save-transaction.sh from @resurrect-hook-post-save-layout.
@@ -19,6 +23,7 @@ BACKUP_DIR="${RESURRECT_DIR}/backups"
 LOG_FILE="${RESURRECT_DIR}/assistant-save.log"
 UPSTREAM_SCRIPT="${HOME}/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
 BUNDLE_CLI="${HOME}/.config/tmux/scripts/resurrect-transaction-bundle"
+IDENTITY_VALIDATOR="${HOME}/.config/tmux/scripts/validate-assistant-session-identities.sh"
 CLIFF_THRESHOLD_PCT="${TMUX_RESURRECT_SAVE_MIN_PCT:-20}"
 
 log() {
@@ -55,6 +60,28 @@ fi
 new_count=0
 if [[ -f "$OUTPUT_FILE" ]]; then
   new_count=$(jq -r '.sessions | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+fi
+
+# A count and a hash cannot prove that a sidecar describes the pane that was
+# just saved. Reject a provider/PID/session mismatch or PID-unverifiable entry
+# before the transaction can copy the sidecar into a new last-good bundle. A
+# default Codex launch whose ID is only inferred from cwd history is never
+# guessed or written as a recovery identity.
+if (( accepted )) && [[ -z "${TMUX_RESURRECT_TEST_SKIP_IDENTITY_VALIDATION:-}" ]]; then
+  if ! identity_result="$("$IDENTITY_VALIDATOR" "$OUTPUT_FILE" 2>&1)"; then
+    log "IDENTITY GUARD: REFUSING candidate sidecar: $identity_result"
+    accepted=0
+    if [[ -s "$snapshot" ]]; then
+      mv "$snapshot" "$OUTPUT_FILE"
+      new_count=$(jq -r '.sessions | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+    else
+      rm -f "$OUTPUT_FILE"
+      new_count=0
+    fi
+  else
+    log "$identity_result"
+    new_count=$(jq -r '.sessions | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
+  fi
 fi
 
 # Guard: reject sudden cliffs, including the original populated-to-zero case.

@@ -30,7 +30,7 @@ run_case() {
   layout="$home/.tmux/resurrect/tmux_resurrect_exact_${old}_${new}.txt"
   printf 'pane\tmain:0.0\t%s\t1\tbash\n' "$home" >"$layout"
   ln -sfn tmux_resurrect_old.txt "$home/.tmux/resurrect/last"
-  HOME="$home" bash "$GUARD" "$layout"
+  HOME="$home" TMUX_RESURRECT_TEST_SKIP_IDENTITY_VALIDATION=1 bash "$GUARD" "$layout"
   actual="$(jq '.sessions | length' "$home/.tmux/resurrect/assistant-sessions.json")"
   [[ "$actual" == "$expected" ]] || { echo "expected $old -> $new to leave $expected, got $actual" >&2; return 1; }
   [[ -f "$home/.tmux/resurrect/backups/assistant-sessions-exact_${old}_${new}.json" ]] ||

@@ -64,6 +64,9 @@ chmod +x "$HOME_DIR/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistan
 export HOME="$HOME_DIR"
 export TMUX_RESURRECT_BUNDLE_NOW_ISO="2026-08-30T23:00:00Z"
 export TMUX_RESURRECT_SAVE_MIN_PCT=80
+# This fixture isolates count/transaction behavior. Identity evidence has its
+# own deterministic process fixture in test_tmux_assistant_identity_gate.sh.
+export TMUX_RESURRECT_TEST_SKIP_IDENTITY_VALIDATION=1
 
 layout_a="$HOME/.tmux/resurrect/tmux_resurrect_A.txt"
 assistant_a="$WORK/assistant-A.json"

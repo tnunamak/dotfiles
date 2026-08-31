@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Write PID-bound Codex SessionStart receipts for tmux resurrection."""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+
+def proc_root() -> Path:
+    return Path(os.environ.get("CODEX_SESSION_RECEIPT_PROC_ROOT", "/proc"))
+
+
+def home_dir() -> Path:
+    return Path(os.environ.get("CODEX_SESSION_RECEIPT_HOME") or os.path.expanduser("~"))
+
+
+def read_cmdline(pid: int) -> list[str]:
+    try:
+        raw = (proc_root() / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return []
+    if raw:
+        return [part.decode("utf-8", "replace") for part in raw.rstrip(b"\0").split(b"\0") if part]
+    try:
+        return [(proc_root() / str(pid) / "comm").read_text(encoding="utf-8").strip()]
+    except OSError:
+        return []
+
+
+def read_stat(pid: int) -> tuple[int | None, str | None]:
+    try:
+        stat = (proc_root() / str(pid) / "stat").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None, None
+    close = stat.rfind(")")
+    if close < 0:
+        return None, None
+    fields = stat[close + 1 :].split()
+    try:
+        ppid = int(fields[1])
+        start_ticks = fields[19]
+    except (IndexError, ValueError):
+        return None, None
+    return ppid, start_ticks if start_ticks.isdigit() else None
+
+
+def is_native_codex(argv: list[str]) -> bool:
+    return bool(argv) and Path(argv[0]).name == "codex"
+
+
+def is_node_codex_launcher(argv: list[str]) -> bool:
+    return bool(
+        argv
+        and Path(argv[0]).name in ("node", "nodejs")
+        and len(argv) > 1
+        and Path(argv[1]).name == "codex"
+    )
+
+
+def codex_owner_processes(start_pid: int) -> list[dict[str, str | int]]:
+    seen: set[int] = set()
+    pid = start_pid
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        ppid, start_ticks = read_stat(pid)
+        argv = read_cmdline(pid)
+        if start_ticks and is_native_codex(argv):
+            matches: list[dict[str, str | int]] = [{"pid": pid, "start_ticks": start_ticks}]
+            if ppid is not None:
+                _, wrapper_ticks = read_stat(ppid)
+                wrapper_argv = read_cmdline(ppid)
+                if wrapper_ticks and is_node_codex_launcher(wrapper_argv):
+                    matches.append({"pid": ppid, "start_ticks": wrapper_ticks})
+            return matches
+        if ppid is None or ppid <= 0:
+            break
+        pid = ppid
+    return []
+
+
+def atomic_locked_append(path: Path, lock_path: Path, rows: list[dict[str, object]], keep_existing: int = 5000) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        existing: list[str] = []
+        try:
+            existing = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            pass
+        if keep_existing > 0 and len(existing) > keep_existing:
+            existing = existing[-keep_existing:]
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+                for line in existing:
+                    if line:
+                        tmp.write(line + "\n")
+                for row in rows:
+                    tmp.write(json.dumps(row, separators=(",", ":")) + "\n")
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_name, path)
+            dir_fd = os.open(path.parent, os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        print(f"codex-sessionstart-receipt: invalid JSON payload: {exc}", file=sys.stderr)
+        return 0
+
+    session_id = payload.get("session_id")
+    source = payload.get("source")
+    if not isinstance(session_id, str) or not session_id:
+        print("codex-sessionstart-receipt: missing session_id", file=sys.stderr)
+        return 0
+    if source is not None and not isinstance(source, str):
+        print("codex-sessionstart-receipt: invalid source", file=sys.stderr)
+        return 0
+
+    hook_pid = int(os.environ.get("CODEX_SESSION_RECEIPT_START_PID", os.getppid()))
+    owner_processes = codex_owner_processes(hook_pid)
+    if not owner_processes:
+        print("codex-sessionstart-receipt: no Codex ancestor found", file=sys.stderr)
+        return 0
+
+    rows = []
+    seen = set()
+    for proc in owner_processes:
+        pid = int(proc["pid"])
+        if pid in seen:
+            continue
+        seen.add(pid)
+        rows.append(
+            {
+                "tool": "codex",
+                "pid": pid,
+                "session": session_id,
+                "session_id": session_id,
+                "source": source or "unknown",
+                "start_ticks": proc["start_ticks"],
+            }
+        )
+
+    codex_dir = home_dir() / ".codex"
+    atomic_locked_append(rows=rows, path=codex_dir / "session-tags.jsonl", lock_path=codex_dir / "session-tags.lock")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -20,6 +20,16 @@
         ]
       }
     ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/home/tnunamak/.codex/scripts/codex-sessionstart-receipt' 2>/dev/null"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
