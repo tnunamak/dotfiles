@@ -1,0 +1,36 @@
+index	clean_identity	clean_cwd	prestop_desktop	current_2026-08-30_21xx	status
+0	Daisy/Pi	/home/tnunamak/applications/daisy	2	Daisy/Pi bwrap	verified-restored
+1	openai-proxy shell	/home/tnunamak/applications/openai-proxy	2	openai-proxy shell	verified-restored
+2	Codex (vana-node-ops; no clean resume id)	/home/tnunamak/code/vana-node-ops	unknown	vana-node-ops shell; displaced Codex preserved	unresolved-session-id
+3	Claude e893c807 (Coolify/Vivid Fish)	/home/tnunamak/sandbox	2	Claude e893c807 real transcript	verified-restored
+4	Claude bdac59f6 (Claude hook errors)	/home/tnunamak/code/dotfiles	unknown	Claude bdac59f6 original transcript	verified-restored
+5	clawmeter shell	/home/tnunamak/code/clawmeter	2	clawmeter shell	verified-restored
+6	Codex 019faeb4 (context-gateway)	/home/tnunamak/code/context-gateway	2	Codex 019faeb4 original lane-cleanup transcript	verified-restored
+7	Claude c0dad57d (Devspecs CLI)	/home/tnunamak/code/dotfiles	2	Claude c0dad57d real transcript	verified-restored
+8	unity-surfaces/pramana shell	/home/tnunamak/code/unity-surfaces	2	unity-surfaces shell	verified-restored
+9	Codex 019ea88b (pdpp)	/home/tnunamak/code/pdpp	4	Codex 019ea88b active orchestrator in dotfiles cwd	protected-cwd-mismatch
+10	Claude 42569d54	/home/tnunamak/sandbox	unknown	Claude 42569d54 real transcript	verified-restored
+11	plain shell	/home/tnunamak	2	plain shell	verified-restored
+12	dotfiles shell	/home/tnunamak/code/dotfiles	2	dotfiles shell	verified-restored
+13	Codex 019fa50c (pdpp)	/home/tnunamak/code/pdpp	6	Codex 019fa50c original UMA/PDPP transcript	verified-restored
+14	Claude 47fd3267 (Grafana memo; default config)	/home/tnunamak/sandbox	unknown	Claude 47fd3267 real transcript	verified-restored
+15	Claude 8b2c8ac0	/home/tnunamak/.claude/projects/-home-tnunamak-code-pdpp	6	Claude 8b2c8ac0 real transcript	verified-restored
+16	Claude 1f934c1f (Data connector DX)	/home/tnunamak	5	Claude trust prompt for owner home	needs-owner-trust-choice
+17	Claude 58979a73 (SillyTavern)	/home/tnunamak/applications/SillyTavern	2	Claude 58979a73 real transcript	verified-restored
+18	Claude (Find session 9)	/home/tnunamak/code/pdpp	4	manual recovery real transcript	verified-restored
+19	Claude 66850dc0 (Kitty notification fix)	/home/tnunamak/code/dotfiles	2	Claude 66850dc0 real transcript	verified-restored
+20	Claude (Review agent onboarding docs)	/home/tnunamak/code/pdpp	4	Claude same cwd	verified-manual-do-not-touch
+21	Claude 3f537a60 (pdpp.dev transfer/footer)	/home/tnunamak	2	Claude trust prompt for owner home	needs-owner-trust-choice
+22	Claude 4c9ad3f0 (Privy facilitator security)	/home/tnunamak/code/vana-node-ops	1	Claude 4c9ad3f0 real transcript	verified-restored
+23	unity-surfaces shell	/home/tnunamak/code/unity-surfaces	3	unity-surfaces shell	verified-restored
+24	Codex 019ca25a (sandbox)	/home/tnunamak	1	Codex 019ca25a real transcript	verified-restored
+25	Claude b9e12532 (waspflow docs)	/home/tnunamak/code/waspflow	3	Claude b9e12532 real transcript	verified-restored
+26	Claude 028cfed9 (new-session check)	/home/tnunamak	1	Claude trust prompt for owner home	needs-owner-trust-choice
+27	withdrawal-flow UAT shell (agent already exited in clean snapshot)	/home/tnunamak/code/context-gateway	1	withdrawal UAT shell	verified-restored
+28	Codex 019ff145 (archive-2 parent)	/home/tnunamak	unknown	archive-2 paused-goal prompt	verified-restored-leave-goal-paused
+29	Claude cd43dd9a (EPUB audiobook result)	/home/tnunamak	unknown	Claude cd43dd9a real transcript	verified-restored
+30	plain shell	/home/tnunamak	unknown	plain shell	verified-restored
+31	Claude 929c055b (Audio book generation from EPUBs)	/home/tnunamak/Downloads	unknown	Claude 929c055b real transcript	verified-restored
+32	Codex (pdpp; no clean resume id)	/home/tnunamak/code/pdpp	unknown	pdpp shell; ODL lane preserved	unresolved-session-id
+33	Claude ff819ac4 (Debug signal launch issue)	/home/tnunamak/code/pdpp	4	Claude ff819ac4 real transcript	verified-restored
+34	Codex 019f8f87 (2026-08-30 tmux recovery incident; moved from index 4)	/home/tnunamak/code/dotfiles	unknown	Codex 019f8f87 active incident thread in immutable window @18	protected-active

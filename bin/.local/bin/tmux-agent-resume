@@ -104,6 +104,11 @@ source_entries() {
       | select((.pane | type == "string" and length > 0)
           and (.tool | type == "string" and length > 0)
           and (.session_id | type == "string" and length > 0))
+      | .env = (
+          if .tool == "claude" and (.env.CLAUDE_CONFIG_DIR? | type == "string") then
+            {CLAUDE_CONFIG_DIR: .env.CLAUDE_CONFIG_DIR}
+          else null end
+        )
       | . + {
           id: ((.tool + "\u001f" + .pane + "\u001f" + .session_id) | @base64),
           saved_at: ($sidecar.timestamp // null)
@@ -433,8 +438,23 @@ shell_quote() {
   printf "'%s'" "${value//\'/\'\"\'\"\'}"
 }
 
+validated_claude_config_dir() {
+  local entry="$1" config_dir owner_home
+  config_dir="$(jq -r '.env.CLAUDE_CONFIG_DIR // empty' <<<"$entry")"
+  [[ -n "$config_dir" ]] || return 0
+  [[ "$config_dir" == /* ]] || die 'invalid CLAUDE_CONFIG_DIR in sidecar: path must be absolute'
+  [[ "$config_dir" != *$'\n'* ]] || die 'invalid CLAUDE_CONFIG_DIR in sidecar: path contains a newline'
+  owner_home="${TMUX_AGENT_RESUME_OWNER_HOME:-$HOME}"
+  [[ "$owner_home" == /* ]] || die 'TMUX_AGENT_RESUME_OWNER_HOME must be absolute'
+  owner_home="${owner_home%/}"
+  if [[ "$config_dir" != "$owner_home" && "$config_dir" != "$owner_home"/* ]]; then
+    die 'invalid CLAUDE_CONFIG_DIR in sidecar: path is outside owner home'
+  fi
+  printf '%s\n' "$config_dir"
+}
+
 resume_command() {
-  local entry="$1" tool session_id cwd cli_args owner_token
+  local entry="$1" tool session_id cwd cli_args owner_token resume_args claude_config_dir
   tool="$(jq -r '.tool' <<<"$entry")"
   session_id="$(jq -r '.session_id' <<<"$entry")"
   cwd="$(jq -r '.cwd // empty' <<<"$entry")"
@@ -442,11 +462,11 @@ resume_command() {
   owner_token="$(jq -r '.lease.owner_token' <<<"$entry")"
 
   case "$tool" in
-    claude) session_id="--resume $(shell_quote "$session_id")" ;;
-    codex) session_id="resume $(shell_quote "$session_id")" ;;
-    opencode) session_id="-s $(shell_quote "$session_id")" ;;
-    pi) session_id="--session $(shell_quote "$session_id")" ;;
-    omp|grok) session_id="--resume $(shell_quote "$session_id")" ;;
+    claude) resume_args="--resume $(shell_quote "$session_id")" ;;
+    codex) resume_args="resume $(shell_quote "$session_id")" ;;
+    opencode) resume_args="-s $(shell_quote "$session_id")" ;;
+    pi) resume_args="--session $(shell_quote "$session_id")" ;;
+    omp|grok) resume_args="--resume $(shell_quote "$session_id")" ;;
     *) die "unsupported saved tool: $tool" ;;
   esac
 
@@ -476,20 +496,34 @@ resume_command() {
       args=("${args[@]:1}")
     fi
   fi
-  local rendered_args=""
+  local rendered_args="" resume_inserted=false
   for token in "${args[@]}"; do
+    if [[ "$tool" == claude && "$resume_inserted" == false && "$token" == "--" ]]; then
+      rendered_args+=" $resume_args"
+      resume_inserted=true
+    fi
     rendered_args+=" $(shell_quote "$token")"
   done
+  if [[ "$resume_inserted" == false ]]; then
+    rendered_args+=" $resume_args"
+  fi
 
   local prefix=""
   if [[ -n "$cwd" && "$cwd" != "null" ]]; then
     prefix="cd $(shell_quote "$cwd") 2>/dev/null || exit; "
   fi
+  local -a env_parts=("TMUX_AGENT_RESUME_OWNER_TOKEN=$(shell_quote "$owner_token")")
+  if [[ "$tool" == claude ]]; then
+    claude_config_dir="$(validated_claude_config_dir "$entry")"
+    if [[ -n "$claude_config_dir" ]]; then
+      env_parts+=("CLAUDE_CONFIG_DIR=$(shell_quote "$claude_config_dir")")
+    fi
+  fi
   # setsid supplies a per-resume process group and passes a non-secret owner
   # token to descendants. This release only reports ownership candidates;
   # it never sends a signal to them.
-  printf '%senv TMUX_AGENT_RESUME_OWNER_TOKEN=%s setsid --wait %s%s %s' \
-    "$prefix" "$(shell_quote "$owner_token")" "$(shell_quote "$tool")" "$rendered_args" "$session_id"
+  printf '%senv %s setsid --wait %s%s' \
+    "$prefix" "${env_parts[*]}" "$(shell_quote "$tool")" "$rendered_args"
 }
 
 run_entry() {
@@ -506,6 +540,9 @@ run_entry() {
   "$TMUX_BIN" list-panes -t "$pane" >/dev/null 2>&1 || die "saved pane is absent: $pane"
   if [[ "$allow_headless" != true ]] && ! session_has_client "$session"; then
     die "an attached client is required for $session (use --allow-headless --owner NAME only for an orchestrator)"
+  fi
+  if [[ "$(jq -r '.tool' <<<"$entry")" == claude ]]; then
+    validated_claude_config_dir "$entry" >/dev/null
   fi
   pane_command="$($TMUX_BIN display-message -t "$pane" -p '#{pane_current_command}' 2>/dev/null || true)"
   pane_command="${pane_command#-}"

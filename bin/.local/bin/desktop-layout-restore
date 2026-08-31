@@ -119,9 +119,161 @@ state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="${DESKTO
 created_set="${DESKTOP_LAYOUT_CREATED_SET:-}"; test_socket_dir="${DESKTOP_LAYOUT_TEST_SOCKET_DIR:-}"; spawn_number=0
 kitty_config="${DESKTOP_LAYOUT_KITTY_CONFIG:-}"
 while (($#)); do case "$1" in --dry-run) dry=1;;--force) force=1;;--manifest) manifest="$2";shift;;*) echo 'usage: desktop-layout-restore [--dry-run] [--force] [--manifest FILE]' >&2;exit 2;;esac;shift;done
+
+transaction_root="$HOME/.tmux/resurrect/transactions"
+if [[ -e "$transaction_root" ]]; then
+  no_desktop_receipt="$state/.no-desktop-receipt.json"
+  activation_receipt="$state/.bundle-activation.json"
+  if [[ -s "$no_desktop_receipt" ]]; then
+    log "transaction bundle has no desktop component; skipping desktop restore"
+    exit 0
+  fi
+  if [[ ! -s "$activation_receipt" ]]; then
+    log "ERROR transaction state exists but no bundled desktop activation receipt exists"
+    exit 1
+  fi
+  activation_manifest_path="$(jq -r '.manifest.path // empty' "$activation_receipt" 2>/dev/null || true)"
+  activation_manifest_hash="$(jq -r '.manifest.sha256 // empty' "$activation_receipt" 2>/dev/null || true)"
+  if [[ "$manifest" == "$state/manifest.json" ]]; then
+    manifest="$activation_manifest_path"
+  fi
+  if [[ -z "$manifest" || "$manifest" != "$activation_manifest_path" || ! -f "$manifest" ]]; then
+    log "ERROR transaction state exists but requested desktop manifest is not the activated bundle manifest"
+    exit 1
+  fi
+  actual_manifest_hash="$(sha256sum "$manifest" 2>/dev/null | awk '{print $1}')"
+  if [[ -z "$activation_manifest_hash" || "$actual_manifest_hash" != "$activation_manifest_hash" ]]; then
+    log "ERROR activated bundled desktop manifest hash mismatch"
+    exit 1
+  fi
+fi
 [[ -s "$manifest" ]] || exit 0; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 1
+outcome_log="$state/restore-archive/outcomes-$(date -u +%Y%m%dT%H%M%SZ).log"
+record_needs_owner() {
+  local reason="$1" row="${2:-}"
+  log "ERROR needs-owner: $reason"
+  if (( ! dry )); then
+    mkdir -p "$state/restore-archive"
+    printf 'outcome=needs-owner reason=%q row=%s\n' "$reason" "$row" >> "$outcome_log"
+  fi
+}
+
+tmux_window_jsonl() {
+  local session group group_key idx
+  declare -A seen_groups=()
+  if [[ -v DESKTOP_LAYOUT_TMUX_WINDOWS_JSONL ]]; then
+    printf '%s\n' "$DESKTOP_LAYOUT_TMUX_WINDOWS_JSONL"
+    return 0
+  fi
+  while IFS= read -r session; do
+    [[ -n "$session" ]] || continue
+    group="$(tmux -N display-message -p -t "=$session:" -F '#{session_group}' 2>/dev/null || true)"
+    [[ "$session" == main || "$group" == main || "$group" =~ ^main-[0-9]+$ || "$session" =~ ^main-[0-9]+$ ]] || continue
+    group_key="${group:-$session}"
+    [[ -n "${seen_groups[$group_key]:-}" ]] && continue
+    seen_groups["$group_key"]=1
+    while IFS= read -r idx; do
+      [[ "$idx" =~ ^[0-9]+$ ]] || continue
+      jq -cn \
+        --arg session "$session" \
+        --arg group "$group" \
+        --arg index "$idx" \
+        --arg name "$(tmux -N display-message -p -t "=${session}:${idx}" -F '#{window_name}' 2>/dev/null || true)" \
+        --arg cwd "$(tmux -N display-message -p -t "=${session}:${idx}" -F '#{pane_current_path}' 2>/dev/null || true)" \
+        --arg command "$(tmux -N display-message -p -t "=${session}:${idx}" -F '#{pane_current_command}' 2>/dev/null || true)" \
+        '{tmux_session:$session,tmux_group:$group,tmux_window_index:($index|tonumber),tmux_window_name:$name,cwd:$cwd,command:$command}'
+    done < <(tmux -N list-windows -t "=$session" -F '#{window_index}' 2>/dev/null)
+  done < <(tmux -N list-sessions -F '#{session_name}' 2>/dev/null)
+}
+
+sidecar_entries_for_identity() {
+  local provider="$1" session_id="$2" config_namespace="$3" sidecar_path="$4"
+  jq -c --arg provider "$provider" --arg session_id "$session_id" --arg config_namespace "$config_namespace" '
+    .sessions[]?
+    | select(.tool == $provider and .session_id == $session_id and ((.env.CLAUDE_CONFIG_DIR? // "") == $config_namespace))
+  ' "$sidecar_path" 2>/dev/null || true
+}
+
+validate_manifest_identity() {
+  local has_tmux duplicates live row idx receipt assurance expected_name expected_cwd expected_cmd match_count live_row live_name live_cwd live_cmd agent provider assistant_session_id config_namespace sidecar_path sidecar_hash actual_hash sidecar_matches pane pane_index mapped_count
+  has_tmux="$(jq -r 'any(.windows[]?; .is_tmux == true)' "$manifest")"
+  [[ "$has_tmux" == true ]] || return 0
+  duplicates="$(jq -r '
+    def key:
+      if (.kwin_window_id? // "") != "" then
+        "kwin:" + .kwin_window_id
+      else empty end;
+    [.windows[] | key] | group_by(.)[] | select(length > 1) | "duplicate visual identity " + .[0]
+  ' "$manifest")"
+  if [[ -n "$duplicates" ]]; then
+    record_needs_owner "$duplicates" ""
+    return 1
+  fi
+
+  live="$(tmux_window_jsonl)"
+  if [[ -z "$live" ]]; then
+    record_needs_owner "manifest contains tmux rows but live tmux evidence is unavailable" ""
+    return 1
+  fi
+  while IFS= read -r row; do
+    idx="$(jq -r '.tmux_window_index // empty' <<< "$row")"
+    [[ "$idx" =~ ^[0-9]+$ ]] || continue
+    receipt="$(jq -c '.identity_receipt // {}' <<< "$row")"
+    assurance="$(jq -r '.assurance // empty' <<< "$receipt")"
+    match_count="$(jq -s --argjson idx "$idx" '[.[] | select(.tmux_window_index == $idx)] | length' <<< "$live")"
+    if (( match_count != 1 )); then
+      record_needs_owner "tmux window index $idx resolves to $match_count current main-group targets" "$row"
+      return 1
+    fi
+    live_row="$(jq -cs --argjson idx "$idx" '.[] | select(.tmux_window_index == $idx)' <<< "$live")"
+    if [[ "$assurance" == "agent-sidecar" ]]; then
+      agent="$(jq -c '.agent_identity // empty' <<< "$receipt")"
+      provider="$(jq -r '.provider // empty' <<< "$agent")"
+      assistant_session_id="$(jq -r '.assistant_session_id // empty' <<< "$agent")"
+      config_namespace="$(jq -r '.config_namespace // empty' <<< "$agent")"
+      sidecar_path="$(jq -r '.sidecar.path // empty' <<< "$agent")"
+      sidecar_hash="$(jq -r '.sidecar.sha256 // empty' <<< "$agent")"
+      if [[ -z "$provider" || -z "$assistant_session_id" || -z "$sidecar_path" || ! -f "$sidecar_path" ]]; then
+        record_needs_owner "tmux window $idx agent receipt lacks same-generation sidecar evidence" "$row"; return 1
+      fi
+      actual_hash="$(sha256sum "$sidecar_path" 2>/dev/null | awk '{print $1}')"
+      [[ -n "$sidecar_hash" && "$actual_hash" == "$sidecar_hash" ]] || {
+        record_needs_owner "tmux window $idx sidecar generation mismatch" "$row"; return 1
+      }
+      sidecar_matches="$(sidecar_entries_for_identity "$provider" "$assistant_session_id" "$config_namespace" "$sidecar_path")"
+      if [[ "$(jq -s 'length' <<< "$sidecar_matches")" != 1 ]]; then
+        record_needs_owner "tmux window $idx agent identity is not unique in sidecar" "$row"; return 1
+      fi
+      pane="$(jq -rs '.[0].pane // empty' <<< "$sidecar_matches")"
+      pane_index="$(sed -nE 's/^main(-[0-9]+)?:([0-9]+)\.[0-9]+$/\2/p' <<< "$pane")"
+      [[ "$pane_index" =~ ^[0-9]+$ ]] || { record_needs_owner "tmux window $idx agent sidecar pane is not in main group: $pane" "$row"; return 1; }
+      mapped_count="$(jq -s --argjson pane_index "$pane_index" '[.[] | select(.tmux_window_index == $pane_index)] | length' <<< "$live")"
+      if [[ "$mapped_count" != 1 || "$pane_index" != "$idx" ]]; then
+        record_needs_owner "tmux window $idx agent identity maps to $mapped_count live windows at sidecar index $pane_index" "$row"; return 1
+      fi
+      continue
+    fi
+
+    [[ "$assurance" == "shell-weaker-index-cwd-command-name" ]] || {
+      record_needs_owner "tmux window $idx lacks an explicit agent or shell receipt assurance" "$row"; return 1
+    }
+    expected_name="$(jq -r '.shell_identity.tmux_window_name // empty' <<< "$receipt")"
+    expected_cwd="$(jq -r '.shell_identity.cwd // empty' <<< "$receipt")"
+    expected_cmd="$(jq -r '.shell_identity.command // empty' <<< "$receipt")"
+    live_name="$(jq -r '.tmux_window_name // empty' <<< "$live_row")"
+    live_cwd="$(jq -r '.cwd // empty' <<< "$live_row")"
+    live_cmd="$(jq -r '.command // empty' <<< "$live_row")"
+    if [[ -z "$expected_cwd" || -z "$expected_cmd" || -z "$expected_name" ]]; then
+      record_needs_owner "tmux window $idx shell receipt is incomplete" "$row"; return 1
+    fi
+    [[ "$expected_cwd" == "$live_cwd" ]] || { record_needs_owner "tmux window $idx cwd mismatch expected=$expected_cwd actual=$live_cwd" "$row"; return 1; }
+    [[ "$expected_cmd" == "$live_cmd" ]] || { record_needs_owner "tmux window $idx command mismatch expected=$expected_cmd actual=$live_cmd" "$row"; return 1; }
+    [[ "$expected_name" == "$live_name" ]] || { record_needs_owner "tmux window $idx name mismatch expected=$expected_name actual=$live_name" "$row"; return 1; }
+  done < <(jq -c '.windows[] | select(.is_tmux == true)' "$manifest")
+}
 if (( ! dry )); then
   archive_dir="$state/restore-archive"; mkdir -p "$archive_dir"
+  : > "$outcome_log"
   cp -f "$manifest" "$archive_dir/manifest-$(date -u +%Y%m%dT%H%M%SZ).json" 2>/dev/null || true
   find "$archive_dir" -name 'manifest-*.json' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +31 | cut -d' ' -f2- | xargs -r rm -f
 fi
@@ -129,10 +281,9 @@ wait_for_graphical_session
 mapfile -t existing < <(kdotool search --class kitty 2>/dev/null || true); if (( !force && ${#existing[@]}>2 )); then echo "desktop-layout-restore: ${#existing[@]} kitty windows already exist; skipping";exit 0;fi
 screen(){ [[ -n "${DESKTOP_LAYOUT_SCREEN:-}" ]] && { printf '%s\n' "$DESKTOP_LAYOUT_SCREEN"; return; }; kscreen-doctor -o 2>/dev/null|awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{print w,h}'; }
 read -r cw ch < <(screen); sw="$(jq -r '.screen.width // 0' "$manifest")";sh="$(jq -r '.screen.height // 0' "$manifest")"; ((sw>0))||sw=$cw;((sh>0))||sh=$ch
+validate_manifest_identity
 if ((dry));then jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '.windows[]|"launch "+(if .is_tmux then "tmux window "+(.tmux_window_index|tostring) else "plain kitty" end)+" desktop "+(.virtual_desktop|tostring)+" at "+((.position.x*$cw/$sw|round)|tostring)+","+((.position.y*$ch/$sh|round)|tostring)' "$manifest";exit 0;fi
 for _ in $(seq 1 240);do [[ "$(systemctl --user is-active tmux-restore.service 2>/dev/null||true)" != activating ]]&&break;sleep .5;done
-outcome_log="$state/restore-archive/outcomes-$(date -u +%Y%m%dT%H%M%SZ).log"
-if (( ! dry )); then mkdir -p "$state/restore-archive"; : > "$outcome_log"; fi
 declare -A spawned_pids=()
 while IFS= read -r row;do
   cwd="$(jq -r '.cwd // env.HOME' <<< "$row")";[[ -d "$cwd" ]]||cwd="$HOME";tmux_row="$(jq -r .is_tmux <<< "$row")";idx="$(jq -r '.tmux_window_index // empty' <<< "$row")";desk="$(jq -r .virtual_desktop <<< "$row")";native_session="$(jq -r '.native_session // empty' <<< "$row")"
@@ -146,10 +297,10 @@ while IFS= read -r row;do
     mkdir -p "$test_socket_dir"; socket="$test_socket_dir/kitty-$spawn_number-$RANDOM"
     args+=(--title "desktop-layout-test-$spawn_number-$RANDOM" --listen-on "unix:$socket")
   fi
-  if [[ -n "$native_session" && -s "$native_session" ]]; then
-    kitty "${args[@]}" --session "$native_session" >/dev/null 2>&1 &
-  elif [[ "$tmux_row" == true ]]; then
+  if [[ "$tmux_row" == true ]]; then
     kitty "${args[@]}" env TMUX_ATTACH_TARGET_WINDOW="$idx" tmux-local-attach-main >/dev/null 2>&1 &
+  elif [[ -n "$native_session" && -s "$native_session" ]]; then
+    kitty "${args[@]}" --session "$native_session" >/dev/null 2>&1 &
   else
     kitty "${args[@]}" >/dev/null 2>&1 &
   fi
@@ -179,7 +330,7 @@ while IFS= read -r row;do
   fi
   read -r x y w h < <(jq -r --argjson cw "$cw" --argjson ch "$ch" --argjson sw "$sw" --argjson sh "$sh" '[.position.x*$cw/$sw,.position.y*$ch/$sh,.size.width*$cw/$sw,.size.height*$ch/$sh]|map(round)|join(" ")' <<< "$row")
   kdotool set_desktop_for_window "$new" "$desk"; resize_and_verify "$new" "$w" "$h" "$x" "$y" || true
-  [[ "$tmux_row" == true && -n "$idx" ]] && resend_pty_winch_for_tmux_window "$idx"
+  [[ "$tmux_row" == true && -n "$idx" ]] && { resend_pty_winch_for_tmux_window "$idx" || true; }
 done < <(jq -c '.windows[]' "$manifest")
 
 # Liveness sweep, a few seconds after every spawn finished: catches windows
@@ -200,7 +351,7 @@ if (( ! dry )) && (( ${#spawned_pids[@]} > 0 )); then
       # this window the pane may still have been a bare shell (nothing to
       # WINCH yet). By now the agent has almost certainly started under
       # setsid; catch it here too.
-      [[ "$sweep_tmux_row" == true && -n "$sweep_idx" ]] && resend_pty_winch_for_tmux_window "$sweep_idx"
+      [[ "$sweep_tmux_row" == true && -n "$sweep_idx" ]] && { resend_pty_winch_for_tmux_window "$sweep_idx" || true; }
     else
       printf 'spawn=%s pid=%s window=%s cwd=%s tmux=%s tmux_idx=%s outcome=DIED_within_5s\n' \
         "$sweep_spawn_number" "$pid" "$sweep_new" "$sweep_cwd" "$sweep_tmux_row" "$sweep_idx" >> "$outcome_log"

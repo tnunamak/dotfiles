@@ -3,6 +3,7 @@
 # also get a native session dump; the manifest remains the KWin/tmux join.
 set -euo pipefail
 state="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-layout"; manifest="$state/manifest.json"; sessions="$state/kitty-sessions"
+assistant_sidecar="${DESKTOP_LAYOUT_ASSISTANT_SIDECAR:-$HOME/.tmux/resurrect/assistant-sessions.json}"
 mkdir -p "$state" "$sessions"; command -v jq >/dev/null && command -v kdotool >/dev/null || exit 0
 mapfile -t windows < <(kdotool search --class kitty 2>/dev/null || true); ((${#windows[@]})) || exit 0
 # kscreen-doctor is a Qt/X11 binary that can abort outright (exit 134,
@@ -14,12 +15,37 @@ mapfile -t windows < <(kdotool search --class kitty 2>/dev/null || true); ((${#w
 # scaling (cosmetic), never gates the manifest write, which is what matters.
 screen="${DESKTOP_LAYOUT_SCREEN_JSON:-$(kscreen-doctor -o 2>/dev/null | awk '/^Output:/{e=0}/enabled/{e=1}e&&/Geometry:/{for(i=1;i<=NF;i++)if($i~/^[0-9]+x[0-9]+$/){split($i,a,"x");if(a[1]>w)w=a[1];if(a[2]>h)h=a[2]}}END{printf "{\"width\":%d,\"height\":%d}",w,h}' || true)}"
 [[ -n "$screen" ]] || screen='{"width":0,"height":0}'
-# Tests can inject an empty client map, avoiding any interaction with the
+tmux_field_for_client() {
+  local client="$1" format="$2"
+  [[ "$client" =~ ^/dev/[[:alnum:]_./-]+$ ]] || return 0
+  tmux -N list-clients -f "#{==:#{client_tty},$client}" -F "$format" 2>/dev/null | head -n1 || true
+}
+
+# Tests can inject an empty JSONL client map, avoiding any interaction with the
 # user's tmux server while still exercising the kitty/KWin persistence path.
-if [[ -v DESKTOP_LAYOUT_TMUX_CLIENTS ]]; then
-  clients="$DESKTOP_LAYOUT_TMUX_CLIENTS"
+if [[ -v DESKTOP_LAYOUT_TMUX_CLIENTS_JSONL ]]; then
+  clients="$DESKTOP_LAYOUT_TMUX_CLIENTS_JSONL"
+elif [[ -v DESKTOP_LAYOUT_TMUX_CLIENTS ]]; then
+  clients=""
 else
-  clients="$(tmux -N list-clients -F '#{client_tty}|#{session_name}|#{window_index}|#{window_name}' 2>/dev/null || true)"
+  clients="$(
+    while IFS= read -r client_tty; do
+      [[ -n "$client_tty" ]] || continue
+      session="$(tmux_field_for_client "$client_tty" '#{session_name}')"
+      [[ -n "$session" ]] || continue
+      jq -cn \
+        --arg tty "$client_tty" \
+        --arg session "$session" \
+        --arg session_group "$(tmux_field_for_client "$client_tty" '#{session_group}')" \
+        --arg session_id "$(tmux_field_for_client "$client_tty" '#{session_id}')" \
+        --arg window_index "$(tmux_field_for_client "$client_tty" '#{window_index}')" \
+        --arg window_id "$(tmux_field_for_client "$client_tty" '#{window_id}')" \
+        --arg window_name "$(tmux_field_for_client "$client_tty" '#{window_name}')" \
+        --arg pane_cwd "$(tmux_field_for_client "$client_tty" '#{pane_current_path}')" \
+        --arg command "$(tmux_field_for_client "$client_tty" '#{pane_current_command}')" \
+        '{tty:$tty,tmux_session:$session,tmux_session_group:$session_group,tmux_session_id:$session_id,tmux_window_index:($window_index|tonumber?),tmux_window_id:$window_id,tmux_window_name:$window_name,pane_cwd:$pane_cwd,command:$command}'
+    done < <(tmux -N list-clients -F '#{client_tty}' 2>/dev/null | sort -u)
+  )"
 fi
 rows="$(mktemp "$state/rows.XXXXXX")"; trap 'rm -f "$rows" "$manifest.tmp.$$"' EXIT
 kitty_supports_native_sessions() {
@@ -51,6 +77,31 @@ dump_native_session() {
   printf '%s' "$session"
 }
 
+assistant_sidecar_hash=""
+if [[ -f "$assistant_sidecar" ]]; then
+  assistant_sidecar_hash="$(sha256sum "$assistant_sidecar" 2>/dev/null | awk '{print $1}')"
+fi
+
+assistant_identity_for_pane() {
+  local pane="$1"
+  [[ -f "$assistant_sidecar" ]] || { printf 'null\n'; return 0; }
+  jq -c --arg pane "$pane" --arg path "$assistant_sidecar" --arg hash "$assistant_sidecar_hash" '
+    [.sessions[]? | select(.pane == $pane)] as $matches |
+    if ($matches | length) == 1 then
+      $matches[0] |
+      {
+        assurance: "agent-sidecar",
+        sidecar: {path: $path, sha256: $hash},
+        provider: .tool,
+        assistant_session_id: .session_id,
+        cwd: (.cwd // null),
+        config_namespace: (.env.CLAUDE_CONFIG_DIR? // null),
+        pane: .pane
+      }
+    else null end
+  ' "$assistant_sidecar" 2>/dev/null || printf 'null\n'
+}
+
 for id in "${windows[@]}"; do
   pid="$(kdotool getwindowpid "$id" 2>/dev/null || true)"; desk="$(kdotool get_desktop_for_window "$id" 2>/dev/null || true)"
   geo="$(kdotool getwindowgeometry "$id" 2>/dev/null || true)"; title="$(kdotool getwindowname "$id" 2>/dev/null || true)"
@@ -63,26 +114,50 @@ for id in "${windows[@]}"; do
   # degrades that one window's tty lookup to empty instead of losing the
   # whole snapshot.
   source=pid_tty; cwd="$HOME"; tty="$(ps -o tty= -p "$pid" 2>/dev/null|tr -d ' ' || true)"; remote=""; native_session=""
+  [[ -n "${DESKTOP_LAYOUT_TEST_TTY:-}" ]] && tty="$DESKTOP_LAYOUT_TEST_TTY"
   if [[ -S "/tmp/kitty-$pid" ]]; then
     remote="$(kitten @ --to "unix:/tmp/kitty-$pid" ls 2>/dev/null | jq -ce --arg id "$id" --arg t "$title" '[.[]|select((.platform_window_id|tostring)==$id)] as $p|if ($p|length)==1 then $p[0] else [.[]|select(any(.tabs[]?;.is_active and .title==$t))] as $m|if ($m|length)==1 then $m[0] else empty end end' 2>/dev/null || true)"
   fi
+  command_name=""; window_title="$title"; kitty_command=""
   if [[ -n "$remote" ]]; then
     source=kitty_remote; cwd="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].cwd // empty' <<< "$remote")"
     child="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].pid // empty' <<< "$remote")"
+    kitty_command="$(jq -r '[.tabs[]?|select(.is_active)|.windows[]?|select(.is_active)][0].cmdline // [] | join(" ")' <<< "$remote")"
     [[ "$child" =~ ^[0-9]+$ ]] && tty="$(ps -o tty= -p "$child" 2>/dev/null|tr -d ' ' || true)"
     native_session="$(dump_native_session "$pid" "/tmp/kitty-$pid" "$id")"
     [[ -n "$native_session" ]] && source=kitty_native_session
   fi
-  info=""; [[ -n "$tty" && "$tty" != '?' ]] && info="$(awk -F'|' -v t="/dev/$tty" '$1==t{print;exit}' <<< "$clients")"
+  info=""; [[ -n "$tty" && "$tty" != '?' ]] && info="$(jq -c --arg t "/dev/$tty" 'select(.tty == $t)' <<< "$clients" 2>/dev/null | head -n1)"
   # kitty's compositor process has no tty; its direct tmux-client child does.
   # Do not guess when a pre-config kitty owns multiple OS windows: without its
   # remote-control tree, that association is genuinely ambiguous.
   if [[ -z "$info" ]]; then
     mapfile -t child_ttys < <(ps -o tty= --ppid "$pid" 2>/dev/null | tr -d ' ' | awk '$0!="?" && $0!="" {print "/dev/" $0}')
-    if ((${#child_ttys[@]} == 1)); then info="$(awk -F'|' -v t="${child_ttys[0]}" '$1==t{print;exit}' <<< "$clients")"; fi
+    if ((${#child_ttys[@]} == 1)); then info="$(jq -c --arg t "${child_ttys[0]}" 'select(.tty == $t)' <<< "$clients" 2>/dev/null | head -n1)"; fi
   fi
-  session=""; index=""; name=""; [[ -n "$info" ]] && IFS='|' read -r _ session index name <<< "$info"
-  jq -cn --arg id "$id" --argjson d "$desk" --argjson x "$x" --argjson y "$y" --argjson w "$w" --argjson h "$h" --arg cwd "${cwd:-$HOME}" --arg s "$session" --arg i "$index" --arg n "$name" --arg source "$source" --arg native_session "$native_session" '{kwin_window_id:$id,virtual_desktop:$d,position:{x:$x,y:$y},size:{width:$w,height:$h},cwd:$cwd,is_tmux:($s!=""),tmux_session:($s|if .=="" then null else . end),tmux_window_index:($i|if .=="" then null else tonumber end),tmux_window_name:($n|if .=="" then null else . end),native_session:(if $native_session=="" then null else $native_session end),identity_source:$source}' >> "$rows"
+  session=""; session_group=""; session_id=""; index=""; window_id=""; name=""; pane_cwd=""
+  if [[ -n "$info" ]]; then
+    session="$(jq -r '.tmux_session // empty' <<< "$info")"
+    session_group="$(jq -r '.tmux_session_group // empty' <<< "$info")"
+    session_id="$(jq -r '.tmux_session_id // empty' <<< "$info")"
+    index="$(jq -r '.tmux_window_index // empty' <<< "$info")"
+    window_id="$(jq -r '.tmux_window_id // empty' <<< "$info")"
+    name="$(jq -r '.tmux_window_name // empty' <<< "$info")"
+    pane_cwd="$(jq -r '.pane_cwd // empty' <<< "$info")"
+    command_name="$(jq -r '.command // empty' <<< "$info")"
+  fi
+  pane=""; agent_identity="null"; receipt_assurance="none"
+  if [[ -n "$session" && "$index" =~ ^[0-9]+$ ]]; then
+    pane="${session}:${index}.0"
+    [[ "$session_group" == main ]] && pane="main:${index}.0"
+    agent_identity="$(assistant_identity_for_pane "$pane")"
+    if [[ "$agent_identity" != "null" ]]; then
+      receipt_assurance="agent-sidecar"
+    else
+      receipt_assurance="shell-weaker-index-cwd-command-name"
+    fi
+  fi
+  jq -cn --arg id "$id" --argjson d "$desk" --argjson x "$x" --argjson y "$y" --argjson w "$w" --argjson h "$h" --arg cwd "${cwd:-$HOME}" --arg pane_cwd "${pane_cwd:-${cwd:-$HOME}}" --arg s "$session" --arg sid "$session_id" --arg i "$index" --arg wid "$window_id" --arg n "$name" --arg cmd "${command_name:-$kitty_command}" --arg title "$window_title" --arg source "$source" --arg native_session "$native_session" --arg assurance "$receipt_assurance" --argjson agent_identity "$agent_identity" '{kwin_window_id:$id,virtual_desktop:$d,position:{x:$x,y:$y},size:{width:$w,height:$h},cwd:$cwd,is_tmux:($s!=""),tmux_session:($s|if .=="" then null else . end),tmux_window_index:($i|if .=="" then null else tonumber end),tmux_window_name:($n|if .=="" then null else . end),native_session:(if $native_session=="" then null else $native_session end),identity_source:$source,identity_receipt:{assurance:$assurance,agent_identity:$agent_identity,shell_identity:{tmux_window_index:($i|if .=="" then null else tonumber end),cwd:$pane_cwd,command:($cmd|if .=="" then null else . end),tmux_window_name:($n|if .=="" then null else . end)},capture_metadata:{tmux_session_id:($sid|if .=="" then null else . end),tmux_window_id:($wid|if .=="" then null else . end),kitty_cwd:$cwd,title:($title|if .=="" then null else . end),native_session:(if $native_session=="" then null else $native_session end),source:$source}}}' >> "$rows"
 done
 [[ -s "$rows" ]] || exit 0
 for n in 5 4 3 2; do [[ -f "$manifest.$((n-1))" ]] && mv -f "$manifest.$((n-1))" "$manifest.$n"; done

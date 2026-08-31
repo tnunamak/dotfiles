@@ -60,6 +60,12 @@ section "tmux-resurrect save"
 if (( ! tmux_server_responsive )); then
   printf 'skipping tmux-resurrect save because tmux server is not responsive; preserving previous last save\n'
 elif [[ -x "$SAVE_SCRIPT" ]]; then
+  # A normal periodic save may legitimately follow deliberate window cleanup.
+  # Shutdown is different: independent user scopes can already be stopping, so
+  # require a near-complete topology before advancing the transactional
+  # last-good generation. This would have rejected the incident's 191 -> 59
+  # stop-time collapse while leaving the regular 20% policy unchanged.
+  export TMUX_RESURRECT_SAVE_MIN_PCT=80
   timeout 300s "$SAVE_SCRIPT"
   save_rc=$?
   printf 'save_rc=%s save_script=%s\n' "$save_rc" "$SAVE_SCRIPT"

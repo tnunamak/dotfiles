@@ -27,9 +27,14 @@ run_case() {
     'cp "$HOME/new.json" "$HOME/.tmux/resurrect/assistant-sessions.json"' \
     >"$home/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
   chmod +x "$home/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
-  HOME="$home" bash "$GUARD"
+  layout="$home/.tmux/resurrect/tmux_resurrect_exact_${old}_${new}.txt"
+  printf 'pane\tmain:0.0\t%s\t1\tbash\n' "$home" >"$layout"
+  ln -sfn tmux_resurrect_old.txt "$home/.tmux/resurrect/last"
+  HOME="$home" bash "$GUARD" "$layout"
   actual="$(jq '.sessions | length' "$home/.tmux/resurrect/assistant-sessions.json")"
   [[ "$actual" == "$expected" ]] || { echo "expected $old -> $new to leave $expected, got $actual" >&2; return 1; }
+  [[ -f "$home/.tmux/resurrect/backups/assistant-sessions-exact_${old}_${new}.json" ]] ||
+    { echo "assistant backup did not use exact layout argument timestamp" >&2; return 1; }
   if [[ "$expected" == "$old" ]]; then
     grep -q 'CLIFF GUARD: REFUSING' "$home/.tmux/resurrect/assistant-save.log"
   fi

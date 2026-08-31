@@ -11,6 +11,7 @@ WORK="$(mktemp -d "${HOME}/.tmp/tmux-agent-resume-test.XXXXXX")"
 HOME_DIR="${WORK}/home"
 BIN_DIR="${WORK}/bin"
 AGENT_LOG="${WORK}/agent.log"
+AGENT_ENV_LOG="${WORK}/agent-env.log"
 MCP_LOG="${WORK}/mcp.log"
 PLUGIN_LOG="${WORK}/plugin.log"
 
@@ -77,6 +78,7 @@ EOF
 cat >"${BIN_DIR}/claude" <<'EOF'
 #!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$TEST_AGENT_LOG"
+printf 'claude_config=%s\n' "${CLAUDE_CONFIG_DIR:-}" >>"$TEST_AGENT_ENV_LOG"
 mcp-searxng
 EOF
 cat >"${BIN_DIR}/mcp-searxng" <<'EOF'
@@ -93,7 +95,7 @@ chmod +x "${BIN_DIR}/tmux" "${BIN_DIR}/codex" "${BIN_DIR}/claude" "${BIN_DIR}/mc
 export HOME="$HOME_DIR"
 export XDG_STATE_HOME="${HOME_DIR}/.local/state"
 export PATH="${BIN_DIR}:${PATH}"
-export REAL_TMUX TEST_TMUX_SOCKET="$SOCKET" TEST_AGENT_LOG="$AGENT_LOG" TEST_MCP_LOG="$MCP_LOG" TEST_PLUGIN_LOG="$PLUGIN_LOG"
+export REAL_TMUX TEST_TMUX_SOCKET="$SOCKET" TEST_AGENT_LOG="$AGENT_LOG" TEST_AGENT_ENV_LOG="$AGENT_ENV_LOG" TEST_MCP_LOG="$MCP_LOG" TEST_PLUGIN_LOG="$PLUGIN_LOG"
 export TMUX_AGENT_RESUME_BIN="$CLI"
 export TMUX_AGENT_RESUME_TMUX="${BIN_DIR}/tmux"
 export TMUX_AGENT_RESUME_NOW_ISO='2026-07-13T12:00:00Z'
@@ -101,7 +103,12 @@ export TMUX_AGENT_RESUME_NOW_ISO='2026-07-13T12:00:00Z'
 # Every test-side tmux command uses this unique -L socket, including cleanup.
 "${REAL_TMUX}" -L "$SOCKET" new-session -d -s main 'exec bash'
 "${REAL_TMUX}" -L "$SOCKET" new-window -t main:1 'exec bash'
+"${REAL_TMUX}" -L "$SOCKET" new-window -t main:2 'exec bash'
+"${REAL_TMUX}" -L "$SOCKET" new-window -t main:3 'exec bash'
+"${REAL_TMUX}" -L "$SOCKET" new-window -t main:4 'exec bash'
+"${REAL_TMUX}" -L "$SOCKET" new-window -t main:5 'exec bash'
 "${REAL_TMUX}" -L "$SOCKET" new-session -d -s main-9 -t =main
+mkdir -p "${HOME_DIR}/.claude-a" "${HOME_DIR}/.claude-b"
 
 cat >"${HOME_DIR}/.tmux/resurrect/assistant-sessions.json" <<'JSON'
 {
@@ -109,10 +116,15 @@ cat >"${HOME_DIR}/.tmux/resurrect/assistant-sessions.json" <<'JSON'
   "sessions": [
     {"pane":"main:0.0","tool":"codex","session_id":"codex-session","cwd":"/tmp","cli_args":""},
     {"pane":"main:1.0","tool":"claude","session_id":"claude-session","cwd":"/tmp","cli_args":"--model test"},
+    {"pane":"main:2.0","tool":"claude","session_id":"claude-prompt-session","cwd":"/tmp","cli_args":"--effort high --name moksha -- Read-only senior migration review."},
+    {"pane":"main:3.0","tool":"claude","session_id":"shared-claude-session","cwd":"/tmp","cli_args":"--model test","env":{"CLAUDE_CONFIG_DIR":"__HOME__/.claude-a","ANTHROPIC_API_KEY":"must-not-render"}},
+    {"pane":"main:4.0","tool":"claude","session_id":"shared-claude-session","cwd":"/tmp","cli_args":"--model test","env":{"CLAUDE_CONFIG_DIR":"__HOME__/.claude-b","OPENAI_API_KEY":"must-not-render"}},
+    {"pane":"main:5.0","tool":"claude","session_id":"invalid-claude-config","cwd":"/tmp","cli_args":"--model test","env":{"CLAUDE_CONFIG_DIR":"/etc/claude"}},
     {"pane":"main:99.0","tool":"codex","session_id":"absent-session","cwd":"/tmp","cli_args":""}
   ]
 }
 JSON
+sed -i "s#__HOME__#${HOME_DIR}#g" "${HOME_DIR}/.tmux/resurrect/assistant-sessions.json"
 cat >"${HOME_DIR}/.tmux/resurrect/tmux_resurrect_fixture.txt" <<'EOF'
 grouped_session	main-9	main	:0	:1
 EOF
@@ -129,7 +141,10 @@ bash "$POST_RESTORE"
 
 export TMUX_AGENT_RESUME_NOW=1000
 status="$($CLI status --json)"
-assert_json '.entries | length == 3 and all(.[]; .state == "deferred" and .reason == "no explicit resume lease")' <<<"$status"
+assert_json '.entries | length == 7 and all(.[]; .state == "deferred" and .reason == "no explicit resume lease")' <<<"$status"
+assert_json '.entries[] | select(.pane == "main:3.0") | .env == {CLAUDE_CONFIG_DIR: "'$HOME_DIR'/.claude-a"}' <<<"$status"
+assert_json '.entries[] | select(.pane == "main:4.0") | .env == {CLAUDE_CONFIG_DIR: "'$HOME_DIR'/.claude-b"}' <<<"$status"
+assert_json '[.entries[].env | objects | keys[]] | all(. == "CLAUDE_CONFIG_DIR")' <<<"$status"
 plan="$($CLI plan --json)"
 assert_json '(.entries | all(.[]; .action == "defer")) and .orphan_candidates == []' <<<"$plan"
 
@@ -192,6 +207,24 @@ $CLI resume main:1.0 >/dev/null
 wait_for_file_lines "$AGENT_LOG" 2
 wait_for_file_lines "$MCP_LOG" 2
 grep -q '^claude --model test --resume claude-session$' "$AGENT_LOG" || fail 'selected resume command was not selected correctly'
+$CLI resume main:2.0 >/dev/null
+wait_for_file_lines "$AGENT_LOG" 3
+wait_for_file_lines "$MCP_LOG" 3
+grep -q '^claude --effort high --name moksha --resume claude-prompt-session -- Read-only senior migration review\.$' "$AGENT_LOG" \
+  || fail 'claude resume command was not inserted before prompt delimiter'
+$CLI resume main:3.0 >/dev/null
+$CLI resume main:4.0 >/dev/null
+wait_for_file_lines "$AGENT_LOG" 5
+wait_for_file_lines "$AGENT_ENV_LOG" 4
+grep -q '^claude_config=/.*\.claude-a$' "$AGENT_ENV_LOG" || fail 'first CLAUDE_CONFIG_DIR was not restored'
+grep -q '^claude_config=/.*\.claude-b$' "$AGENT_ENV_LOG" || fail 'second CLAUDE_CONFIG_DIR was not restored'
+if grep -q 'API_KEY\|must-not-render' "$AGENT_LOG" "$AGENT_ENV_LOG"; then
+  fail 'secret-looking sidecar env value was rendered to a resume command'
+fi
+if $CLI resume main:5.0 >/dev/null 2>&1; then
+  fail 'selected resume succeeded with an invalid CLAUDE_CONFIG_DIR'
+fi
+[[ "$(wc -l <"$AGENT_LOG")" == 5 ]] || fail 'invalid CLAUDE_CONFIG_DIR launched an agent'
 
 # Expiry is deterministic and fail-closed even if a prior lease was valid.
 detach_client
@@ -201,14 +234,14 @@ export TMUX_AGENT_RESUME_NOW=2003
 plan="$($CLI plan --json)"
 assert_json '.entries[] | select(.pane == "main:1.0") | .state == "expired" and .reason == "lease expired"' <<<"$plan"
 $CLI apply --execute-auto >/dev/null
-[[ "$(wc -l <"$AGENT_LOG")" == 2 ]] || fail 'expired lease launched an agent'
+[[ "$(wc -l <"$AGENT_LOG")" == 5 ]] || fail 'expired lease launched an agent'
 
 # Headless operation is a separate explicit orchestration path, not an inferred fallback.
 export TMUX_AGENT_RESUME_NOW=3000
 $CLI grant main:1.0 --auto --ttl 10 --allow-headless --owner waspflow >/dev/null
 plan="$($CLI plan --json)"
 assert_json '.entries[] | select(.pane == "main:1.0") | .state == "eligible" and .lease.allow_headless == true and .lease.owner == "waspflow"' <<<"$plan"
-assert_json '.mode == "report-only" and (.candidates | length == 1) and .candidates[0].pane == "main:0.0"' <<<"$($CLI orphans --json)"
+assert_json '.mode == "report-only" and (.candidates | length == 5) and ([.candidates[].pane] | sort == ["main:0.0", "main:2.0", "main:3.0", "main:4.0", "main:5.0"])' <<<"$($CLI orphans --json)"
 
 # Cold boot stays inert until the first human client attaches. That attendance
 # consumes a one-shot marker and uses headless boot-restore leases for every
@@ -216,15 +249,15 @@ assert_json '.mode == "report-only" and (.candidates | length == 1) and .candida
 $CLI record-deferred >/dev/null
 $CLI mark-boot-restore >/dev/null
 [[ -f "${HOME_DIR}/.local/state/tmux-agent-resume/boot-restore-pending.json" ]] || fail 'boot restore marker was not written'
-[[ "$(wc -l <"$AGENT_LOG")" == 2 ]] || fail 'marking boot restore launched an agent'
+[[ "$(wc -l <"$AGENT_LOG")" == 5 ]] || fail 'marking boot restore launched an agent'
 attach_client
 attended="$($CLI attend-boot-restore)"
-assert_json '.mode == "attended-boot-restore" and (.grants.granted | length == 3) and (.applied.applied | length == 2)' <<<"$attended"
-wait_for_file_lines "$AGENT_LOG" 4
-wait_for_file_lines "$MCP_LOG" 4
+assert_json '.mode == "attended-boot-restore" and (.grants.granted | length == 7) and (.applied.applied | length == 5) and (.applied.skipped | length == 1)' <<<"$attended"
+wait_for_file_lines "$AGENT_LOG" 10
+wait_for_file_lines "$MCP_LOG" 10
 [[ ! -f "${HOME_DIR}/.local/state/tmux-agent-resume/boot-restore-pending.json" ]] || fail 'attended restore marker was not consumed'
 second_attended="$($CLI attend-boot-restore)"
 [[ -z "$second_attended" ]] || fail 'attended restore triggered more than once'
-[[ "$(wc -l <"$AGENT_LOG")" == 4 && "$(wc -l <"$MCP_LOG")" == 4 ]] || fail 'attended restore dispatched more than once'
+[[ "$(wc -l <"$AGENT_LOG")" == 10 && "$(wc -l <"$MCP_LOG")" == 10 ]] || fail 'attended restore dispatched more than once'
 
 printf 'PASS: tmux agent resume leases use deferred-by-default recovery on isolated socket %s\n' "$SOCKET"

@@ -20,8 +20,9 @@
 # Most of the original script confused these two, so the cliff guard was
 # always one save behind. The new script consumes $1 explicitly.
 #
-# The guard only reverts on sudden cliffs (≥80% drop). Gradual session-count
-# decline from closing windows is fine.
+# The guard only reverts on sudden cliffs. Normal periodic saves use the
+# legacy 20% floor; stop-time saves can export TMUX_RESURRECT_SAVE_MIN_PCT=80.
+# Gradual session-count decline from closing windows is fine.
 set -euo pipefail
 
 RESURRECT_DIR="${HOME}/.tmux/resurrect"
@@ -32,7 +33,7 @@ PREV_LAST_FILE="${RESURRECT_DIR}/.prev-last-target"
 LOG="${RESURRECT_DIR}/post-save-backup.log"
 MAX_BACKUPS=10
 MAX_LIVE_SAVES=50
-CLIFF_THRESHOLD_PCT=20    # new save must be ≥20% of previous to be accepted
+CLIFF_THRESHOLD_PCT="${TMUX_RESURRECT_SAVE_MIN_PCT:-20}"    # new save must be at least this percent of previous to be accepted
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
@@ -126,11 +127,19 @@ if (( revert )); then
   # filename so save.sh's symlink update works) but with the previous save's
   # content. Then `last` ends up pointing at a file with the previous state's
   # content but the new file's name. Continuity preserved.
-  log "CLIFF GUARD: new save $new_name has $new_panes panes vs prev $prev_name had $prev_panes — overwriting new save with previous content"
+  log "CLIFF GUARD: new save $new_name has $new_panes panes vs prev $prev_name had $prev_panes; overwriting new save with previous content"
   cp "$prev_save" "$new_save"
   # Recompute (since $new_save now has prev's content)
   new_size=$(stat -c %s "$new_save" 2>/dev/null)
   new_panes=$prev_panes
+fi
+
+if [[ -n "${TMUX_RESURRECT_LAYOUT_STATUS_FILE:-}" ]]; then
+  if (( revert )); then
+    printf 'rejected\n' >"$TMUX_RESURRECT_LAYOUT_STATUS_FILE"
+  else
+    printf 'accepted\n' >"$TMUX_RESURRECT_LAYOUT_STATUS_FILE"
+  fi
 fi
 
 # --- Always: backup the (possibly cliff-guarded) new save into backups/ ---

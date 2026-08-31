@@ -61,13 +61,15 @@ applied=0
 # logged. Fix resolves #{session_group} and uses the base name when
 # non-empty.
 # Patch 2a: canonicalize. Replaces the upstream single-line list-panes call with
-# a per-pane loop that resolves #{session_group} and substitutes the base name.
+# a per-pane loop that reads #{session_group} in the same list-panes row and
+# substitutes the base name. Do not query `display-message -t "$session_name"`:
+# bare pane targets are ambiguous with window names (incident 2026-08-30: the
+# `waspflow` session resolved to a `main` window also named `waspflow`).
 if ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE" &&
    grep -Eq 'tmux list-panes -a -F "#\{session_name\}:#\{window_index\}\.#\{pane_index\}\|#\{pane_pid\}\|#\{pane_current_path\}(\|#\{pane_tty\})?" >"\$PANE_FILE"' "$ASSISTANT_SAVE"; then
   perl -0777 -pe '
     my $replacement = q~	>"$PANE_FILE"
-	while IFS='\''|'\'' read -r session_name window_index pane_index pane_pid pane_cwd pane_tty; do
-		session_group=$(tmux display-message -t "$session_name" -p '\''#{session_group}'\'' 2>/dev/null || true)
+	while IFS='\''|'\'' read -r session_name session_group window_index pane_index pane_pid pane_cwd pane_tty; do
 		if [ -n "$session_group" ]; then
 			session_name="$session_group"
 		fi
@@ -87,7 +89,7 @@ if ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSIST
 		else
 			printf '\''%s:%s.%s|%s|%s\n'\'' "$session_name" "$window_index" "$pane_index" "$pane_pid" "$pane_cwd" >>"$PANE_FILE"
 		fi
-	done < <(tmux list-panes -a -F "#{session_name}|#{window_index}|#{pane_index}|#{pane_pid}|#{pane_current_path}|#{pane_tty}")
+	done < <(tmux list-panes -a -F "#{session_name}|#{session_group}|#{window_index}|#{pane_index}|#{pane_pid}|#{pane_current_path}|#{pane_tty}")
 	sort -u -o "$PANE_FILE" "$PANE_FILE"~;
     s~\ttmux list-panes -a -F "#\{session_name\}:#\{window_index\}\.#\{pane_index\}\|#\{pane_pid\}\|#\{pane_current_path\}(?:\|#\{pane_tty\})?" >"\$PANE_FILE"~$replacement~ or die "patch 2a list-panes line not found";
   ' "$ASSISTANT_SAVE" >"${ASSISTANT_SAVE}.artmp"
@@ -148,6 +150,104 @@ if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTAN
     applied=$((applied + 1))
   else
     log "warning: patch 2c NOT applied cleanly (marker missing or bash -n failed) — review $ASSISTANT_SAVE"
+  fi
+fi
+
+# Patch 2e: migrate installations carrying the older Patch 2a implementation.
+# Its bare `display-message -t "$session_name"` target can resolve an unrelated
+# window with the same name and return the wrong session group.
+if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTANT_SAVE"; then
+  awk '
+    index($0, "while IFS=") && index($0, "read -r session_name window_index") {
+      sub(/read -r session_name window_index/, "read -r session_name session_group window_index")
+    }
+    index($0, "session_group=$(tmux display-message -t \"$session_name\"") { next }
+    index($0, "done < <(tmux list-panes -a -F") {
+      sub(/#\{session_name\}\|#\{window_index\}/, "#{session_name}|#{session_group}|#{window_index}")
+    }
+    { print }
+  ' "$ASSISTANT_SAVE" >"${ASSISTANT_SAVE}.artmp"
+  if ! grep -qF 'session_group=$(tmux display-message -t "$session_name"' "${ASSISTANT_SAVE}.artmp" &&
+     grep -qF 'read -r session_name session_group window_index' "${ASSISTANT_SAVE}.artmp" &&
+     grep -qF '#{session_name}|#{session_group}|#{window_index}' "${ASSISTANT_SAVE}.artmp" &&
+     bash -n "${ASSISTANT_SAVE}.artmp" 2>/dev/null; then
+    cat "${ASSISTANT_SAVE}.artmp" >"$ASSISTANT_SAVE"
+    rm -f "${ASSISTANT_SAVE}.artmp"
+    log "applied patch 2e: removed ambiguous bare-session target lookup"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 2e NOT applied cleanly — file left untouched"
+    rm -f "${ASSISTANT_SAVE}.artmp"
+  fi
+fi
+
+# Patch 2d: capture the one Claude environment value needed for faithful
+# resume. Some Claude panes run with a per-session CLAUDE_CONFIG_DIR (for
+# example ~/.claude-odl), and resuming the right session id in the right cwd is
+# still wrong if the resumed process reads the default config root. Do not
+# serialize process environments broadly; read only CLAUDE_CONFIG_DIR from
+# /proc/<pid>/environ and only keep absolute paths under $HOME. Invalid or
+# absent values become null and resume fails closed on read if a sidecar later
+# contains an invalid value.
+if [[ -f "$ASSISTANT_SAVE" ]] &&
+   ! grep -qF 'AR-Patch2d' "$ASSISTANT_SAVE" &&
+   grep -qF 'resolve_pane_candidates() {' "$ASSISTANT_SAVE" &&
+   grep -qF 'env_json="$cached_env"' "$ASSISTANT_SAVE"; then
+  awk '
+    /^# Resolve all detected assistant candidates for one pane and emit at most one$/ && !fn_done {
+      print "claude_config_env_json() {"
+      print "\tlocal pid=\"$1\" value=\"\" owner_home=\"${HOME%/}\""
+      print "\t[ -n \"$pid\" ] || { echo \"null\"; return 0; }"
+      print "\t[ -r \"/proc/$pid/environ\" ] || { echo \"null\"; return 0; }"
+      print "\tvalue=$(tr \"\\0\" \"\\n\" <\"/proc/$pid/environ\" 2>/dev/null | sed -n \"s/^CLAUDE_CONFIG_DIR=//p\" | head -n1 || true)"
+      print "\t[ -n \"$value\" ] || { echo \"null\"; return 0; }"
+      print "\tcase \"$value\" in"
+      print "\t/*) ;;"
+      print "\t*) echo \"null\"; return 0 ;;"
+      print "\tesac"
+      print "\tcase \"$value\" in"
+      print "\t\"$owner_home\"|\"$owner_home\"/*) ;;"
+      print "\t*) echo \"null\"; return 0 ;;"
+      print "\tesac"
+      print "\tjq -cn --arg v \"$value\" '\''{CLAUDE_CONFIG_DIR: $v}'\''"
+      print "}"
+      print ""
+      fn_done=1
+    }
+    /^\t\t\t\t# Fallback: parse --model from CLI args if not in state file\.$/ && !main_done {
+      print "\t\t\t\t# AR-Patch2d: allowlist exactly CLAUDE_CONFIG_DIR for Claude. Never"
+      print "\t\t\t\t# serialize full process env or secret-bearing variables."
+      print "\t\t\t\tif [ \"$cand_tool\" = \"claude\" ]; then"
+      print "\t\t\t\t\t_env_from_proc=$(claude_config_env_json \"$cand_pid\")"
+      print "\t\t\t\t\tif [ \"$_env_from_proc\" != \"null\" ]; then"
+      print "\t\t\t\t\t\tenv_json=\"$_env_from_proc\""
+      print "\t\t\t\t\tfi"
+      print "\t\t\t\tfi"
+      main_done=1
+    }
+    /^\t\t# Fallback: parse --model from CLI args if not in state file$/ && !emit_done {
+      print "\t\t# AR-Patch2d: allowlist exactly CLAUDE_CONFIG_DIR for Claude. Never"
+      print "\t\t# serialize full process env or secret-bearing variables."
+      print "\t\tif [ \"$tool\" = \"claude\" ]; then"
+      print "\t\t\t_env_from_proc=$(claude_config_env_json \"$cpid\")"
+      print "\t\t\tif [ \"$_env_from_proc\" != \"null\" ]; then"
+      print "\t\t\t\tenv_json=\"$_env_from_proc\""
+      print "\t\t\tfi"
+      print "\t\tfi"
+      emit_done=1
+    }
+    { print }
+  ' "$ASSISTANT_SAVE" >"${ASSISTANT_SAVE}.artmp"
+  if grep -qF 'AR-Patch2d' "${ASSISTANT_SAVE}.artmp" &&
+     grep -qF 'CLAUDE_CONFIG_DIR' "${ASSISTANT_SAVE}.artmp" &&
+     bash -n "${ASSISTANT_SAVE}.artmp" 2>/dev/null; then
+    cat "${ASSISTANT_SAVE}.artmp" >"$ASSISTANT_SAVE"
+    rm -f "${ASSISTANT_SAVE}.artmp"
+    log "applied patch 2d: capture allowlisted Claude config dir"
+    applied=$((applied + 1))
+  else
+    log "warning: patch 2d NOT applied cleanly (marker/config dir missing or bash -n failed) — file left untouched"
+    rm -f "${ASSISTANT_SAVE}.artmp"
   fi
 fi
 

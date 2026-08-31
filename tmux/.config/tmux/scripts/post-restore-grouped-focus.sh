@@ -11,6 +11,7 @@ set -euo pipefail
 
 RESURRECT_DIR="${HOME}/.tmux/resurrect"
 RESURRECT_FILE="${RESURRECT_DIR}/last"
+BUNDLE_CLI="${HOME}/.config/tmux/scripts/resurrect-transaction-bundle"
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-grouped-sessions"
 RESTORE_QUEUE_FILE="${STATE_DIR}/main.restore-queue"
@@ -27,6 +28,18 @@ trap 'rm -f "$queue_tmp" "$stamp_tmp"' EXIT
 : > "$queue_tmp"
 
 restored_sessions=()
+
+if [[ -x "$BUNDLE_CLI" ]]; then
+  bundle_json="$("$BUNDLE_CLI" resolve 2>/dev/null || true)"
+  if [[ -n "$bundle_json" ]]; then
+    bundle_path="$(jq -r '.path' <<<"$bundle_json")"
+    layout_name="$(jq -r '.components.layout.file' <<<"$bundle_json")"
+    bundle_layout="${bundle_path}/${layout_name}"
+    if [[ -f "$bundle_layout" ]]; then
+      RESURRECT_FILE="$bundle_layout"
+    fi
+  fi
+fi
 
 if [[ -f "$RESURRECT_FILE" ]]; then
   while IFS=$'\t' read -r line_type session_name original_session alt_window active_window _rest; do

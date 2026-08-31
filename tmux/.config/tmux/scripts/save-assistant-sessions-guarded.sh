@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Wraps tmux-assistant-resurrect's save script with two safety guards:
 #
-# 1. Cliff guard: refuse a zero save or a sudden >=80% drop from the previous
-#    sidecar. This defends against a partially restored boot clobbering a
-#    complete assistant inventory while still allowing gradual real shrinkage.
+# 1. Cliff guard: refuse a zero save or a sudden drop below the configured
+#    minimum percent of the previous sidecar. Normal periodic saves use 20%;
+#    stop-time saves can export TMUX_RESURRECT_SAVE_MIN_PCT=80.
 #
 # 2. Rotate a sidecar backup alongside each tmux-resurrect save — so if a
 #    bad save slips through (e.g. a legit "no assistants running" moment
 #    that's not a crash), we can still recover from the backup dir.
 #
-# Invoked via @resurrect-hook-post-save-all (overrides the upstream plugin's
-# setting of that same hook). Chains to the upstream save script.
+# Invoked by post-save-transaction.sh from @resurrect-hook-post-save-layout.
+# Chains to the upstream assistant save script.
 set -euo pipefail
 
 RESURRECT_DIR="${HOME}/.tmux/resurrect"
@@ -18,7 +18,8 @@ OUTPUT_FILE="${RESURRECT_DIR}/assistant-sessions.json"
 BACKUP_DIR="${RESURRECT_DIR}/backups"
 LOG_FILE="${RESURRECT_DIR}/assistant-save.log"
 UPSTREAM_SCRIPT="${HOME}/.tmux/plugins/tmux-assistant-resurrect/scripts/save-assistant-sessions.sh"
-CLIFF_THRESHOLD_PCT=20
+BUNDLE_CLI="${HOME}/.config/tmux/scripts/resurrect-transaction-bundle"
+CLIFF_THRESHOLD_PCT="${TMUX_RESURRECT_SAVE_MIN_PCT:-20}"
 
 log() {
   local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [guard] $*"
@@ -31,10 +32,6 @@ if [[ -f "$OUTPUT_FILE" ]]; then
   old_count=$(jq -r '.sessions | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
 fi
 
-# Stage the upstream save to a temp file so we can inspect before committing
-staged=$(mktemp "${OUTPUT_FILE}.new.XXXXXX")
-trap 'rm -f "$staged"' EXIT
-
 # Temporarily redirect the upstream script's output. The upstream script
 # hardcodes OUTPUT_FILE="${RESURRECT_DIR}/assistant-sessions.json". We shim
 # it by copying the real file aside, letting upstream write to the real
@@ -43,12 +40,17 @@ trap 'rm -f "$staged"' EXIT
 # Simpler approach: let upstream write in place, then check. If the check
 # fails, restore from a pre-run snapshot.
 snapshot=$(mktemp "${OUTPUT_FILE}.snap.XXXXXX")
+accepted=1
 if [[ -f "$OUTPUT_FILE" ]]; then
   cp "$OUTPUT_FILE" "$snapshot"
 fi
+trap 'rm -f "$snapshot"' EXIT
 
 rc=0
 "$UPSTREAM_SCRIPT" || rc=$?
+if (( rc != 0 )); then
+  accepted=0
+fi
 
 new_count=0
 if [[ -f "$OUTPUT_FILE" ]]; then
@@ -59,9 +61,11 @@ fi
 # Mirror post-save-backup.sh: a new sidecar below 20% of the previous count is
 # not trusted, but ordinary decreases (for example 50 -> 40) remain valid.
 if (( old_count > 0 && new_count * 100 < old_count * CLIFF_THRESHOLD_PCT )); then
-  log "CLIFF GUARD: REFUSING shrink from $old_count to $new_count sessions (below ${CLIFF_THRESHOLD_PCT}% of previous) — restoring snapshot"
+  log "CLIFF GUARD: REFUSING shrink from $old_count to $new_count sessions (below ${CLIFF_THRESHOLD_PCT}% of previous); restoring snapshot"
+  accepted=0
   if [[ -s "$snapshot" ]]; then
     mv "$snapshot" "$OUTPUT_FILE"
+    new_count=$(jq -r '.sessions | length' "$OUTPUT_FILE" 2>/dev/null || echo 0)
   else
     log "CLIFF GUARD ERROR: snapshot missing; cannot restore previous sidecar"
   fi
@@ -73,10 +77,10 @@ fi
 # back up non-empty saves so we don't waste inodes on zero-session writes.
 if (( new_count > 0 )) || (( old_count > 0 && new_count == 0 )); then
   mkdir -p "$BACKUP_DIR"
-  # Name matches the tmux save that triggered this hook, when we can find it
-  last_save="$(readlink -f "${RESURRECT_DIR}/last" 2>/dev/null || true)"
-  if [[ -n "$last_save" && -f "$last_save" ]]; then
-    ts="$(basename "$last_save" .txt | sed 's/^tmux_resurrect_//')"
+  # Name matches the exact tmux layout save that triggered this transaction.
+  layout_save="${1:-}"
+  if [[ -n "$layout_save" && -f "$layout_save" ]]; then
+    ts="$(basename "$layout_save" .txt | sed 's/^tmux_resurrect_//')"
     cp "$OUTPUT_FILE" "${BACKUP_DIR}/assistant-sessions-${ts}.json"
   fi
 
@@ -93,6 +97,35 @@ if (( new_count > 0 )) || (( old_count > 0 && new_count == 0 )); then
 
   # Keep only the last 10 timestamped backups
   ls -t "${BACKUP_DIR}"/assistant-sessions-2*.json 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+fi
+
+# Commit a transaction bundle only when this save invocation has both accepted
+# layout and accepted assistant state. This runs after the layout hook has had
+# its chance to overwrite a rejected layout cliff in-place, and after this guard
+# has either accepted or restored the assistant sidecar.
+if [[ -n "${TMUX_RESURRECT_SKIP_BUNDLE_COMMIT:-}" ]]; then
+  log "bundle commit: skipped because layout generation was rejected"
+elif (( accepted )) && [[ -x "$BUNDLE_CLI" ]]; then
+  layout_save="${1:-}"
+  if [[ -z "$layout_save" || ! -f "$layout_save" ]]; then
+    last_save="$(readlink -f "${RESURRECT_DIR}/last" 2>/dev/null || true)"
+    if [[ -n "$last_save" && -f "$last_save" ]]; then
+      layout_save="$last_save"
+      log "bundle commit: hook arg missing; fell back to last layout $(basename "$layout_save")"
+    fi
+  fi
+
+  if [[ -n "${layout_save:-}" && -f "$layout_save" && -f "$OUTPUT_FILE" ]]; then
+    if bundle_path="$("$BUNDLE_CLI" commit --layout "$layout_save" --assistant "$OUTPUT_FILE" --provenance "tmux resurrect post-save-layout transaction" 2>>"$LOG_FILE")"; then
+      log "bundle commit: accepted $(basename "$bundle_path") from layout $(basename "$layout_save") and assistant sessions=$new_count"
+    else
+      log "bundle commit: rejected or failed for layout $(basename "$layout_save")"
+    fi
+  else
+    log "bundle commit: skipped because accepted layout or assistant sidecar is missing"
+  fi
+else
+  log "bundle commit: skipped because assistant generation was rejected"
 fi
 
 exit "$rc"
