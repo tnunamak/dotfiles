@@ -1,6 +1,6 @@
 # Tmux, Kitty, and agent recovery incident - 2026-08-30
 
-Status: recovery mostly complete; an isolated cold-restore rehearsal now passes, but a real cold reboot and KWin validation are still open. Crash-consistent bundle activation, periodic saving, and strict assistant identity receipts are committed. Live installation remains owner-gated. Do not treat a matching tmux window number as proof of identity.
+Status: recovery mostly complete; an isolated cold-restore rehearsal now passes, but a real cold reboot and KWin validation are still open. Crash-consistent bundle activation, periodic saving, and strict assistant identity receipts are committed and stowed. `tmux-restore.service` is active; the periodic timer is enabled but deliberately not started until the Codex hook is trusted and pre-hook sessions have receipts. Do not treat a matching tmux window number as proof of identity.
 
 ## Evidence
 
@@ -53,6 +53,7 @@ This is the target behavior after the fixes.
 - Assistant sidecars must pass a strict PID-bound provider/session identity gate before a transaction can advance. Cwd history or a provider name found only in another process's arguments is discovery evidence, not identity proof.
 - Codex uses its supported `SessionStart` hook to record the documented session ID plus the nearest native Codex PID, its immediate recognized Node launcher PID, and each process's Linux start ticks. Nested Codex sessions must not tag an outer Codex process. Existing Codex processes that started before the hook cannot be backfilled by guessing; saves fail closed until those processes resume or restart with a receipt.
 - Claude's upstream PID-named runtime receipt is accepted only when its file mtime is not older than that PID generation's `/proc` start time. The incident audit found 43 fresh receipts and two stale files whose PIDs had been reused; the old filename-and-PID check would have accepted those stale files.
+- When the upstream saver records a live `setsid --wait` wrapper PID, the validator accepts it only if the wrapper owns exactly one rootmost branch for the saved provider and that descendant proves the saved session with its own PID-bound receipt. Node and its native Codex child are one branch; sibling provider branches reject as ambiguous.
 
 ## Current Recovery State
 
@@ -83,7 +84,9 @@ This is the target behavior after the fixes.
 - Isolated cold-restore rehearsal passed: `test_tmux_systemd_restore_bundle.sh` restored the resolved bundle on an isolated tmux socket, ignored newer raw files, and refused corrupt initialized transaction state; the desktop transaction rehearsal also passed activation and repair checks. A real cold reboot and live KWin validation remain open.
 - Verified together in the final scoped gate: desktop restore target selection, native Kitty sessions, and the SIGWINCH resend path all pass their integration tests.
 - Committed as `468e446`: crash-consistent transaction activation, live-server no-op preservation, native-session path validation, interruption repair tests, and production-state isolation for the native Kitty integration test.
-- Committed as `be7e162` and `e129af6`: the strict PID-bound assistant identity gate, general Codex `SessionStart` receipts, and independent periodic saver/timer. The complete scoped suite passes, including `test_codex_sessionstart_receipt.sh`, `test_tmux_periodic_save.sh`, `test_setup_tmux_periodic_save_install.sh`, and `test_tmux_assistant_identity_gate.sh`. Live installation and a real reboot remain unverified.
+- Committed as `be7e162` and `e129af6`: the strict PID-bound assistant identity gate, general Codex `SessionStart` receipts, and independent periodic saver/timer. The complete scoped suite passes, including `test_codex_sessionstart_receipt.sh`, `test_tmux_periodic_save.sh`, `test_setup_tmux_periodic_save_install.sh`, and `test_tmux_assistant_identity_gate.sh`. At commit time, live installation and a real reboot remained unverified.
+- Committed as `9fe58d3`: strict validation for the `setsid --wait` wrapper PIDs produced by `tmux-agent-resume`. A production dry probe passed all 17 wrapper rows and then failed closed at an older Waspflow Codex process with no pre-existing PID-bound receipt.
+- Live staged deployment: Codex and tmux files are stowed, the user manager has reloaded the units, the timer is enabled but inactive, and `tmux-restore.service` is active. Starting restore against the live server left the `last` pointer and desktop activation receipt unchanged, proving the pre-activation live-pane gate in production. Hook trust, receipt migration for older Codex sessions, timer start, and a real reboot remain open.
 - Still needs operational follow-up: Daisy/Pi provisioning across Node/NVM updates.
 
 ## Completion Gates
