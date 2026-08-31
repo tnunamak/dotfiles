@@ -69,6 +69,39 @@ cleanup_activation_temps() {
   [[ -n "$plan" ]] && rm -f "$plan"
 }
 
+activation_plan_destination_is_safe() {
+  local dest="$1" parent base
+  parent="${dest%/*}"
+  base="${dest##*/}"
+  [[ ( "$parent" == "$RESURRECT_DIR" && ( "$base" == layout-* || "$base" == assistant-sessions.json ) ) ||
+     ( "$parent" == "$DESKTOP_STATE_DIR" && "$base" == manifest.json ) ||
+     "$parent" == "$DESKTOP_STATE_DIR/kitty-sessions" ]]
+}
+
+cleanup_stale_activation_artifacts() {
+  local plan tmp dest
+  # Plans are our only authority for a staged-file temporary path. Do not
+  # glob-delete destination temps: another tool may use that naming pattern.
+  while IFS= read -r -d '' plan; do
+    while IFS=$'\t' read -r tmp dest; do
+      [[ -n "$tmp" && -n "$dest" ]] || continue
+      if activation_plan_destination_is_safe "$dest" && [[ "$tmp" == "$dest".tmp.* ]]; then
+        rm -f -- "$tmp"
+      fi
+    done <"$plan"
+    rm -f -- "$plan"
+  done < <(find "$RESURRECT_DIR" -maxdepth 1 -type f -name '.bundle-activation-plan.*' -print0)
+  while IFS= read -r -d '' tmp; do
+    rm -f -- "$tmp"
+  done < <(find "$RESURRECT_DIR" -maxdepth 1 -type l -name '.last.tmp.*' -print0)
+  if [[ -d "$DESKTOP_STATE_DIR" ]]; then
+    while IFS= read -r -d '' tmp; do
+      rm -f -- "$tmp"
+    done < <(find "$DESKTOP_STATE_DIR" -maxdepth 1 -type f \
+      \( -name '.bundle-activation.json.tmp.*' -o -name '.no-desktop-receipt.json.tmp.*' \) -print0)
+  fi
+}
+
 count_save_panes() {
   local save_file="$1"
   local panes
@@ -115,13 +148,14 @@ transaction_state_initialized() {
 }
 
 activate_bundle_for_restore() {
-  local bundle_json="$1" bundle_id bundle_path layout_name assistant_name layout_path assistant_path desktop_status desktop_file desktop_hash desktop_path native_row native_file native_hash native_path native_activation staged_plan staged_receipt receipt_path staged_last_link
+  local bundle_json="$1" bundle_id bundle_path layout_name assistant_name layout_path assistant_path desktop_status desktop_file desktop_hash desktop_path native_row native_file native_hash native_path native_activation claimed_native_activation staged_plan staged_receipt receipt_path staged_last_link committed_files
   bundle_id="$(jq -r '.id' <<<"$bundle_json")"
   bundle_path="$(jq -r '.path' <<<"$bundle_json")"
   layout_name="$(jq -r '.components.layout.file' <<<"$bundle_json")"
   assistant_name="$(jq -r '.components.assistant.file // empty' <<<"$bundle_json")"
   layout_path="${bundle_path}/${layout_name}"
   [[ -f "$layout_path" ]] || return 1
+  cleanup_stale_activation_artifacts
   staged_plan="$(mktemp "${RESURRECT_DIR}/.bundle-activation-plan.XXXXXX")"
   staged_receipt=""
   staged_last_link=""
@@ -143,11 +177,13 @@ activate_bundle_for_restore() {
     while IFS= read -r native_row; do
       native_file="$(jq -r '.file' <<<"$native_row")"
       native_hash="$(jq -r '.sha256' <<<"$native_row")"
-      native_activation="$(jq -r '.activation_path' <<<"$native_row")"
+      claimed_native_activation="$(jq -r '.activation_path' <<<"$native_row")"
       native_path="${bundle_path}/${native_file}"
       [[ -f "$native_path" ]] || return 1
       [[ "$(sha256sum "$native_path" | awk '{print $1}')" == "$native_hash" ]] || return 1
-      [[ "$native_activation" == "$DESKTOP_STATE_DIR"/kitty-sessions/* ]] || return 1
+      [[ "$native_file" =~ ^[A-Za-z0-9._-]+$ && "$native_file" != . && "$native_file" != .. ]] || return 1
+      native_activation="$DESKTOP_STATE_DIR/kitty-sessions/$native_file"
+      [[ "$claimed_native_activation" == "$native_activation" ]] || return 1
       stage_copy_to_plan "$native_path" "$native_activation" "$staged_plan" || return 1
     done < <(jq -c '.components.desktop.native_sessions[]?' <<<"$bundle_json")
     stage_copy_to_plan "$desktop_path" "$DESKTOP_STATE_DIR/manifest.json" "$staged_plan" || return 1
@@ -178,13 +214,28 @@ activate_bundle_for_restore() {
   fi
 
   rm -f "$DESKTOP_STATE_DIR/.bundle-activation.json" "$DESKTOP_STATE_DIR/.no-desktop-receipt.json"
+  fsync_path "$DESKTOP_STATE_DIR" || return 1
+  # This is deliberately not a multi-directory atomic commit. The receipt is
+  # the desktop commit marker: an interruption after any raw replacement leaves
+  # no receipt, so desktop restore fails closed. A later activation recopies
+  # every raw file from the immutable bundle and writes the receipt last.
+  committed_files=0
   while IFS=$'\t' read -r tmp dest; do
     [[ -n "$tmp" && -n "$dest" ]] || continue
     commit_staged_file "$tmp" "$dest" || return 1
+    committed_files=$((committed_files + 1))
+    if [[ "${TMUX_RESURRECT_ACTIVATION_FAIL_AFTER_COMPONENT:-}" == "$committed_files" ]]; then
+      log "ERROR: injected activation failure after component $committed_files for bundle $bundle_id"
+      return 1
+    fi
   done <"$staged_plan"
   mv -Tf "$staged_last_link" "$RESURRECT_DIR/last" || return 1
   staged_last_link=""
   fsync_path "$RESURRECT_DIR" || return 1
+  if [[ -n "${TMUX_RESURRECT_ACTIVATION_FAIL_AFTER_LAST:-}" ]]; then
+    log "ERROR: injected activation failure after last for bundle $bundle_id"
+    return 1
+  fi
   commit_staged_file "$staged_receipt" "$receipt_path" || return 1
 
   if [[ "$desktop_status" == "bundled" ]]; then
@@ -227,19 +278,6 @@ log "diag: RESURRECT_DIR=$RESURRECT_DIR RESTORE_SCRIPT=$RESTORE_SCRIPT"
 log "diag: last symlink target=$(readlink "$RESURRECT_DIR/last" 2>/dev/null || echo '<none>')"
 log "diag: last file exists=$([ -f "$RESURRECT_DIR/last" ] && echo yes || echo no)"
 
-bundle_json="$(resolve_bundle_for_restore || true)"
-if [[ -n "$bundle_json" ]]; then
-  if ! activate_bundle_for_restore "$bundle_json"; then
-    log "ERROR: transaction bundle resolved but could not be activated; aborting rather than mixing raw files"
-    exit 1
-  fi
-elif transaction_state_initialized; then
-  log "ERROR: transaction state exists but no valid last-good bundle resolved; aborting rather than using legacy raw fallback"
-  exit 1
-else
-  log "WARNING: no transaction bundle resolved; using legacy raw last/assistant fallback only because no valid bundle exists"
-fi
-
 # Wait for tmux server to be ready (up to 10s). tmux.service is Type=forking,
 # so by the time we run it should already be responsive, but be defensive.
 log "diag: entering tmux wait loop"
@@ -255,6 +293,27 @@ if ! tmux list-sessions >/dev/null 2>&1; then
 fi
 
 log "diag: tmux server is up"
+live_panes=$(tmux list-panes -a 2>/dev/null | wc -l 2>/dev/null | head -1)
+[[ -z "$live_panes" ]] && live_panes=0
+log "state before activation: live_panes=$live_panes"
+if (( live_panes > 2 )); then
+  log "tmux already has $live_panes panes; skipping bundle activation and restore to preserve live state"
+  exit 0
+fi
+
+bundle_json="$(resolve_bundle_for_restore || true)"
+if [[ -n "$bundle_json" ]]; then
+  if ! activate_bundle_for_restore "$bundle_json"; then
+    log "ERROR: transaction bundle resolved but could not be activated; aborting rather than mixing raw files"
+    exit 1
+  fi
+elif transaction_state_initialized; then
+  log "ERROR: transaction state exists but no valid last-good bundle resolved; aborting rather than using legacy raw fallback"
+  exit 1
+else
+  log "WARNING: no transaction bundle resolved; using legacy raw last/assistant fallback only because no valid bundle exists"
+fi
+
 if [ ! -x "$RESTORE_SCRIPT" ]; then
   log "ERROR: $RESTORE_SCRIPT not found/executable; aborting"
   exit 1
@@ -279,11 +338,8 @@ fi
 
 # State-aware gate: only restore if tmux looks fresh-empty. "Fresh-empty"
 # means the total live pane count across all sessions is ≤ 2 (systemd's
-# default `new-session -d` plus at most one attached kitty session).
-# Count panes defensively: pane counters must stay numeric even when grep finds
-# no pane lines or a target disappears under us.
-live_panes=$(tmux list-panes -a 2>/dev/null | wc -l 2>/dev/null | head -1)
-[[ -z "$live_panes" ]] && live_panes=0
+# default `new-session -d` plus at most one attached kitty session). The same
+# gate ran before activation, so raw bundle files are untouched for live tmux.
 save_target="$(readlink -f "$RESURRECT_DIR/last" 2>/dev/null || true)"
 if [[ -n "$save_target" && -f "$save_target" ]]; then
   save_panes=$(count_save_panes "$save_target")
@@ -292,11 +348,6 @@ else
 fi
 [[ -z "$save_panes" ]] && save_panes=0
 log "state: live_panes=$live_panes save_panes=$save_panes"
-
-if (( live_panes > 2 )); then
-  log "tmux already has $live_panes panes; skipping restore to preserve live state"
-  exit 0
-fi
 
 if [[ -z "$bundle_json" ]] && (( save_panes < 3 )); then
   if repoint_last_to_fallback "last save had only $save_panes panes"; then

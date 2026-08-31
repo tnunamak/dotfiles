@@ -8,7 +8,8 @@ SNAPSHOT="$ROOT/bin/.local/bin/desktop-layout-snapshot"
 RESTORE="$ROOT/bin/.local/bin/desktop-layout-restore"
 WORK="$(mktemp -d "$HOME/.tmp/desktop-layout-native-session.XXXXXX")"
 CREATED="$WORK/created-set"
-mkdir -p "$WORK/a" "$WORK/b" "$WORK/state"
+TEST_HOME="$WORK/home"
+mkdir -p "$WORK/a" "$WORK/b" "$WORK/state" "$TEST_HOME"
 : >"$CREATED"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -73,7 +74,7 @@ command -v kitty >/dev/null && command -v kitten >/dev/null && command -v jq >/d
 
 spawn_test_instance first "$WORK/a"; first="$SPAWNED_KWIN"
 spawn_test_instance second "$WORK/a"; second="$SPAWNED_KWIN"
-DESKTOP_LAYOUT_TMUX_CLIENTS='' DESKTOP_LAYOUT_SCREEN_JSON='{"width":1920,"height":1080}' XDG_STATE_HOME="$WORK/state" "$SNAPSHOT"
+HOME="$TEST_HOME" DESKTOP_LAYOUT_TMUX_CLIENTS='' DESKTOP_LAYOUT_SCREEN_JSON='{"width":1920,"height":1080}' XDG_STATE_HOME="$WORK/state" "$SNAPSHOT"
 manifest="$WORK/state/desktop-layout/manifest.json"
 jq -e --arg first "$first" --arg second "$second" '
   ([.windows[] | select(.kwin_window_id == $first or .kwin_window_id == $second)]) as $rows |
@@ -89,6 +90,7 @@ DESKTOP_LAYOUT_TEST_SOCKET_DIR="$WORK/restore-sockets" \
 DESKTOP_LAYOUT_WAIT_SECONDS=5 \
 DESKTOP_LAYOUT_SCREEN='1920 1080' \
 DESKTOP_LAYOUT_KITTY_CONFIG=NONE \
+HOME="$TEST_HOME" \
 WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
 "$RESTORE" --force
 
