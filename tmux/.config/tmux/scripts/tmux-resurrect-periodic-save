@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# The periodic saver is intentionally independent of tmux-continuum's
+# status-right interpolation.  continuum declines to install that interpolation
+# whenever another tmux server exists, which makes its configured interval inert.
+set -euo pipefail
+
+RESURRECT_DIR="${HOME}/.tmux/resurrect"
+LOG="${RESURRECT_DIR}/periodic-save.log"
+LOCK="${RESURRECT_DIR}/periodic-save.lock"
+SAVE_SCRIPT="${HOME}/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
+
+mkdir -p "$RESURRECT_DIR"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  log 'skipping concurrent periodic trigger'
+  exit 0
+fi
+
+if ! tmux -N has-session >/dev/null 2>&1; then
+  log 'skipping: no default-socket tmux server'
+  exit 0
+fi
+if [[ ! -x "$SAVE_SCRIPT" ]]; then
+  log "skipping: resurrect save script is not executable: $SAVE_SCRIPT"
+  exit 0
+fi
+
+# save.sh carries the shared save.lock added by patch-assistant-resurrect.sh.
+# That lock serializes this timer with manual, continuum, and stop-time saves.
+if "$SAVE_SCRIPT" quiet >>"$LOG" 2>&1; then
+  log 'completed'
+else
+  rc=$?
+  log "save failed with status $rc"
+  exit "$rc"
+fi

@@ -1,0 +1,12 @@
+[Unit]
+Description=Save tmux resurrect state
+# Only save an already-running tmux lifecycle. Requisite does not start tmux
+# or restore; combined with After it fails this save if either is inactive or
+# restoring failed. tmux-restore remains active after success and is stopped
+# with tmux.service.
+Requisite=tmux.service tmux-restore.service
+After=tmux.service tmux-restore.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/tmux/scripts/tmux-resurrect-periodic-save

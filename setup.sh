@@ -417,7 +417,7 @@ if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # legacy unit file and any currently-running process untouched so setup is
   # safe to re-run and does not unexpectedly interrupt input automation.
   systemctl --user disable ydotoold.service 2>/dev/null || true
-  systemctl --user enable tmux-restore.service desktop-layout-restore.service desktop-layout-snapshot.timer 2>/dev/null || true
+  systemctl --user enable tmux-restore.service desktop-layout-restore.service desktop-layout-snapshot.timer tmux-resurrect-periodic-save.timer 2>/dev/null || true
   systemctl --user enable playwright-mcp.service 2>/dev/null || true
 fi
 

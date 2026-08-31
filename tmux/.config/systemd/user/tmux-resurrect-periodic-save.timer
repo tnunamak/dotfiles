@@ -1,0 +1,11 @@
+[Unit]
+Description=Save tmux resurrect state every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=tmux-resurrect-periodic-save.service
+
+[Install]
+WantedBy=timers.target

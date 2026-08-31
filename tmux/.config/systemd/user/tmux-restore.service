@@ -12,7 +12,10 @@ PartOf=tmux.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=no
+# Keep this successful restore active so the periodic saver can wait for it
+# once per tmux lifecycle instead of racing an empty server or re-running
+# restore on every save.
+RemainAfterExit=yes
 TimeoutStartSec=10min
 # Re-apply patches to tmux-assistant-resurrect's save script before restore
 # runs. TPM auto-updates of the plugin can wipe these in-place sed patches,
