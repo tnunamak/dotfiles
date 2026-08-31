@@ -55,6 +55,12 @@ printf 'btime 1000\n' >"$proc_root/stat"
   for _ in $(seq 1 18); do printf ' 0'; done
   printf ' 12345 0\n'
 } >"$proc_root/101/stat"
+mkdir -p "$proc_root/102"
+{
+  printf '102 (codex) S'
+  for _ in $(seq 1 18); do printf ' 0'; done
+  printf ' 22345 0\n'
+} >"$proc_root/102/stat"
 jq -cn '{pid:101,session:"019f8f87",start_ticks:12345}' >"$HOME_DIR/.codex/session-tags.jsonl"
 HOME="$HOME_DIR" TMUX_ASSISTANT_IDENTITY_PROC_ROOT="$proc_root" PATH="$WORK/bin:/usr/bin:/bin" \
   "$VALIDATOR" "$valid" >/dev/null ||
@@ -130,6 +136,53 @@ HOME="$HOME_DIR" TMUX_ASSISTANT_RESURRECT_DIR="$explicit_state_dir" TMUX_ASSISTA
   TMUX_ASSISTANT_IDENTITY_CLK_TCK=100 PATH="$WORK/bin:/usr/bin:/bin" \
   TEST_PS_OUTPUT=$'100 1 -zsh\n102 100 /opt/claude/bin/claude' "$VALIDATOR" "$claude_valid" >/dev/null ||
   fail 'explicit upstream Claude state directory was rejected'
+
+# tmux-agent-resume launches assistants through `setsid --wait ...`; upstream
+# can save that wrapper PID. The wrapper is acceptable only when it owns exactly
+# one matching descendant whose own PID-bound identity proves the session.
+claude_setsid="$WORK/claude-setsid.json"
+jq -n '{sessions:[{pane:"main:4.0",tool:"claude",session_id:"claude-session",pid:"100",cwd:"/work"}]}' >"$claude_setsid"
+HOME="$HOME_DIR" TMUX_ASSISTANT_RESURRECT_DIR="$explicit_state_dir" TMUX_ASSISTANT_IDENTITY_PROC_ROOT="$proc_root" \
+  TMUX_ASSISTANT_IDENTITY_CLK_TCK=100 PATH="$WORK/bin:/usr/bin:/bin" \
+  TEST_PS_OUTPUT=$'100 1 setsid --wait claude --resume claude-session\n102 100 /opt/claude/bin/claude' \
+  "$VALIDATOR" "$claude_setsid" >/dev/null ||
+  fail 'setsid-wrapped Claude sidecar PID was rejected despite a PID-bound child identity'
+
+codex_setsid="$WORK/codex-setsid.json"
+jq -n '{sessions:[{pane:"main:4.0",tool:"codex",session_id:"019f8f87",pid:"100",cwd:"/work"}]}' >"$codex_setsid"
+{
+  jq -cn '{pid:101,session:"019f8f87",start_ticks:12345}'
+  jq -cn '{pid:102,session:"019f8f87",start_ticks:20000}'
+} >"$HOME_DIR/.codex/session-tags.jsonl"
+HOME="$HOME_DIR" TMUX_ASSISTANT_IDENTITY_PROC_ROOT="$proc_root" PATH="$WORK/bin:/usr/bin:/bin" \
+  TEST_PS_OUTPUT=$'100 1 setsid --wait node /opt/codex/bin/codex\n101 100 node /opt/codex/bin/codex\n102 101 /opt/codex/bin/codex' \
+  "$VALIDATOR" "$codex_setsid" >/dev/null ||
+  fail 'setsid-wrapped Codex sidecar PID was rejected despite PID-bound Node and native identities'
+
+if HOME="$HOME_DIR" TMUX_ASSISTANT_IDENTITY_PROC_ROOT="$proc_root" PATH="$WORK/bin:/usr/bin:/bin" \
+  TEST_PS_OUTPUT=$'100 1 setsid --wait sleep 600' \
+  "$VALIDATOR" "$codex_setsid" >"$WORK/setsid-zero-child.out" 2>&1; then
+  fail 'setsid wrapper without an assistant descendant was accepted'
+fi
+grep -q 'does not match a live provider/PID' "$WORK/setsid-zero-child.out" ||
+  fail 'setsid zero-child rejection was not specific'
+
+if HOME="$HOME_DIR" TMUX_ASSISTANT_RESURRECT_DIR="$explicit_state_dir" TMUX_ASSISTANT_IDENTITY_PROC_ROOT="$proc_root" \
+  TMUX_ASSISTANT_IDENTITY_CLK_TCK=100 PATH="$WORK/bin:/usr/bin:/bin" \
+  TEST_PS_OUTPUT=$'100 1 setsid --wait claude --resume claude-session\n102 100 /opt/claude/bin/claude\n103 100 /opt/claude/bin/claude --resume claude-session' \
+  "$VALIDATOR" "$claude_setsid" >"$WORK/setsid-multiple-children.out" 2>&1; then
+  fail 'setsid wrapper with multiple assistant descendants was accepted'
+fi
+grep -q 'matches multiple assistant descendants' "$WORK/setsid-multiple-children.out" ||
+  fail 'setsid multiple-child rejection was not specific'
+
+if HOME="$HOME_DIR" TMUX_ASSISTANT_IDENTITY_PROC_ROOT="$proc_root" PATH="$WORK/bin:/usr/bin:/bin" \
+  TEST_PS_OUTPUT=$'100 1 setsid --wait sh -c codex-and-codex\n101 100 node /opt/codex/bin/codex\n102 101 /opt/codex/bin/codex\n103 100 node /opt/codex/bin/codex' \
+  "$VALIDATOR" "$codex_setsid" >"$WORK/setsid-sibling-branches.out" 2>&1; then
+  fail 'setsid wrapper with sibling assistant branches was accepted'
+fi
+grep -q 'matches multiple assistant descendants' "$WORK/setsid-sibling-branches.out" ||
+  fail 'setsid sibling-branch rejection was not specific'
 
 # A bare tool name in another program's argument list must not create identity
 # evidence.

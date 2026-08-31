@@ -55,6 +55,16 @@ def tool_for(args):
             return tool
     return None
 
+def is_allowed_wrapper_owner(args):
+    try:
+        argv = shlex.split(args)
+    except ValueError:
+        argv = args.split()
+    if not argv:
+        return False
+    argv0 = os.path.basename(argv[0])
+    return argv0 == "setsid" and "--wait" in argv[1:]
+
 def process_start_ticks(pid):
     # Linux /proc/<pid>/stat field 22.  The command field may include spaces
     # or parentheses, so split only after its final closing parenthesis.
@@ -207,15 +217,26 @@ else:
         if root not in processes:
             print(f"identity validation: pane root disappeared: {pane}", file=sys.stderr)
             sys.exit(1)
-        queue = deque([root])
+        queue = deque([(root, [], False)])
         assistants = []
         while queue:
-            pid = queue.popleft()
+            pid, ancestors, branch_has_assistant = queue.popleft()
             args = processes.get(pid, "")
             tool = tool_for(args)
-            if tool:
-                assistants.append({"tool": tool, "pid": pid, "session_id": explicit_session(tool, pid, args)})
-            queue.extend(children.get(pid, ()))
+            if tool and not branch_has_assistant:
+                owner_pids = [
+                    ancestor for ancestor in ancestors
+                    if is_allowed_wrapper_owner(processes.get(ancestor, ""))
+                ]
+                assistants.append({
+                    "tool": tool,
+                    "pid": pid,
+                    "session_id": explicit_session(tool, pid, args),
+                    "owner_pids": owner_pids,
+                })
+                branch_has_assistant = True
+            for child in children.get(pid, ()):
+                queue.append((child, ancestors + [pid], branch_has_assistant))
         live.append({"pane": pane, "assistants": assistants})
 
 live_by_pane = {}
@@ -256,14 +277,49 @@ for pane, rows in saved_by_pane.items():
         assistant for assistant in assistants
         if assistant.get("tool") == row["tool"] and str(assistant.get("pid")) == row["pid"]
     ]
-    if len(same_process) != 1:
-        print(
-            f"identity validation: {pane} sidecar {row['tool']}:{row['session_id']} pid={row['pid']} "
-            "does not match a live provider/PID",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    live_sid = same_process[0].get("session_id")
+    same_owner = [
+        assistant for assistant in assistants
+        if assistant.get("tool") == row["tool"]
+        and row["pid"] in [str(owner) for owner in assistant.get("owner_pids", [])]
+    ]
+    if len(same_process) == 1:
+        matched = same_process[0]
+    else:
+        if len(same_owner) > 1:
+            print(
+                f"identity validation: {pane} sidecar {row['tool']}:{row['session_id']} pid={row['pid']} "
+                "matches multiple assistant descendants",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        same_owner_bound = [
+            assistant for assistant in same_owner
+            if assistant.get("session_id") is not None
+        ]
+        same_owner_matching_session = [
+            assistant for assistant in same_owner_bound
+            if assistant.get("session_id") == row["session_id"]
+        ]
+        if len(same_owner_matching_session) == 1:
+            matched = same_owner_matching_session[0]
+        elif same_owner and not same_owner_bound:
+            print(f"identity validation: {pane} {row['tool']} pid={row['pid']} has no PID-bound session identity", file=sys.stderr)
+            sys.exit(1)
+        elif same_owner_bound:
+            print(
+                f"identity validation: {pane} sidecar {row['tool']}:{row['session_id']} pid={row['pid']} "
+                "does not match a live PID-bound identity",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            print(
+                f"identity validation: {pane} sidecar {row['tool']}:{row['session_id']} pid={row['pid']} "
+                "does not match a live provider/PID",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    live_sid = matched.get("session_id")
     if live_sid is None:
         print(f"identity validation: {pane} {row['tool']} pid={row['pid']} has no PID-bound session identity", file=sys.stderr)
         sys.exit(1)
