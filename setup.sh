@@ -376,6 +376,21 @@ for pkg in "${PACKAGES[@]}"; do
   stow -d "$DOTFILES_DIR" -t "$HOME" --restow "${extra_flags[@]}" "$pkg"
 done
 
+# shell/.shell_config execs this on every new interactive shell; if it's
+# missing (e.g. an earlier package aborted the loop above before `bin` was
+# reached), every new shell exits instead of just skipping tmux auto-attach.
+# Verify and repair it explicitly rather than relying on the loop above.
+TMUX_ATTACH_LINK="$HOME/.local/bin/tmux-local-attach-main"
+if [[ ! -x "$TMUX_ATTACH_LINK" ]]; then
+  echo "Repairing missing $TMUX_ATTACH_LINK"
+  stow -d "$DOTFILES_DIR" -t "$HOME" --restow --no-folding bin
+fi
+if [[ ! -x "$TMUX_ATTACH_LINK" ]]; then
+  echo "ERROR: $TMUX_ATTACH_LINK still missing after stowing bin" >&2
+  exit 1
+fi
+unset TMUX_ATTACH_LINK
+
 # --- Zsh plugins ---
 
 ZSH_PLUGINS=~/.zsh/plugins

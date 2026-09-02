@@ -19,7 +19,11 @@ case "$_shell_tty" in
 esac
 if [[ -z "$NOTMUX" ]] && [[ $- == *i* ]] && [[ -z "$TMUX" ]] &&
    [[ -z "$_shell_is_virtual_console" ]] && command -v tmux &>/dev/null; then
-  exec "$HOME/.local/bin/tmux-local-attach-main"
+  if [[ -x "$HOME/.local/bin/tmux-local-attach-main" ]]; then
+    exec "$HOME/.local/bin/tmux-local-attach-main"
+  else
+    echo "warning: ~/.local/bin/tmux-local-attach-main missing or not executable; skipping tmux auto-attach (re-run setup.sh to fix)" >&2
+  fi
 fi
 unset _shell_tty _shell_is_virtual_console
 
