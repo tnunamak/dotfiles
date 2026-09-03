@@ -34,6 +34,34 @@ Template:
 
 <!-- newest first; append above this comment is fine, or just add to the bottom -->
 
+### 2026-08-30 — PDPP cutover red-team repair (ds version not checked)
+- **Command(s):** `ds tldr`, `ds task "repair cutover red-team P0 durable guard and P1 owner gate in reorg candidate workspace" --slice ...`, `ds recent`, and `ds task status`.
+- **Worked / didn't:** `tldr` was useful. Task creation reported `Task index preflight: waiting for another index update`, then wrote an unignored `devspecs/` task tree in the clean worktree without returning a usable task ID. `task status` rejected the documented-looking no-argument form (`accepts 1 arg(s), received 0`), while `recent` showed unrelated prior work. I removed the generated tree and used direct source/oracle evidence.
+- **vs. doing it by hand:** Cost effort for this bounded operational repair; direct inspection gave the necessary script and test context.
+- **Would use again here?:** only-if task creation reports its ID and atomic outcome.
+- **Maintainer-facing note:** Do not leave unignored task artifacts after a preflight wait/degraded task creation. Return the task ID or fail atomically, and make no-argument status select or explain the current task.
+
+### 2026-08-30 — PDPP spec-date push CI successor (ds version not checked)
+- **Command(s):** `ds tldr`, `ds task "implement successor ..." --quick`, `ds task status`, and `ds recent`.
+- **Worked / didn't:** `tldr` was useful. Task creation printed indexing progress but did not return a task identifier before the command ended; `ds task status` then rejected its documented-looking no-argument use with `accepts 1 arg(s), received 0`. `recent` was useful but did not surface the just-created task.
+- **vs. doing it by hand:** Cost effort for this focused CI change; direct history, workflow, source, and temporary-Git tests supplied the needed evidence.
+- **Would use again here?:** only-if a long task needs a durable checkpoint and task creation returns its ID/path.
+- **Maintainer-facing note:** Print the created task ID/path after auto-indexing, and let `task status` select a sole current-worktree task; otherwise a fresh agent cannot resume the task it just created.
+
+### 2026-08-27 — PDPP Slack coverage and summary-repair incident (ds version not checked)
+- **Command(s):** `ds tldr`, `ds recent`, and the task/status workflow in an isolated PDPP worktree.
+- **Worked / didn't:** `tldr` was useful for the bounded-slice and checkpoint guidance. The repository-specific task state did not add evidence for this live-production incident; direct source, isolated-Postgres, and read-only production inspection were the authoritative path.
+- **vs. doing it by hand:** A wash for this time-sensitive two-surface repair; it helped orient the workflow but not the root-cause work.
+- **Would use again here?:** only-if the task continues across handoffs or compaction.
+- **Maintainer-facing note:** Incident work would benefit from a concise task receipt that can link already-known source paths and external evidence without requiring an exploratory index pass.
+
+### 2026-08-11 — stale-receipt recovery reliability fix (ds version not checked)
+- **Command(s):** `ds tldr`, `ds recent`, `ds find "receipt stale recovery ownership"`, `ds map receipts`, and `ds task ... --slice ...` in the gateway worktree.
+- **Worked / didn't:** `tldr` gave the right bounded-slice workflow. The auto-index repeatedly reported `scan failed while walking ...: ensure repo: database is locked (5) (SQLITE_BUSY)`, then `find` had no primary source surface and `map receipts` fell back to an unrelated workflow area. `task` nevertheless wrote an unignored `devspecs/` directory with task artifacts; I had to remove that generated state before committing.
+- **vs. doing it by hand:** Cost effort for this source-specific concurrency correction. The supplied review evidence plus direct source/test inspection were accurate; degraded ds output was not safe to use as task context.
+- **Would use again here?:** only-if the scan lock is fixed and degraded results are clearly labeled rather than yielding unrelated maps/task artifacts.
+- **Maintainer-facing note:** On SQLite scan contention, do not create a worktree artifact that looks like a valid task. Retry or fail atomically, and make `find`/`map` say that their results are untrusted when indexing failed.
+
 ### 2026-07-23 — Pramana PNG-cancellation gate (ds version not checked)
 - **Command(s):** `ds tldr`, then `ds task quick "Make Desktop PNG normalization bounded and AbortSignal-cancellable"` in an isolated Pramana worktree.
 - **Worked / didn't:** `tldr` gave the intended bounded-hotfix workflow. Task creation failed its automatic scan with `ensure repo: database is locked (5) (SQLITE_BUSY); try running DevSpecs from one focused project root or pass --path <repo-dir> to narrow the scan`, yet still created an unignored `devspecs/` directory in the otherwise clean worktree. I used direct source/test inspection instead and removed the generated state before commit.
@@ -531,3 +559,100 @@ This is Tim reading `ds map` + `ds find` output cold, as a human. The friction i
 - **Command(s):** `ds tldr`, then a three-slice `ds task "harden CLI/read-core release-matrix deterministic replay on current baseline" --slice ...`.
 - **Worked / didn't:** `tldr` gave a useful bounded-loop outline and task creation completed after indexing, but emitted only scan progress—not the durable task ID/path. It left an unignored `devspecs/` tree in the implementation worktree, so the generated planning artifacts could not remain while producing a clean release commit.
 - **Maintainer-facing note:** print the created task ID/path after successful indexing and keep generated task state outside or ignored by the target worktree.
+## 2026-08-11: isolated worktree scan hit shared SQLite lock
+
+While creating a multi-slice task in an isolated `pdpp` worktree, `ds task` failed before task creation with `SQLITE_BUSY`:
+
+```text
+Task auto-index skipped: scan failed while walking .../source: begin scan transaction: database is locked (5) (SQLITE_BUSY)
+```
+
+The CLI suggested narrowing with `--path`, but the command was already running from one focused worktree root. Other read-only research agents were inspecting the same worktree at the time. It would help if `ds task` retried a transient lock, reported which database was locked, or allowed task creation from the last completed index when refresh cannot acquire the lock.
+
+Follow-up reproduction from the primary `pdpp` checkout: `ds recent && ds map` began an automatic index, and a later read-only `ds find "reference implementation valuable journey trust state boundaries release acceptance"` failed with the same `SQLITE_BUSY` error. This shows that concurrent diagnostic commands can contend with DevSpecs' own indexing work even when no task is being created; read commands should coordinate on one refresh or fall back to the last completed index.
+
+The same `ds map` process (PID 1814379) then remained alive after the calling reconnaissance command appeared complete. At 2026-08-11 11:05 CDT it had run for 68 minutes and was still consuming about 44% CPU as a direct child of the Codex session. It required an explicit `SIGTERM`, after which the PID disappeared. A completed/abandoned client call should cancel and reap its index worker; `ds map` should also expose bounded progress or a deadline so a stale full-repository walk cannot silently consume a core for an hour.
+
+## 2026-08-11: successful-looking task creation left an empty workspace
+
+In `vana-node-ops`, a six-slice `ds task` printed the three automatic-index progress lines, exited successfully after about 26 seconds, and emitted no task ID. It created `devspecs/tasks/20260811-163010-migrate-the-approved-moksha-fleet-into-vana-node/`, but the directory was empty. Retrying with the exact ID plus `--force --no-refresh --json` again exited successfully with no output and left the directory empty. Task creation should fail nonzero if it cannot write the task artifacts, and it should always print the durable task ID/path on success.
+
+## 2026-08-11: Venmo readiness lane used direct evidence after DevSpecs contention
+
+In the isolated `pdpp` worktree, `ds tldr` was useful, but `ds find` failed with `SQLITE_BUSY` during automatic indexing and `ds map` returned no usable context. Direct source, fixture, and redacted-run inspection remained authoritative. Read-only commands should coordinate with one index refresh or fall back to the last completed index instead of contending with the indexer.
+
+## 2026-08-11: RI CLI terminality lane used direct evidence after DevSpecs contention
+
+In the isolated `pdpp` worktree, `ds tldr` was useful, but `ds recent`, `ds find`, and `ds map` encountered `database is locked (5) (SQLITE_BUSY)` during automatic indexing and produced no usable task context. Direct review inspection, process-lifecycle fixtures, mutation checks, and the real 139-test accounting run remained authoritative. Read-only diagnostics should coordinate on one index refresh or fall back to the last completed index instead of contending with the indexer.
+
+## 2026-08-11: Minnows product scan returned a stale map after index contention
+
+From the focused `minnows` repository root, `ds map` reported `SQLITE_BUSY` during its automatic scan, then returned a medium-confidence map from existing evidence. The fallback was useful for orientation, but the output did not say how stale the reused index was. On contention, read-only commands should identify the index snapshot they reuse and its age so callers can judge whether direct source inspection is required.
+
+## 2026-08-12: concurrent Context Gateway closure reads contended on the index
+
+`ds recent` surfaced the right funding and custody topics, but concurrent `ds find` and `ds map` calls hit `SQLITE_BUSY`; one still returned partial orientation output. The commands should share one refresh or fall back to a clearly dated completed index so parallel read-only planning does not contend with itself.
+
+## 2026-08-12: MacroCart quick cleanup task left artifacts after index lock
+
+From the focused `macro-cart` repository root, `ds task "reconcile three assigned MacroCart worktrees and preserve unique changes" --quick` reported `SQLITE_BUSY`, emitted no task ID, and exited after about 28 seconds. It nevertheless created a complete-looking, unignored four-file task directory under `devspecs/tasks/`. Because the scan failed, the cleanup used direct Git evidence and removed those artifacts before handoff. Task creation should retry or reuse a dated completed index; on failure, it should return nonzero, identify any partial artifact path, and avoid leaving authoritative-looking files in the target repository.
+
+## 2026-08-12: vana-node-ops task creation exited silently without a task
+
+For the multi-slice Mainnet Prysm terminal-deposit repair, `ds tldr` and `ds recent` were useful for workflow and repository orientation. However, `ds task "repair Mainnet Prysm terminal deposit contract compatibility" --slice ...` ran for about 35 seconds, emitted no task ID or error, and created no task directory. A concurrent `ds task list` only printed `Task index preflight: waiting for another index update` and returned no list. Task creation should either wait with visible progress and then print the durable task ID, or fail nonzero with the blocking index operation identified. A successful-looking silent exit with no artifact is ambiguous and cannot serve as an engineering receipt.
+
+## 2026-08-21: waspflow provenance-backfill orientation
+
+`ds tldr` was useful for selecting a small, gated workflow, and `ds map` produced a concise, medium-confidence subsystem map after its automatic index. `ds task status` without a task ID only reported that one argument was required; it did not identify whether a sole active task existed. For a resumed maintenance task, direct source, ledger, and test inspection remained the authoritative evidence. `ds task status` should resolve a sole active task or print the exact discovery command and durable task path.
+
+## convo (2026-08-23, from pdpp session 74b4f237)
+BUG, completeness-critical: messages the human types while the agent is mid-turn (queued, auto-delivered
+on turn end) do NOT surface in `convo show <session> --from-user`. Raw JSONL shows them with
+origin.kind=human. Consequence: a "did the owner actually say this?" transcript audit returns a false
+negative for exactly the messages most likely to be corrections (humans queue corrections while agents
+run). Found when an attribution audit initially called a genuine owner quote fabricated. Fix: --from-user
+should include queued-then-delivered human messages; test with a queued message fixture.
+
+## 2026-08-27: PDPP credential-revoke fix task creation waited without a receipt
+
+In the isolated PDPP worktree, `ds tldr` and `ds recent` were useful. The bounded
+`ds task "fix atomic credential revocation cascade when owner revokes connection" --quick`
+then printed only `Task index preflight: waiting for another index update` for two
+30-second calls, with no task id, exit diagnostic, or usable task receipt. Direct
+source inspection and real-Postgres tests had to become the authoritative workflow.
+Task creation should identify the blocking index operation, show bounded progress or
+an eventual timeout, and state clearly whether it created durable task state.
+
+## 2026-08-30: PR #242 review task kept indexing after the caller yielded
+
+From an isolated PDPP review worktree, `ds tldr` and `ds recent` were useful for
+workflow and recent-topic orientation. `ds task "independent adversarial review of PR
+242 repair commits 10a132562 and 7e8379078" --quick` then indexed 4,926 candidate
+files but did not emit a task ID before the 30-second caller yield. More than nine
+minutes later, the `ds task` process was still alive at about 77% CPU and had created
+no visible `devspecs/` task receipt. It stopped cleanly on `SIGTERM`. Direct source,
+SQLite/PostgreSQL tests, typechecks, and retained-test mutations remained the
+authoritative evidence. Task creation should either finish within a bounded interval
+and print the durable task ID, or cancel/reap indexing when the caller yields or
+disconnects.
+
+## 2026-08-30: active-run repair task did not return a bounded receipt
+
+In an isolated PDPP repair worktree, `ds recent` and `ds tldr` gave useful
+orientation. The bounded `ds task "repair active-run terminal reclaim identity
+collision and real backend evidence" --quick` then started indexing 5,115 files
+and printed only progress through “extracting and indexing artifacts” before the
+30-second caller window ended. No task ID, task path, or completion receipt was
+available, so direct source and test-policy inspection remained authoritative.
+Task creation should either emit a durable receipt before long indexing, or give
+the caller a resumable task identifier and visible completion state.
+
+## 2026-08-30: stream-page lifecycle repair task did not return a receipt
+
+In an isolated PDPP repair worktree, `ds tldr` and `ds recent` gave useful
+workflow and recent-topic orientation. The bounded `ds task ... --quick` then
+printed only `Task index preflight: waiting for another index update` before the
+30-second caller window ended; no task ID, task path, or later receipt was
+available. Direct source, baseline-diff, conformance, typecheck, and focused
+test evidence remained authoritative. Task creation should identify the active
+index update and provide either a bounded receipt or a resumable task ID.
