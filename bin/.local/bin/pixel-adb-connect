@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Re-establish wireless adb to the Pixel 8 Pro (`ssh pixel` needs Wi-Fi only,
+# but pushing files or driving package-manager/appops calls needs adb, and
+# wireless debugging does not survive a phone reboot or Wi-Fi toggle
+# unrooted). Run this once after a phone reboot, with the phone on the same
+# LAN. If it's not already paired this session, plug in USB first.
+set -euo pipefail
+
+PHONE_IP="${PIXEL_IP:-192.168.1.165}"
+
+if adb devices | grep -q "^${PHONE_IP}:5555[[:space:]]*device$"; then
+  echo "Already connected to ${PHONE_IP}:5555"
+  exit 0
+fi
+
+usb_serial=$(adb devices | awk '$2=="device" && $1 !~ /:/ {print $1; exit}')
+if [[ -n "$usb_serial" ]]; then
+  echo "USB device $usb_serial found — switching it to tcpip mode"
+  adb -s "$usb_serial" tcpip 5555
+  sleep 2
+fi
+
+adb connect "${PHONE_IP}:5555"
+adb devices
