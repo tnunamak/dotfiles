@@ -24,6 +24,16 @@ export const MUST_FLAG = [
     mustRules: ['not-just-x-but-y'],
   },
   {
+    id: 'isnt-just-em-dash',
+    text: "This release isn't just faster — it's the foundation every future performance improvement in the product will build on for years to come.",
+    mustRules: ['not-just-x-but-y'],
+  },
+  {
+    id: 'wasnt-just-period',
+    text: "That outage wasn't just a bug. It was a wake-up call for how the whole team thought about on-call ownership going forward.",
+    mustRules: ['not-just-x-but-y'],
+  },
+  {
     id: 'empowers-to',
     text: 'This dashboard empowers your team to make data-driven decisions faster than ever before, across every department in the organization.',
     mustRules: ['empowers-to'],
@@ -51,6 +61,11 @@ export const MUST_FLAG = [
   {
     id: 'not-about-about',
     text: "It's not about writing more tests, it's about writing the RIGHT tests that actually catch the regressions your team cares about before they reach production.",
+    mustRules: ['its-not-about-its-about'],
+  },
+  {
+    id: 'not-about-period-dropped-about',
+    text: "It's not about speed. It's trust, and trust is the thing that actually keeps engineers coming back to a tool after the initial excitement wears off.",
     mustRules: ['its-not-about-its-about'],
   },
   {
@@ -194,5 +209,12 @@ export const MUST_PASS = [
   {
     id: 'rfc-enumeration-uniform',
     text: 'Clients MUST validate the signature before use. Clients MUST reject any token missing the issuer claim. Clients MUST reject any token with an expired timestamp. Clients SHOULD cache validated tokens for their remaining lifetime only.',
+  },
+  // HARD CONTROL: "isn't" and a plain factual continuation with "it" that
+  // is NOT the antithesis frame — the broadened not-just-x-but-y regex must
+  // not fire on ordinary negation followed by an unrelated "it" clause.
+  {
+    id: 'isnt-just-unrelated-it-clause',
+    text: "The staging database isn't just slower than prod, it runs on a single replica with half the memory, which the team already flagged as a known gap in the infra backlog.",
   },
 ];

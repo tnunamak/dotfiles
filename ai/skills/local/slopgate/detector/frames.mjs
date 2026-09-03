@@ -17,8 +17,13 @@ export const FRAME_RULES = [
   },
   {
     id: 'not-just-x-but-y',
-    // "not just a linter, it's a philosophy" / "not just fast, but reliable"
-    re: /\bnot just [a-z][\w' -]{2,40}?,\s*(?:it'?s|it is|but|it also)\b/gi,
+    // "not just a linter, it's a philosophy" / "not just fast, but reliable" /
+    // "isn't just fast — it's reliable" / "wasn't just a bug. it was a wake-up
+    // call". Broadened 2026-08-16 to also match isn't/wasn't/aren't/weren't
+    // (not only bare "not") and an em-dash/period continuation (not just a
+    // comma), since the antithetical-parallelism family reads the same
+    // across all of these — only the linking punctuation/contraction varies.
+    re: /\b(?:not|isn'?t|wasn'?t|aren'?t|weren'?t) just [a-z][\w' -]{2,40}?[,.—-]\s*(?:it'?s|it is|it was|they'?re|but|it also)\b/gi,
     suggestion: 'state the one true claim directly, drop the false-contrast setup',
   },
   {
@@ -49,7 +54,10 @@ export const FRAME_RULES = [
   },
   {
     id: 'its-not-about-its-about',
-    re: /\bit'?s not (?:just\s+)?about [\w' -]{2,40}?[.,;-]\s*it'?s about\b/gi,
+    // "It's not about X, it's about Y" / "It's not about X. It's Y." —
+    // broadened 2026-08-16 to allow the continuation to drop the repeated
+    // "about" (a common paraphrase: "it's not about speed. it's trust.").
+    re: /\bit'?s not (?:just\s+)?about [\w' -]{2,40}?[.,;-]\s*it'?s(?: about)?\b/gi,
     suggestion: 'state the point once, plainly',
   },
   {

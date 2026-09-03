@@ -99,6 +99,8 @@ Accessed: 2026-06-18
 
 ## SYNTHESIS
 
+> **[PERSONA SCOPE NOTE 2026-08-19 — PRIORITY, NOT VALIDITY.]** PDPP is now a **consumer** product per the product owner (see `product-design/consumer-products-do-show-raw-condition-lists-to-owners-...md`). Nothing here is refuted, but the **CLI⇄UI parity** thesis presumes a user who reaches for a local CLI. For a consumer that is a surface they never touch, so parity drops from a headline requirement to a maintainer/debugging convenience — and the closing composition ("a device-local recovery whose truth must appear in a web console") describes a self-hoster running a local CLI. Re-weight accordingly rather than deleting: parity remains genuinely valuable for the maintainer and for automated testing, and it costs little once the recovery op is modeled as one verb over one noun. **Strengthened under the consumer requirement:** named states over raw status, earned recovery (recovery must be *proven*, not asserted), and pushed progress with a denominator and an ETA seeded from last duration — a consumer has less tolerance than an operator for an unnamed spinner with no bound.
+
 Cross-tool patterns for any surface that shows long-running work and its recovery:
 
 - **A run/issue is an addressable entity whose status is a closed set of named states**, never free text (Trigger.dev, GitHub Actions, Stripe, Datadog, Sentry, Linear).
