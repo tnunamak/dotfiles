@@ -4,7 +4,9 @@
 # Usage:
 #   updates                    # show details
 #   updates --apply            # pick upgrades to run via fzf, then refresh cache
-#   updates --apply --yes      # ...and auto-confirm prompts within each upgrade
+#   updates --apply --all      # run every upgrade without opening the picker
+#   updates --apply --yes      # auto-confirm prompts within selected upgrades
+#   updates --apply --all --yes  # select all and auto-confirm their prompts
 #   updates --refresh          # re-scan and show details
 set -euo pipefail
 
@@ -12,12 +14,15 @@ CACHE_DIR="$HOME/.cache/shell-status"
 DETAIL_FILE="$CACHE_DIR/details"
 COMMANDS_FILE="$CACHE_DIR/commands"
 
-# --yes/-y auto-confirms prompts *inside* each upgrade command (nala, flatpak).
-# It does not skip the fzf picker: choosing what to upgrade stays deliberate.
+# Selection and package prompts are independent: --all/-a confirms the entire
+# cached selection without opening fzf; --yes/-y auto-confirms prompts inside
+# upgrade commands (nala, flatpak).
+SELECT_ALL=false
 ASSUME_YES=false
 args=()
 for arg in "$@"; do
   case "$arg" in
+    --all|-a) SELECT_ALL=true ;;
     --yes|-y) ASSUME_YES=true ;;
     *)        args+=("$arg") ;;
   esac
@@ -52,10 +57,15 @@ case "${1:-}" in
       exit 0
     fi
 
-    # fzf multi-select: show labels, extract commands
-    selected=$(cut -f1 "$COMMANDS_FILE" \
-      | fzf --multi --header="Select upgrades (TAB to toggle, ENTER to run)" \
-      2>/dev/null) || exit 0
+    if [[ "$SELECT_ALL" == "true" ]]; then
+      selected=$(cut -f1 "$COMMANDS_FILE")
+    else
+      # Put the prompt and initial cursor at the top.
+      selected=$(cut -f1 "$COMMANDS_FILE" \
+        | fzf --multi --layout=reverse \
+          --header="Select upgrades (TAB to toggle, ENTER to run)" \
+        2>/dev/null) || exit 0
+    fi
 
     [[ -z "$selected" ]] && exit 0
 

@@ -339,6 +339,47 @@ _prune_dead_pids() {
     _arr=("${alive[@]}")
 }
 
+# Host CPU count for sizing fan-out width.
+#
+# Bare `nproc` honors the cgroup CPU quota, so inside this script's own
+# `systemd-run -p CPUQuota=50%` containment it returns 1 — collapsing
+# max_jobs from 4*24=96 to the floor of 8 and making the throttle fire on
+# nearly every loop iteration. That tiny width is what turned the `wait -n`
+# staleness bug below into a visible hang. These tasks are I/O-bound on
+# recursive `find`, so the right width tracks the machine's parallelism, not
+# the CPU-time slice; `--all` reports host CPUs in both contained and
+# uncontained runs.
+_host_cpus() {
+    local n
+    n=$(nproc --all 2>/dev/null) \
+        || n=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null) \
+        || n=4
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) || n=4
+    printf '%s\n' "$n"
+}
+
+# Throttle one fan-out loop down to $max_jobs in-flight children.
+#
+# MUST prune BEFORE waiting. `wait -n pid...` returns instantly (rc=0) for any
+# pid in the list bash has ALREADY reaped, without ever blocking on the live
+# ones — so a list carrying even one stale pid makes the throttle a no-op and
+# the enclosing loop busy-spins at 100% CPU while real children are still
+# running (reproduced directly: 9 of 10 throttle calls returned in 0s while 8
+# `sleep 6` children were live). Pruning first guarantees every pid handed to
+# `wait -n` is live, so it genuinely blocks; the post-wait prune then retires
+# whichever child just finished. Pruning only AFTER the wait — the shape this
+# replaces — cannot prevent the spin, because the stale pid is already in the
+# list by the time `wait -n` sees it.
+_throttle_wait() {
+    local label="$1" max="$2" arrname="$3"
+    local -n _pids="$arrname"
+    _prune_dead_pids _pids
+    while (( ${#_pids[@]} >= max )); do
+        _diag_wait_n "$label" "${_pids[@]}" || true
+        _prune_dead_pids _pids
+    done
+}
+
 # Diagnostic-only wrapper around `wait -n "${pids[@]}"` for the three
 # throttled fan-out loops below. Logs to run.log (same file/format as
 # maybe_run's START/END lines) if a single throttle wait takes suspiciously
@@ -416,7 +457,7 @@ find_stale_node_modules() {
     # Cap in-flight to prevent fork-storms; 4*nproc is generous since each task
     # is mostly I/O wait on a recursive find walking source files.
     local max_jobs
-    max_jobs=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    max_jobs=$(( $(_host_cpus) * 4 ))
     (( max_jobs < 8 )) && max_jobs=8
 
     local tmp
@@ -428,10 +469,7 @@ find_stale_node_modules() {
             > "$tmp/nm-$i" 2>/dev/null &
         pids+=("$!")
         i=$((i+1))
-        if (( ${#pids[@]} >= max_jobs )); then
-            _diag_wait_n find_stale_node_modules "${pids[@]}" || true
-            _prune_dead_pids pids
-        fi
+        _throttle_wait find_stale_node_modules "$max_jobs" pids
     done < <(find "$CODE_ROOT" -maxdepth 5 -name node_modules -type d -prune -print0 2>/dev/null)
     _diag_wait_all find_stale_node_modules || true
 
@@ -789,7 +827,7 @@ find_stale_venvs() {
     local stale_thresh=$((now_s - 90*86400))
 
     local max_jobs
-    max_jobs=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    max_jobs=$(( $(_host_cpus) * 4 ))
     (( max_jobs < 8 )) && max_jobs=8
 
     local tmp
@@ -801,10 +839,7 @@ find_stale_venvs() {
             > "$tmp/v-$i" 2>/dev/null &
         pids+=("$!")
         i=$((i+1))
-        if (( ${#pids[@]} >= max_jobs )); then
-            _diag_wait_n find_stale_venvs "${pids[@]}" || true
-            _prune_dead_pids pids
-        fi
+        _throttle_wait find_stale_venvs "$max_jobs" pids
     # Discover by the pyvenv.cfg marker (present in every venv regardless of
     # dir name) — name-based matching missed e.g. rdatadao-shitposting/env (5.4G).
     done < <(find "$CODE_ROOT" -maxdepth 6 -name pyvenv.cfg -printf '%h\0' 2>/dev/null)
@@ -884,7 +919,7 @@ find_stale_project_artifacts() {
     local stale_thresh=$((now_s - 90*86400))
 
     local max_jobs
-    max_jobs=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    max_jobs=$(( $(_host_cpus) * 4 ))
     (( max_jobs < 8 )) && max_jobs=8
 
     local tmp
@@ -899,10 +934,7 @@ find_stale_project_artifacts() {
             > "$tmp/a-$i" 2>/dev/null &
         pids+=("$!")
         i=$((i+1))
-        if (( ${#pids[@]} >= max_jobs )); then
-            _diag_wait_n "find_stale_project_artifacts($art_name)" "${pids[@]}" || true
-            _prune_dead_pids pids
-        fi
+        _throttle_wait "find_stale_project_artifacts($art_name)" "$max_jobs" pids
     done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name "$art_name" -prune -print0 2>/dev/null)
     _diag_wait_all "find_stale_project_artifacts($art_name)" || true
 
