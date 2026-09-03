@@ -48,8 +48,14 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export PATH="$HOME/go/bin:$PATH"
 export PATH="$HOME/.grok/bin:$PATH"
 
-# GPG
-export GPG_TTY=$(tty)
+# GPG signing. Pinentry needs the current interactive terminal; refresh the
+# long-lived agent on every new SSH, tmux, or local shell. Do nothing in
+# non-interactive shells so they cannot replace a valid terminal with
+# "not a tty".
+if [[ -t 0 || -t 1 ]]; then
+  export GPG_TTY="$(tty)"
+  gpg-connect-agent updatestartuptty /bye >/dev/null 2>&1 || true
+fi
 
 # Privacy
 export DO_NOT_TRACK=1
@@ -318,9 +324,18 @@ if command -v infisical >/dev/null 2>&1; then
     _inf_stale_flag="$_inf_stale_dir/stale"
     _inf_stale_checked="$_inf_stale_dir/last-check"
 
-    # Show the cached verdict from the previous background probe.
-    [[ -f "$_inf_stale_flag" ]] &&
-      printf '%s\n' 'Infisical keyring session expired — offline secret cache is going stale. Run: infisical login --domain=https://secrets.vivid.fish'
+    # A stale flag is only a cached failure from the previous background
+    # probe. Recheck it briefly before displaying a warning so a successful
+    # login (or a transient network/keyring failure) does not produce a
+    # misleading one-shell nag.
+    if [[ -f "$_inf_stale_flag" ]]; then
+      if "${_inf_timeout:-timeout}" 3 infisical login status >/dev/null 2>&1 </dev/null; then
+        rm -f "$_inf_stale_flag"
+        : > "$_inf_stale_checked"
+      else
+        printf '%s\n' 'Infisical keyring session still could not be validated — offline secret cache may be stale. Run: infisical login --domain=https://secrets.vivid.fish'
+      fi
+    fi
 
     # Re-probe in the background, fully detached so it never costs startup time.
     #

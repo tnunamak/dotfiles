@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+if [[ ! -t 0 && ! -t 1 ]]; then
+  echo "gpg-signing-unlock requires an interactive terminal." >&2
+  exit 1
+fi
+
+export GPG_TTY="$(tty)"
+gpg-connect-agent updatestartuptty /bye >/dev/null
+printf 'unlock\n' | gpg --local-user 2E2DA1F8D3D96241ADBAF15FC872885042DA5EBB --clearsign >/dev/null
+echo "PDP-Connect GPG signing unlocked in gpg-agent (8h default, 24h maximum)."

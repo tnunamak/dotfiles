@@ -13,6 +13,8 @@
 	insteadOf = https://github.com/
 [gpg]
 	format = ssh
+[gpg "ssh"]
+	allowedSignersFile = ~/.config/git/allowed_signers
 [commit]
 	gpgsign = true
 [include]
@@ -27,3 +29,5 @@
 	email = tnunamak@gmail.com
 	name = Tim Nunamaker
 	signingkey = /home/tnunamak/.ssh/id_ed25519.pub
+[rebase]
+	autostash = true

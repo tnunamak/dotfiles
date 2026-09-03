@@ -46,6 +46,20 @@ trap 'rm -rf "$TMPDIR_PARALLEL"' EXIT
 lines=()
 detail_out=()
 
+# Git uses the existing SSH agent for passwordless commit signing. This key is
+# also registered with GitHub as a signing key. Keep the OpenPGP helper as a
+# deliberate fallback, not as a second ambient signing authority.
+git_signing_fingerprint="SHA256:euxCzhlDs35mOKqJw6ZLVip5ZR/3zWaq7DuoPtTBXIs"
+if command -v ssh-add >/dev/null 2>&1; then
+  if ! ssh-add -l 2>/dev/null | grep -Fq "$git_signing_fingerprint"; then
+    lines+=("Git SSH signing key is unavailable — restore the SSH agent/keychain|")
+  fi
+  detail_out+=(
+    "Git signing: passwordless SSH-agent signing with ~/.ssh/id_ed25519.pub ($git_signing_fingerprint)."
+    "  OpenPGP remains a manual fallback; unlock its in-memory cache with gpg-signing-unlock only when a repository explicitly requires it."
+  )
+fi
+
 # ============================================================================
 # Level 1: Alerts
 # ============================================================================
@@ -291,8 +305,11 @@ individual_tools=(
   "firefoxpwa;dpkg-query -W -f='\${Version}' firefoxpwa 2>/dev/null;gh api repos/filips123/PWAsForFirefox/releases/latest --jq '.tag_name | ltrimstr(\"v\")';mkdir -p \"\$HOME/.tmp\" && D=\$(mktemp -d -p \"\$HOME/.tmp\") && (trap 'rm -rf \"\$D\"' EXIT; gh release download --repo filips123/PWAsForFirefox --pattern 'firefoxpwa_*_amd64.deb' --dir \"\$D\" --clobber && sudo dpkg -i \"\$D\"/firefoxpwa_*_amd64.deb)"
   "nvidia-gpu-exporter;dpkg-query -W -f='\${Version}' nvidia-gpu-exporter 2>/dev/null;gh api repos/utkuozdemir/nvidia_gpu_exporter/releases/latest --jq '.tag_name | ltrimstr(\"v\")';mkdir -p \"\$HOME/.tmp\" && D=\$(mktemp -d -p \"\$HOME/.tmp\") && (trap 'rm -rf \"\$D\"' EXIT; gh release download --repo utkuozdemir/nvidia_gpu_exporter --pattern 'nvidia-gpu-exporter_*_linux_amd64.deb' --dir \"\$D\" --clobber && sudo dpkg -i \"\$D\"/nvidia-gpu-exporter_*_linux_amd64.deb)"
   "redisinsight;dpkg-query -W -f='\${Version}' redisinsight 2>/dev/null;gh api repos/redis/RedisInsight/releases --jq 'map(select(any(.assets[]; .name|test(\"linux-amd64.deb\"))))[0].tag_name | ltrimstr(\"v\")';T=\$(gh api repos/redis/RedisInsight/releases --jq 'map(select(any(.assets[]; .name|test(\"linux-amd64.deb\"))))[0].tag_name') && gh release download \"\$T\" --repo redis/RedisInsight --pattern 'Redis-Insight-linux-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/Redis-Insight-linux-amd64.deb"
-  # npm registry tool
-  "claude;claude --version 2>/dev/null | head -1 | awk '{print \$1}';npm view @anthropic-ai/claude-code version;npm install -g @anthropic-ai/claude-code@latest"
+  # Native installer. Keep the version lookup on npm, but never install the
+  # npm package: mise's Node bin precedes ~/.local/bin after activation, so a
+  # second install shadows the managed native binary. `claude update` updates
+  # the active native installation and follows its configured release channel.
+  "claude;claude --version 2>/dev/null | head -1 | awk '{print \$1}';npm view @anthropic-ai/claude-code version;claude update"
   # rustup
   "rustc;rustc --version 2>/dev/null | awk '{print \$2}';rustup check 2>/dev/null | grep 'Update available' | head -1 | sed 's/.*-> \\([^ ]*\\).*/\\1/';rustup update"
 )
