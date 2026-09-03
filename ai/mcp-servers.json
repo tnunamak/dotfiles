@@ -30,6 +30,16 @@
       ],
       "reason": "Bridge for non-Codex agents; circular/useless in Codex itself."
     },
+    "datadog": {
+      "transport": "http",
+      "url": "https://mcp.datadoghq.com/v1/mcp",
+      "agents": [
+        "codex",
+        "claude",
+        "gemini"
+      ],
+      "reason": "US1 site. OAuth login handled per-agent on first connect; no bearer token env var."
+    },
     "excalidraw": {
       "transport": "http",
       "url": "https://mcp.excalidraw.com",

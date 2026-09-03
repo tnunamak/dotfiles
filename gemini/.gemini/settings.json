@@ -20,6 +20,10 @@
         "codex-mcp-server"
       ]
     },
+    "datadog": {
+      "url": "https://mcp.datadoghq.com/v1/mcp",
+      "type": "http"
+    },
     "excalidraw": {
       "url": "https://mcp.excalidraw.com",
       "type": "http"

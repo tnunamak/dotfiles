@@ -11,7 +11,7 @@
     "pr": ""
   },
   "includeCoAuthoredBy": false,
-  "model": "opus[1m]",
+  "model": "sonnet",
   "enableAllProjectMcpServers": false,
   "hooks": {
     "SessionStart": [
@@ -180,7 +180,12 @@
   "alwaysThinkingEnabled": false,
   "effortLevel": "high",
   "tui": "fullscreen",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
-  "theme": "auto"
+  "theme": "auto",
+  "voiceEnabled": true
 }

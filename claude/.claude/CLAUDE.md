@@ -17,3 +17,4 @@
 ## Local-only skills of note
 
 - `pdpp-local-data-access` — query Tim's PDPP instance (https://pdpp.vivid.fish) via `PDPP_OWNER_TOKEN` from the Infisical-hydrated environment. Local-machine bypass of the upstream scoped-grant flow. Source: `~/code/dotfiles/ai/skills/local/pdpp-local-data-access/SKILL.md`.
+- `deck-building` — Tim's full slide-deck pipeline (author-then-translate, anti-slop register, slidetext.py loop, verification gates). Read it BEFORE building or editing any deck for Tim. Source: `~/code/dotfiles/ai/skills/local/deck-building/SKILL.md`.
