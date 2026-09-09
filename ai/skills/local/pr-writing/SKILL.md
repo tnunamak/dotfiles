@@ -1,6 +1,6 @@
 ---
 name: pr-writing
-description: Write and gate PR descriptions and commit messages so a reader with zero session context can understand them. Use before opening a PR, writing a commit body, or drafting release/changelog prose, in any repo. Validated end-to-end against real PDP-Connect/pdpp diffs and cross-project research; a single draft plateaus around 7/10 on independent grading — the grade-then-revise loop in this skill is what closes the gap, not a longer prompt.
+description: Write and gate PR descriptions, commit messages and GitHub issues. Pick the audience first (outsider vs repo insider) — the rules differ. Use before opening a PR, writing a commit body, or drafting release/changelog prose, in any repo. Validated end-to-end against real PDP-Connect/pdpp diffs and cross-project research; a single draft plateaus around 7/10 on independent grading — the grade-then-revise loop in this skill is what closes the gap, not a longer prompt.
 ---
 
 # PR and commit writing
@@ -21,6 +21,17 @@ information-design/` (curse of knowledge, Zinsser, the Linux-kernel/Django/Amazo
 Chris-Beams convergence, and two 2026 studies quantifying agentic PR-description
 misalignment).
 
+## Audience gate — decide this BEFORE writing (added 2026-09-09 after two rejected issues)
+
+Ask who reads the artifact, because the five rules below are calibrated for one audience only:
+
+- **Outsider** (a PR body on a public repo, a release note, a commit read via `git blame` years later): the five rules apply in full, including rule 3.
+- **Repo insider** (a GitHub issue, a PR body on a repo whose reviewers work in it daily, a comment): rule 3 flips. Use the repo's own terms unglossed. Do not explain what a cursor, a spine, a connector or the console is — "imagine reading many GitHub issues that try to teach you how this works over and over again" (owner, 2026-09-09). Budget 150–300 words: one paragraph naming the defect with file:line, a small table or list of measured numbers, one paragraph of proposal, one line of what is not verified. Short means fewer ideas in plain sentences, never compressed clauses. `references/example-issue.md` is the accepted shape.
+
+Both audiences: **never reveal the owner's deployment or usage.** No host names, instance names, "production instance" (the repo has none; that phrase points at the owner's), personal names, emails, or the services the owner syncs. Say "an instance with five months of history" and "a connector whose cursor is about 700 KB". This is personal information even when it looks like a technical detail.
+
+Both audiences: not editorial. No severity adjectives, no "not useless", no persuasion; state the measurement and the mechanism.
+
 ## The five rules
 
 1. **Open with one plain sentence stating the concrete risk or problem** — what could
@@ -31,7 +42,7 @@ misalignment).
    as a substitute for connected reasoning — bullets let a writer state conclusions
    without stating the logic that connects them (this is why Amazon and 3M
    independently banned bullet-point business writing).
-3. **The Django rule** (the single highest-leverage rule; most failures are here): the
+3. **The Django rule** (outsider audience only — see the audience gate; for repo insiders this rule is inverted and glossing is the failure): the
    moment you introduce a project-specific term, name, env var, tool, or file, explain
    what it DOES in the SAME SENTENCE. This covers everything, not just obvious
    jargon — proper nouns ("the reference implementation"), tool/gate names
@@ -56,7 +67,10 @@ than an independent reader). What converges is iteration:
 
 1. Draft the PR/commit body against the five rules above.
 2. Grade it — dispatch an independent pass with **zero context beyond the drafted
-   text itself** (no diff, no session history) using `references/grading-rubric.md`.
+   text itself** (no diff, no session history) using `references/grading-rubric.md`,
+   telling the grader which audience applies. A grader running the outsider rubric on an
+   insider artifact will demand more glossing every round and drive the text into a
+   wall of definitions — that is exactly how issue data-connect#76 v1 happened.
    The grader must be a fresh agent/subagent call, not the same context that wrote
    the draft — a self-check by the writer is the failure mode this step exists to
    avoid.
@@ -66,6 +80,12 @@ than an independent reader). What converges is iteration:
    they fix new ones.
 4. Regrade. Repeat up to 3 rounds total. Stop and ship at 3 rounds regardless of
    verdict — diminishing returns set in and a human reviewer closes the rest.
+5. Render before publishing. A PR body is not a commit message: GitHub turns single
+   newlines in PR/issue bodies into `<br>`, so write paragraphs as single lines (no
+   72/76-column wrapping) and check the actual rendering — `gh api /markdown -f mode=gfm
+   -f text="$(cat body.md)"` must contain no `<br>` inside `<p>`, tables must come back
+   as `<table>`, fences balanced — then look at the PR page once. Text graders read raw
+   markdown and will not catch this (2026-09-09: two upstream PRs shipped ragged).
 
 ## When to skip the full loop
 

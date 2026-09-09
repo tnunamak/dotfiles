@@ -4,6 +4,8 @@ Copy this whole file's instructions into a fresh agent/subagent call. Paste ONLY
 drafted PR/commit text below the line — do not give the grader the diff, the session
 history, or any other context. It must grade as a genuine zero-context reader.
 
+Tell the grader explicitly which artifact AND which audience it's grading (see the audience gate in SKILL.md). For a repo-insider artifact (a GitHub issue, an internal PR), replace criterion 3 with criterion 3b below and add criteria 6 and 7.
+
 Tell the grader explicitly which artifact it's grading: "This is a PR description
 that appears alongside its diff on GitHub" or "This is a standalone commit message,
 read via `git log`/`git blame` with no diff shown next to it." A commit message has
@@ -46,3 +48,13 @@ had no cookies at all. A request carrying an unrelated cookie bypassed the guard
 
 Text to grade:
 ---
+
+---
+
+## Insider-audience additions (issues, internal PRs)
+
+3b. Does the text use the repo's own terms WITHOUT explaining them? Flag every sentence that teaches the reader how the system works (what a component is, why it exists) rather than stating the defect. Any tutorial sentence is a FAIL.
+
+6. Length and readability: under ~300 words, plain sentences, one idea each. Flag compressed clauses (semicolon chains, stacked parentheticals) as FAIL — shortening by compression is worse than length.
+
+7. Personal or deployment information: flag any host, instance, "production", person, email, or the specific services the owner uses. Any occurrence is a FAIL.
