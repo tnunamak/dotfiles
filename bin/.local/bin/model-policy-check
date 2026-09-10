@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Prose (ai/AGENTS.md rule 1) and the machine-readable minnows model-choice-policy
+# pack drifted apart for two months (prose said gpt-6-astra, pack still said
+# gpt-5.6-sol/xhigh) and was only caught by incidental `waspflow doctor` noise
+# on 2026-09-09. This makes that drift a hard failure instead of a stray log line.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.." && pwd)"
+AGENTS_MD="${AGENTS_MD:-$REPO_ROOT/ai/AGENTS.md}"
+MAX_PACK_AGE_DAYS="${MAX_PACK_AGE_DAYS:-30}"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+warn() { echo "WARN: $*" >&2; }
+
+[[ -f "$AGENTS_MD" ]] || fail "AGENTS.md not found at $AGENTS_MD"
+
+# Extraction is intentionally simple: rule 1 states each provider's id in
+# backticks once, prefixed with the provider name. If rule 1's wording
+# changes shape, update this sed expression rather than making it cleverer.
+# shellcheck disable=SC2016
+codex_model="$(sed -n 's/.*Codex `\([^`]*\)`.*/\1/p' "$AGENTS_MD" | head -1)"
+[[ -n "$codex_model" ]] || fail "could not extract Codex model id from $AGENTS_MD"
+
+pack_path="${WASPFLOW_OPS_POLICY:-}"
+if [[ -z "$pack_path" ]]; then
+  pack_path="${DATA_PACKS_HOME:-$HOME/.local/share/minnows-data}/model-choice-policy/operating-points.json"
+fi
+[[ -f "$pack_path" ]] || fail "model-choice-policy pack not found at $pack_path"
+command -v jq >/dev/null || fail "jq is required"
+
+echo "Checking pack: $pack_path"
+echo "Against AGENTS.md Codex model: $codex_model"
+
+drift=0
+
+while IFS=$'\t' read -r id model effort; do
+  if [[ "$model" != "$codex_model" ]]; then
+    echo "FAIL: op '$id' uses model '$model', AGENTS.md says '$codex_model'" >&2
+    drift=1
+  fi
+  if [[ "$effort" == "xhigh" || "$effort" == "max" ]]; then
+    echo "FAIL: op '$id' uses effort '$effort' (AGENTS.md forbids xhigh/max by default)" >&2
+    drift=1
+  fi
+done < <(jq -r '.operating_points[] | select(.expands_to.provider=="codex") | [.id, .expands_to.model, .expands_to.effort] | @tsv' "$pack_path")
+
+(( drift == 0 )) || fail "model policy pack disagrees with ai/AGENTS.md rule 1 — update the pack or the prose"
+
+echo "OK: codex ops in the pack match AGENTS.md ($codex_model, no xhigh/max)"
+
+generated_at="$(jq -r '.generated_at // empty' "$pack_path")"
+if [[ -n "$generated_at" ]]; then
+  generated_epoch="$(date -d "$generated_at" +%s 2>/dev/null || date +%s)"
+  age_days=$(( ( $(date +%s) - generated_epoch ) / 86400 ))
+  if (( age_days > MAX_PACK_AGE_DAYS )); then
+    warn "pack generated_at=$generated_at is $age_days days old (> $MAX_PACK_AGE_DAYS)"
+  fi
+fi
+
+if command -v waspflow >/dev/null; then
+  doctor_out="$(timeout 30 waspflow doctor 2>&1 || true)"
+  if grep -q "STALE" <<<"$doctor_out"; then
+    warn "waspflow doctor reports a STALE edge:"
+    grep "STALE" <<<"$doctor_out" >&2
+  fi
+fi
+
+exit 0

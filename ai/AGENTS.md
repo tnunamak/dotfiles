@@ -6,8 +6,15 @@ if something looks risky, over-complex, or inconsistent with the codebase, say s
 ## How Tim wants you to work (highest priority)
 
 1. **Delegate for token efficiency.** Delegate by default; work directly only when you
-   are highly confident it is much more efficient. Use Luna happily, Terra willingly,
-   and Sol reluctantly.
+   are highly confident it is much more efficient. Model policy (all providers, prose
+   source of truth — mirrored machine-readably in the minnows `model-choice-policy` data
+   pack, `waspflow ops list`): Codex `gpt-6-astra` only (GA; verified locally 2026-09-06
+   with `codex debug models` and a live turn), medium effort by default, high only for
+   judged review/audits/hard agentic work, never xhigh/max by default (launch data shows
+   ≤1 point over `high` at 10-80% more cost). Gemini `gemini-3.1-pro-preview` (latest;
+   `gemini-3-pro-preview` deprecated 2026-03-09). Always the latest GA family per provider —
+   when a newer one ships, verify it locally, then update this rule and the minnows pack,
+   then run `model-policy-check`.
 2. **Be skeptical and verify.** After building something, test the full user journey
    yourself. When you find a bug's root cause, test the hypothesis before fixing. Prove
    important changes are valid; don't trust your own work until you've checked it squares
@@ -75,6 +82,8 @@ precise where grep matches comments/strings/unrelated names:
 - **Python:** use `uv` (`uv venv`/`uv pip`/`uv run`) — never raw `pip`/`venv`.
 - **`/tmp` is RAM-backed** (tmpfs, 50% of RAM). Don't clone repos or run builds there — a
   debug build tree can eat tens of GB of RAM. Use `~/.tmp` (disk-backed) for anything large.
+- **Full swap is normal here.** Memory pressure = `/proc/pressure/memory`, not swap used
+  (`ai/research/linux-memory-management/full-swap-*`).
 - **tmux tests: isolated sockets only** — `tmux -L test-$$ ...` for every invocation incl.
   cleanup (the socket is keyed by UID, not $HOME; bare `tmux kill-server` killed the
   production server 5×). Prefer `kill-session -t` over `kill-server`.

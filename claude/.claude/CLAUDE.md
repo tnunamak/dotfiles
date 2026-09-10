@@ -5,8 +5,7 @@
 ## Model Policy
 
 - **Claude Code**: use `fable` for the top-level orchestrator and final judgment; delegate bounded implementation and mechanical work to cheaper agents. The global `model` setting enforces this default.
-- **External Gemini via MCP**: prefer `gemini-3.1-pro-preview` (latest and most capable; `gemini-3-pro-preview` was deprecated March 9 2026)
-- **External OpenAI / Codex**: use GPT-5.6 only. Use `gpt-5.6-sol` for orchestration and judged review, `gpt-5.6-terra` for bounded implementation, and `gpt-5.6-luna` for light/mechanical work. Do not use GPT-5.5, GPT-5.4, or older models. Prefer higher reasoning effort only when task complexity warrants it, and update these exact IDs when a newer GA family is verified locally.
+- Exact model IDs and effort levels for external providers (Codex, Gemini) live in `ai/AGENTS.md` rule 1 and in the minnows `model-choice-policy` data pack (`waspflow ops list`) — don't duplicate them here. When a newer GA family ships, update AGENTS.md and the pack, then run `model-policy-check`.
 
 ## Private config
 
