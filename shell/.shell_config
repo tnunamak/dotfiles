@@ -174,7 +174,7 @@ fi
 # Pre-flight is only needed for the user-login path (keyring); the machine
 # identity path doesn't touch the Secret Service backend at all, so we skip
 # the health check when MI is going to succeed.
-if command -v infisical >/dev/null 2>&1; then
+if [[ -z "${INFISICAL_SKIP_HYDRATION:-}" ]] && command -v infisical >/dev/null 2>&1; then
   _inf_timeout=timeout
   command -v "$_inf_timeout" >/dev/null 2>&1 || _inf_timeout=gtimeout
   _inf_ok=0
@@ -371,7 +371,25 @@ if command -v infisical >/dev/null 2>&1; then
 
   unset _inf_secrets _inf_timeout _inf_ok
 elif [[ $- == *i* ]]; then
-  printf '%s\n' 'Infisical CLI not installed; managed shell secrets are unavailable.'
+  # Two different reasons land here and had one misleading message between
+  # them ("CLI not installed") — confirmed reproducible 2026-09-09: with
+  # INFISICAL_SKIP_HYDRATION set (e.g. inherited from a tmux pane exported it
+  # per the keyring-lockup workaround), this branch always fires even though
+  # infisical is on PATH and working. Distinguish the two so the message is
+  # actually actionable:
+  #   - hydration was deliberately skipped (the common case above) — say so
+  #     plainly instead of implying the CLI is missing.
+  #   - the CLI genuinely isn't resolvable via `command -v` — if the binary
+  #     exists on disk anyway, say that explicitly, since a PATH/hash miss
+  #     with a present binary is the actionable clue (not a real "not
+  #     installed").
+  if [[ -n "${INFISICAL_SKIP_HYDRATION:-}" ]]; then
+    printf '%s\n' 'Infisical hydration skipped (INFISICAL_SKIP_HYDRATION set); managed shell secrets are unavailable.'
+  elif [[ -x "$HOME/.local/bin/infisical" ]]; then
+    printf '%s\n' 'Infisical CLI not found in PATH (but exists at ~/.local/bin/infisical — check that ~/.local/bin precedes it and the hash table is not stale); managed shell secrets are unavailable.'
+  else
+    printf '%s\n' 'Infisical CLI not found in PATH (expected ~/.local/bin/infisical); managed shell secrets are unavailable.'
+  fi
 fi
 
 # Machine-specific config (nvm, conda, android, etc.)
