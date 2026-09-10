@@ -46,16 +46,32 @@ trap 'rm -rf "$TMPDIR_PARALLEL"' EXIT
 lines=()
 detail_out=()
 
-# Git uses the existing SSH agent for passwordless commit signing. This key is
-# also registered with GitHub as a signing key. Keep the OpenPGP helper as a
-# deliberate fallback, not as a second ambient signing authority.
+# Git SSH commit signing depends on the PRIVATE KEY FILE, not on the agent.
+# `ssh-keygen -Y sign` (what git runs for gpg.format=ssh) reads
+# ~/.ssh/id_ed25519 directly when the agent does not hold it — verified: a
+# real commit signed with %G?=G while the key was absent from ssh-add -l, and
+# signing fails with "No private key found for public key" when only the .pub
+# is present. The key is passphraseless, so that path is silent.
+#
+# So check what signing actually needs: a readable private key whose public
+# half matches the fingerprint git is configured to sign with. An earlier
+# version tested `ssh-add -l` membership, which both fired spuriously on every
+# fresh boot and stayed silent in the one case that truly breaks signing.
 git_signing_fingerprint="SHA256:euxCzhlDs35mOKqJw6ZLVip5ZR/3zWaq7DuoPtTBXIs"
-if command -v ssh-add >/dev/null 2>&1; then
-  if ! ssh-add -l 2>/dev/null | grep -Fq "$git_signing_fingerprint"; then
-    lines+=("Git SSH signing key is unavailable — restore the SSH agent/keychain|")
+git_signing_key="$HOME/.ssh/id_ed25519"
+if command -v ssh-keygen >/dev/null 2>&1; then
+  if [[ ! -r "$git_signing_key" ]]; then
+    lines+=("Git SSH signing key missing or unreadable ($git_signing_key)|ls -l $git_signing_key")
+  elif ! ssh-keygen -y -P "" -f "$git_signing_key" >/dev/null 2>&1; then
+    # Readable but not usable unattended (passphrase-protected or corrupt):
+    # signing would block on a prompt instead of failing fast.
+    lines+=("Git SSH signing key is not usable unattended|ssh-keygen -y -f $git_signing_key")
+  elif ! ssh-keygen -lf "$git_signing_key" 2>/dev/null | grep -Fq "$git_signing_fingerprint"; then
+    lines+=("Git SSH signing key does not match the configured fingerprint|ssh-keygen -lf $git_signing_key")
   fi
   detail_out+=(
-    "Git signing: passwordless SSH-agent signing with ~/.ssh/id_ed25519.pub ($git_signing_fingerprint)."
+    "Git signing: passwordless SSH signing with ~/.ssh/id_ed25519 ($git_signing_fingerprint)."
+    "  Reads the private key file directly; a loaded ssh-agent is not required."
     "  OpenPGP remains a manual fallback; unlock its in-memory cache with gpg-signing-unlock only when a repository explicitly requires it."
   )
 fi

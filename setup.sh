@@ -283,12 +283,14 @@ echo ""
 echo "Stowing packages: ${PACKAGES[*]}"
 # --no-folding:
 # - bin: ~/.local/bin/ is shared with other tools (pipx, npm, etc.)
+# - shell: ~/.config/environment.d/ holds untracked local files (e.g.
+#   kwin-drm.conf); folding would symlink the whole dir and orphan them.
 # - tmux: systemd drop-in dirs (e.g. tmux.service.d) must be real dirs,
 #   not symlinks — systemd does not follow directory symlinks for drop-ins.
 # - *-systemd facade packages: keep the user-unit parents real while linking
 #   only their dedicated units and drop-ins, which avoids claiming unrelated
 #   user units.
-NO_FOLD_PKGS=(bin nvim claude qwen tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd drkonqi-systemd)
+NO_FOLD_PKGS=(bin nvim claude qwen shell tmux daisy-systemd playwright-mcp-systemd bee-watchdog-systemd llama-bee-systemd drkonqi-systemd)
 
 # User units used to be stowed from the broad `systemd` package. They now live
 # behind dedicated facade packages, but Stow will not transfer ownership from

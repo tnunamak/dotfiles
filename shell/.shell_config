@@ -128,24 +128,16 @@ firewall-status() {
   docker exec "$1" /workspace/.devcontainer/research-mode-toggle.sh status
 }
 
-# SSH agent (persistent across terminals)
-if [[ -n "$IS_LINUX" ]]; then
-  export SSH_AUTH_SOCK=~/.ssh/ssh_auth_sock
-  ssh-add -l > /dev/null 2>&1
-  _ssh_agent_status=$?
-  if (( _ssh_agent_status == 2 )); then
-    # A stale socket can still exist after its ssh-agent died.  Test the agent,
-    # not merely the socket path, before reusing it.
-    eval "$(ssh-agent -s)" > /dev/null
-    ln -sf "$SSH_AUTH_SOCK" ~/.ssh/ssh_auth_sock
-    ssh-add -l > /dev/null 2>&1
-    _ssh_agent_status=$?
-  fi
-  # Exit 1 means the agent is healthy but has no identities; 2 means it could
-  # not be contacted.  Never leak the latter into every new terminal.
-  (( _ssh_agent_status == 1 )) && ssh-add -q > /dev/null 2>&1 || true
-  unset _ssh_agent_status
-fi
+# SSH agent: nothing to do here. SSH_AUTH_SOCK is pinned declaratively in
+# .config/environment.d/10-ssh-auth-sock.conf (same stow package), and
+# `AddKeysToAgent yes` in ~/.ssh/config populates the agent on first use.
+#
+# This used to spawn its own `ssh-agent -s` and symlink ~/.ssh/ssh_auth_sock at
+# it. That made the shell a fourth competitor to the three systemd socket units
+# that elect SSH_AUTH_SOCK, so interactive shells and everything else could see
+# different agents holding different keys — the cause of intermittent
+# "Git SSH signing key is unavailable" warnings. It also leaked an orphan agent
+# per shell that hit the dead-socket branch (8 were live when this was removed).
 
 # Secrets — hydrate from Infisical (personal-dev/dev). Its encrypted local cache
 # keeps this same export path working during a server outage; there is no
