@@ -262,9 +262,18 @@ print(d.get('npm_cmd', 'npm update -g'))
 
 # Parse results into bash arrays
 # Format: "detail_key|display_name|upgrade_cmd"
+#
+# pipx upgrade-all crashes with a raw Python traceback (FileNotFoundError on a
+# venv's bin/python) when a venv's pinned interpreter no longer exists — e.g.
+# a distro release upgrade removes the old default python3.X and
+# `pipx list --short` reports "invalid interpreter" for every venv pinned to
+# it. Detect that before running upgrade-all and self-heal with
+# `pipx reinstall-all` against the current python3, instead of handing the
+# picker a command that's guaranteed to traceback.
+pipx_upgrade_cmd='if pipx list --short 2>&1 | grep -q "invalid interpreter"; then pipx reinstall-all --python "$(command -v python3)"; else pipx upgrade-all; fi'
 python_managers=(
   "npm|npm globals|$npm_upgrade_cmd"
-  "pipx|pipx|pipx upgrade-all"
+  "pipx|pipx|$pipx_upgrade_cmd"
 )
 
 for pm_entry in "${python_managers[@]}"; do
@@ -300,8 +309,11 @@ individual_tools=(
   # ds installs into /usr/local/bin (root-owned), so the installer needs sudo.
   # `ds update` is guidance-only and misreports the install source as homebrew.
   "ds;ds version 2>/dev/null | head -1 | awk '{print \$2}';gh api repos/devspecs-com/devspecs-cli/releases/latest --jq .tag_name;curl -fsSL https://raw.githubusercontent.com/devspecs-com/devspecs-cli/main/install.sh | sudo sh"
-  # .deb from GitHub releases
-  "sunshine;dpkg-query -W -f='\${Version}' sunshine 2>/dev/null;gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name | ltrimstr(\"v\")';TAG=\$(gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name') && gh release download \$TAG --repo LizardByte/Sunshine --pattern 'sunshine-debian-trixie-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/sunshine-debian-trixie-amd64.deb"
+  # .deb from GitHub releases. Asset naming switched to
+  # sunshine_<ver>-1+<distro><rel>_amd64.deb (was sunshine-debian-trixie-amd64.deb,
+  # which 404s as "no assets match the file pattern" against current releases).
+  # Pull the Ubuntu-versioned build for this host instead of the Debian one.
+  "sunshine;dpkg-query -W -f='\${Version}' sunshine 2>/dev/null;gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name | ltrimstr(\"v\")';TAG=\$(gh api repos/LizardByte/Sunshine/releases --jq '.[0].tag_name') && mkdir -p \"\$HOME/.tmp\" && D=\$(mktemp -d -p \"\$HOME/.tmp\") && (trap 'rm -rf \"\$D\"' EXIT; gh release download \$TAG --repo LizardByte/Sunshine --pattern \"sunshine_*+ubuntu\$(. /etc/os-release; echo \$VERSION_ID)_amd64.deb\" --dir \"\$D\" --clobber && sudo dpkg -i \"\$D\"/sunshine_*.deb)"
   "firefoxpwa;dpkg-query -W -f='\${Version}' firefoxpwa 2>/dev/null;gh api repos/filips123/PWAsForFirefox/releases/latest --jq '.tag_name | ltrimstr(\"v\")';mkdir -p \"\$HOME/.tmp\" && D=\$(mktemp -d -p \"\$HOME/.tmp\") && (trap 'rm -rf \"\$D\"' EXIT; gh release download --repo filips123/PWAsForFirefox --pattern 'firefoxpwa_*_amd64.deb' --dir \"\$D\" --clobber && sudo dpkg -i \"\$D\"/firefoxpwa_*_amd64.deb)"
   "nvidia-gpu-exporter;dpkg-query -W -f='\${Version}' nvidia-gpu-exporter 2>/dev/null;gh api repos/utkuozdemir/nvidia_gpu_exporter/releases/latest --jq '.tag_name | ltrimstr(\"v\")';mkdir -p \"\$HOME/.tmp\" && D=\$(mktemp -d -p \"\$HOME/.tmp\") && (trap 'rm -rf \"\$D\"' EXIT; gh release download --repo utkuozdemir/nvidia_gpu_exporter --pattern 'nvidia-gpu-exporter_*_linux_amd64.deb' --dir \"\$D\" --clobber && sudo dpkg -i \"\$D\"/nvidia-gpu-exporter_*_linux_amd64.deb)"
   "redisinsight;dpkg-query -W -f='\${Version}' redisinsight 2>/dev/null;gh api repos/redis/RedisInsight/releases --jq 'map(select(any(.assets[]; .name|test(\"linux-amd64.deb\"))))[0].tag_name | ltrimstr(\"v\")';T=\$(gh api repos/redis/RedisInsight/releases --jq 'map(select(any(.assets[]; .name|test(\"linux-amd64.deb\"))))[0].tag_name') && gh release download \"\$T\" --repo redis/RedisInsight --pattern 'Redis-Insight-linux-amd64.deb' --dir /tmp/ --clobber && sudo dpkg -i /tmp/Redis-Insight-linux-amd64.deb"
