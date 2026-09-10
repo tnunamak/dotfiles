@@ -159,3 +159,34 @@ Two separate costs observed today, unrelated to each other:
    `~/code/waspflow` commit `7e90aa8f2` (`lib/core.sh`, `ulimit -c 0` inserted into the lane-scope
    wrapper shell before it execs the real command) — committed to branch
    `waspflow/crash-noise-suppression-0830`, not pushed, not merged.
+
+## 2026-09-03 — pdpp orchestration day (Claude Fable orchestrator) — stray message reached the owner's live window; contributing waspflow defects
+
+Incident: a steering note meant for a lane was pasted into the owner's active tmux window (main:30, an unrelated Claude session). Direct cause was the orchestrator's raw tmux use: a window lookup by substring returned empty and `tmux paste-buffer -t ""` targets the active window. Not a waspflow bug, but waspflow reliability gaps pushed the orchestrator onto that raw path repeatedly:
+
+1. **spawn does not confirm the first prompt was accepted.** Codex lanes: the CLI's "Update now / Skip" prompt and the "Retry with a faster model / Dismiss" interstitial both swallow the initial task text; the lane then sits at an empty composer and `waspflow list` still shows it live. Happened 5 times today (terms-prior-art, port-289-302, db-bloat-fix, terms-judge, user-terms-deep-codex). Claude lanes: spawn prints "the lane is recorded ... do NOT assume it is working" and offers no verification. Ask: after spawn, poll the pane/transcript until the first turn starts (or the model line + a "Working" marker appears), auto-answer known interstitials (Skip; Dismiss), and fail loudly if the prompt did not land.
+2. **revise reports false negatives.** `waspflow revise` for Claude lanes said "message may not have submitted (transcript did not grow)" three times when the message HAD landed and the lane was working; for Codex it says "not confirmed" when it was. This makes the orchestrator distrust the safe path and reach for raw tmux. Ask: base the check on the pane/transcript actually accepting the turn, with a longer grace window.
+3. **reap refuses lanes without a "runtime receipt"** even when the worktree is clean and the report exists; `--force` did not override for Codex lanes twice. The orchestrator then removed worktrees and killed windows by hand. Ask: `--force` should reap, with a warning.
+4. **Account/config-dir inheritance for Claude lanes is opaque.** With `CLAUDE_CONFIG_DIR` unset in the caller and unset in tmux global env, lanes still came up on the previous config dir; with it set explicitly to another dir, the lane got the tmux global value. The orchestrator ended up creating raw windows in the owner's `main` session (wrong) to force the account. Ask: `spawn --config-dir <path>` (or `--account`) that is applied to the lane's process explicitly and shown in `waspflow status`.
+5. **Activity detection.** No stable "is the lane mid-turn" signal; spinner words vary (Zesting/Flambéing/Brewing...). The orchestrator reaped a working lane (prose-gate-0903) because its grep missed the spinner. Ask: expose `waspflow status <lane>` with `state: working|idle|blocked-on-prompt|dead` derived from the transcript, and make `reap` refuse a working lane unless `--force`.
+6. **Windows created by hand in `main`** (tests-default, dossiers-g3) were the orchestrator's error, but it happened because 4. left no supported way to pick the account. Same root cause.
+
+Positive: `--isolate` worktrees, per-lane reports, and `peek`/`status` were the backbone of a 15-PR day; the failures above were all at the edges (first prompt, last reap, and account selection).
+
+## 2026-09-09 — Claude lane dies at the trust dialog; Codex spawn reports false "NOT confirmed"
+
+- **Claude worker into `~/code/minnows` (odl config, claude 2.1.266) exits within seconds.** Peek showed Claude's
+  folder-trust dialog ("Quick safety check... ❯ No, exit / Yes, I trust this folder") even though
+  `~/.claude-odl/.claude.json` has `hasTrustDialogAccepted: true` for that project. waspflow then typed the task and
+  pressed Enter, which confirmed the default **"No, exit"** — window gone, lane `interrupted`, report never produced,
+  reap's recovery pass failed ("No conversation found"). Reproduced twice (`minnows-policy-gpt6`, `minnows-policy-gpt6b`);
+  a lane into `~/code/dotfiles` with the same config did not hit the dialog. Fell back to a Claude Code subagent.
+  Suggestions: detect the trust dialog before injecting (it is a distinctive screen), answer it or fail the spawn
+  with a clear "trust dialog present" message instead of pressing Enter into it; and/or pass `--trust`-equivalent
+  when the project is already trusted in the resolved config dir.
+- **Codex spawns (`pr1-codex-review`, `pr2-codex-review`, `pr1-codex-review3`) all printed "launched but the task was
+  NOT confirmed submitted"** yet were working normally within seconds (peek showed `• Working`). The warning is a
+  false alarm for Codex with gpt-6-astra/high — probably the confirmation oracle timing out before the first
+  `task_started` event. Suggest a longer/adaptive confirmation window for Codex, or downgrade to an info line.
+- Minor: `waspflow ops list` still resolves `review.audit` to `gpt-5.6-sol/xhigh`; fixed on the minnows side
+  (policy v0.1.8 branch), but waspflow could warn when an op's effort is `xhigh`/`max` given the owner policy.
