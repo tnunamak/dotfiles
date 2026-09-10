@@ -17,6 +17,15 @@
     "searxng-test"
   ],
   "servers": {
+    "contact-intelligence": {
+      "transport": "http",
+      "url": "https://contact-intelligence.vercel.app/mcp",
+      "oauthClientId": "00565bb9-e53b-4941-b79b-271881f3eded",
+      "agents": [
+        "claude"
+      ],
+      "reason": "Vana team CRM (deal flow, orgs, people, touchpoints). Auth is Supabase OAuth with NO registration_endpoint (verified 2026-09-10 against /.well-known/oauth-authorization-server), so dynamic client registration is impossible and the pre-registered client ID is required; secret is empty (public client). Claude defers the browser approval to first connect. Gemini and Codex are excluded: `gemini mcp add` has no OAuth client-id flag, and `codex mcp add --oauth-client-id` performs an INTERACTIVE login inline (its own help says \"for the immediate login only\") — with no TTY it hangs forever and blocks setup.sh. Add it to Codex by hand when wanted: `codex mcp add contact-intelligence --url https://contact-intelligence.vercel.app/mcp --oauth-client-id 00565bb9-e53b-4941-b79b-271881f3eded`. Sign in as tim@opendatalabs.xyz; the magic link comes from crm@vanafoundation.org and lands in spam."
+    },
     "codex-cli": {
       "transport": "stdio",
       "command": "npx",

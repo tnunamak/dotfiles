@@ -57,6 +57,13 @@ def can_configure(agent, cfg):
     token_env = bearer_env(cfg)
     if agent in {"claude", "gemini"} and token_env and token_env not in os.environ:
         return False
+    # A server needing a pre-registered OAuth client can only be synced for
+    # agents that both accept a client ID and defer login to first connect.
+    # `gemini mcp add` has no client-id flag (would install unauthenticated).
+    # `codex mcp add --oauth-client-id` runs an INTERACTIVE login inline, so
+    # with no TTY it hangs forever and blocks setup.sh. Both: configure by hand.
+    if agent in {"gemini", "codex"} and cfg.get("oauthClientId"):
+        return False
     return True
 
 
@@ -98,6 +105,13 @@ def bearer_env(cfg):
     return (cfg.get("auth") or {}).get("bearerTokenEnv")
 
 
+def oauth_client_id(cfg):
+    """Static OAuth client ID for servers whose authorization server offers no
+    registration_endpoint (no dynamic client registration), so the client must
+    be pre-registered. Claude and Codex accept one; Gemini has no such flag."""
+    return cfg.get("oauthClientId")
+
+
 def require_transport(name, cfg):
     transport = cfg.get("transport")
     if transport not in {"http", "stdio"}:
@@ -112,6 +126,9 @@ def add_codex(name, cfg):
         token_env = bearer_env(cfg)
         if token_env:
             cmd.extend(["--bearer-token-env-var", token_env])
+        client_id = oauth_client_id(cfg)
+        if client_id:
+            cmd.extend(["--oauth-client-id", client_id])
         run(cmd)
         return
 
@@ -140,6 +157,9 @@ def add_claude(name, cfg):
         token_env = bearer_env(cfg)
         if token_env and token_env in os.environ:
             cmd.extend(["--header", f"Authorization: Bearer {os.environ[token_env]}"])
+        client_id = oauth_client_id(cfg)
+        if client_id:
+            cmd.extend(["--client-id", client_id])
         run(cmd)
         return
 
