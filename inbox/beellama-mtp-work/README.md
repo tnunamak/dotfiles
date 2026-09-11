@@ -84,8 +84,29 @@ Generating a token requires running as the git user:
 `docker exec -u git forgejo forgejo admin user generate-access-token ...` —
 as root it refuses with "Forgejo is not supposed to be run as root".
 
-## Disposal
+## Other branches — one had unique work
 
-The checkout at `~/applications/beellama` is 3.9 GB and safe to delete now that
-the history is on Forgejo. Nothing depends on it — `llama-bee` serves the
-official build.
+The checkout had 9 local branches, not just `main`. Checked before deleting:
+six were rebased duplicates (same commit subjects already in `main`) and
+`backup/pre-merge-0911` was identical to `main`. But
+`waspflow/bee-v032-upgrade-0714` carried ONE commit that exists nowhere else:
+
+  b7905c63e  server: keep MTP replay isolated from DFlash telemetry  (2026-07-14)
+
+A 10-line deletion in `tools/server/server-context.cpp`. Zero occurrences in
+`main`. Archived separately as `patches-extra/`, and **all 9 branches were
+pushed to Forgejo** — verified remotely, 9 branches, SHAs matching local, and
+`b7905c63e` confirmed reachable by API.
+
+`local-branches.txt` records every branch with its SHA and date.
+
+## Disposal — DONE
+
+Deleted 2026-09-11, reclaiming 3.9 GB (disk 213G -> 216G free). Verified after
+deletion: `llama-bee.service` and `bee-llama-watchdog.service` both still
+active, and `llama-bee-start --print-command` resolves to
+`llamacpp-official-505b1ed1-fa-all-quants-rpath/bin/llama-server` — the path it
+always preferred. Nothing regressed.
+
+To get the work back: clone `https://git.vivid.fish/tnunamak/beellama.cpp`, or
+`git am` the patches here.

@@ -1,0 +1,33 @@
+From b7905c63ef7a9f8bb1018206eb8d9fbe3c6cf628 Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Tue, 14 Jul 2026 11:42:25 -0500
+Subject: [PATCH] server: keep MTP replay isolated from DFlash telemetry
+
+---
+ tools/server/server-context.cpp | 10 ----------
+ 1 file changed, 10 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 7ac79a1e0..5565abc1f 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -6997,16 +6997,6 @@ private:
+                         common_speculative_accept(slot.get_spec(), slot.id, n_accepted_draft);
+                         GGML_ASSERT(common_speculative_commit_mtp_replay(slot.get_spec(), slot.id));
+                         slot.n_draft_accepted += n_accepted_draft;
+-                        if (slot.dm_adaptive) {
+-                            slot.observe_profit_acceptance((int) n_draft, (int) n_accepted_draft);
+-                            slot.profit_pending = true;
+-                            if (slot.profit_pending_requested_n_max <= 0) {
+-                                slot.profit_pending_requested_n_max = (int32_t) n_draft;
+-                            }
+-                            slot.profit_pending_n_draft = (int32_t) n_draft;
+-                            slot.profit_pending_n_accepted = (int32_t) n_accepted_draft;
+-                            slot.profit_pending_tree = false;
+-                        }
+ 
+                         const int64_t t_current = ggml_time_us();
+                         auto replay_output = SERVER_MTP_REPLAY_OUTPUT_INVALID;
+-- 
+2.53.0
+
