@@ -335,24 +335,37 @@ fi
 # Patch 5: remove the now-vestigial, still-leaky strip_assistant_pane_contents()
 # from the fork's save-assistant-sessions.sh. With Patch 3 active, assistant panes
 # never enter pane_contents.tar.gz, so the strip finds nothing — but it still does
-# a full ~1GB extract into an unguarded `mktemp -d`, retaining the exact /tmp leak
-# surface this whole change exists to remove. We delete the call site (replacing
+# a full extract into an unguarded `mktemp -d`, retaining the exact /tmp leak
+# surface this whole change exists to remove. Measured 2026-09-11: the archive
+# is ~0.3 MB compressed / ~2.5 MB extracted, so at a 5-minute save interval this
+# is roughly 720 MB/day of pointless extract-and-discard on a tmpfs /tmp, plus
+# one leaked directory per save. (An earlier revision of this comment said
+# "~1GB extract"; that figure is stale and presumably dates from the
+# grouped-session clone storm, when saves really were that large.) The leak is
+# slow, not urgent: it is an efficiency fix, NOT a correctness one, unlike
+# Patch 2d which resume actually depends on.
+# We delete the call site (replacing
 # the `if [ "$count" -gt 0 ]; then strip_assistant_pane_contents; fi` block with a
 # no-op marker) and leave the function definition harmlessly unreferenced.
 # Idempotent: guarded by the AR-Patch5 marker.
 if [[ -f "$ASSISTANT_SAVE" ]] &&
    ! grep -qF 'AR-Patch5' "$ASSISTANT_SAVE" &&
    grep -qF 'strip_assistant_pane_contents' "$ASSISTANT_SAVE"; then
-  # Replace the guarded call (3 lines) with a marker comment. The call always
-  # appears as exactly:
+  # Replace the guarded call (3 lines) with a marker comment. Match the GUARD
+  # LOOSELY: upstream has already respelled this condition once. It was
   #     if [ "$count" -gt 0 ]; then
-  #         strip_assistant_pane_contents
-  #     fi
+  # and after the 2026-09-11 update (4d74092, which added vouched relaunch
+  # tracking) it is
+  #     if [ $((count + relaunch_count)) -gt 0 ]; then
+  # The old exact-match pattern silently stopped matching, the patch logged
+  # "NOT applied", and the leaky extract came back. Anchor on the call line
+  # instead, which is the thing being removed, and accept any single-line `if`
+  # guard around it.
   # Transform to a temp file, validate (marker present + bash -n), then swap —
   # never edit ASSISTANT_SAVE in place, since it also carries the 2a/2b
   # boot-restore patches and must not be left corrupt.
   perl -0777 -pe '
-    s/\tif \[ "\$count" -gt 0 \]; then\n\t\tstrip_assistant_pane_contents\n\tfi\n/\t# AR-Patch5: strip_assistant_pane_contents call removed — assistant panes\n\t# are now skipped at capture time (see patch-assistant-resurrect.sh Patch 3),\n\t# so the leaky extract\/strip\/repack is no longer needed.\n/;
+    s/\tif \[[^\n]*\]; then\n\t\tstrip_assistant_pane_contents\n\tfi\n/\t# AR-Patch5: strip_assistant_pane_contents call removed — assistant panes\n\t# are now skipped at capture time (see patch-assistant-resurrect.sh Patch 3),\n\t# so the leaky extract\/strip\/repack is no longer needed.\n/;
   ' "$ASSISTANT_SAVE" >"${ASSISTANT_SAVE}.artmp"
   if grep -qF 'AR-Patch5' "${ASSISTANT_SAVE}.artmp" && bash -n "${ASSISTANT_SAVE}.artmp" 2>/dev/null; then
     cat "${ASSISTANT_SAVE}.artmp" >"$ASSISTANT_SAVE"
