@@ -1,6 +1,15 @@
 # npm packages installed globally on both host and devcontainers.
 # One package per line. Comments and blank lines are ignored.
 # Consumed by: setup.sh, devcontainer/Dockerfile
+#
+# Keep prereleases OFF this list. `prisma` was removed 2026-09-11: its publisher
+# tags a release candidate as `latest` (8.0.0-rc.13 while 7.10.0 was the last
+# stable), and that RC pulls three @effect packages whose peer range
+# `effect@^4.0.0-rc.114` cannot be satisfied from the global root. npm then
+# retried the resolution combinatorially — ~274% CPU for 15+ minutes with zero
+# filesystem writes, emitting an endless ERESOLVE warning stream — on EVERY
+# update run. Only one project uses Prisma and it pins ^5.20.0 locally, so the
+# global install was three majors wrong for it anyway.
 
 @fission-ai/openspec
 @google/gemini-cli
@@ -12,7 +21,6 @@
 @sentry/cli
 neonctl
 pnpm
-prisma
 pyright
 typescript
 typescript-language-server
