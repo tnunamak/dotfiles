@@ -46,3 +46,19 @@ in the save (saved count == live count).
 
 One open cosmetic issue: panes are recorded under `main-37` only, not the bare
 group name — the bug upstream PR #103 fixes, still unmerged. Not data loss.
+
+## Follow-up investigations (added 2026-09-11)
+
+- `window30-migration.md` — the Codex→Claude fork migration. Both rollouts located
+  and verified (parent `01a07172`, Sep 5; fork `01a085e4`, Sep 9, forked at
+  ordinal 3782). **Two corrections to earlier claims:** `smigrate` DOES NOT EXIST
+  — it is a design proposal quoted in a transcript, never a tool, so "smigrate
+  refuses forks" was never true of anything runnable. And the migration target
+  session could not be located on disk. **Resolved separately: tmux `main:30` is
+  now `peregrine` (last active Sep 2), NOT the migration session** — window
+  indices shifted in the crash restore, so "window 30" no longer names what it
+  did on 09-10. Any repair must first identify the real target session rather
+  than trusting the window number.
+- `inbox-triage-full.md` — full triage of the 85 waspflow inbox notes.
+- `daisy-approvals-wip.md` — assessment of the stashed approvals refactor.
+- `pin-check-fix.md` — the data-connect connector-pin CI check.
