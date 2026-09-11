@@ -76,12 +76,22 @@ assuming.
 curl -fsS -G \
   -H "Authorization: Bearer $PDPP_OWNER_TOKEN" \
   --data-urlencode "streams[]=orders" \
-  --data-urlencode "query=coffee" \
+  --data-urlencode "q=coffee" \
   --data-urlencode "limit=20" \
   "$PDPP_BASE_URL/v1/search" | jq .
 ```
 
 Search across all streams by omitting `streams[]`.
+
+The free-text parameter is `q`, not `query` — the API rejects `query` with a
+400. Results come back under `data`, not `records`:
+
+```bash
+... | jq -r '.data[] | "\(.connector_id)/\(.stream) :: \(.snippet.text)"'
+```
+
+Each hit carries a `record_url`; fetch it for the full record. Note that
+`snippet.text` is a truncated preview with `<mark>` tags around matches.
 
 ### Full enumeration of a stream (paginated)
 
