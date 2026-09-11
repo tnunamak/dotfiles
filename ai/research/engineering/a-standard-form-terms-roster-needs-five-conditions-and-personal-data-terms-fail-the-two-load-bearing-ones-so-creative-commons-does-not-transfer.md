@@ -1,0 +1,89 @@
+---
+title: "A standard-form terms roster (the Creative Commons pattern) works only when five conditions hold, and personal-data terms fail the two load-bearing ones — no pre-existing exclusive right analogous to copyright, and no mature enforcement doctrine for a breach of a user-authored data term — so Creative Commons does not transfer to a personal-data-terms roster by analogy alone"
+date: 2026-09-03
+topic: engineering
+tags: [creative-commons, standard-form-contracts, boilerplate, adhesion-contracts, privacy-as-property, agent-principal-conflict, ai-agent-act, pdpp, roster-design, contract-economics]
+status: draft
+sources: [cc-five-conditions, cc-adoption-retirement, samuelson-privacy-ip, jacobsen-v-katzer, bakos-marotta-wurgler-2014, radin-boilerplate, rakoff-adhesion, llewellyn-blanket-assent, ben-shahar-schneider-disclosure, ai-agent-act, arxiv-agent-negotiation-2506]
+source_session: da53c1ca-0fcc-46b4-9b1a-3e44d3b7159c
+---
+
+## CLAIMS
+
+- A standard-form roster (the Creative Commons pattern) requires five conditions to substitute for individualized negotiation without producing the pathologies the boilerplate literature documents: (1) the offeror holds a pre-existing, legally cognizable exclusive right that the counterparty needs; (2) the licensee needs no negotiation because the grant is a standing unilateral offer good to a class; (3) enforcement rides on an existing, well-developed legal regime rather than inventing new law; (4) the set is small, stable, and versioned; (5) a neutral, non-commercial steward maintains and interprets the set, with no single interested party able to unilaterally change the deal. [cc-five-conditions]
+- **Condition 1 fails for personal data**: copyright vests exclusive rights (reproduction, distribution, derivative works) in an author automatically at creation under an existing, well-litigated body of law, making a CC license a unilateral waiver of an unambiguous existing right. A data subject does not hold an analogous pre-existing exclusive right in "their" personal data in most jurisdictions — the US has no general property right in personal data, and the EU's GDPR frames data protection as a fundamental right, not a property right, explicitly making core rights non-waivable. [cc-five-conditions]
+- **Condition 3 fails for personal data**: CC licenses are enforced as ordinary copyright-license breaches, a doctrine courts already apply (*Jacobsen v. Katzer*, 2008, extended this reasoning to open-source licenses). There is no unified body of "personal-data infringement" law analogous to copyright infringement in the US; a breach of a user-authored data-use term would have to be pled as breach of an accepted unilateral offer, unjust enrichment, or a novel statutory claim, all far less mature than 200+ years of copyright doctrine. [cc-five-conditions]
+- **Conditions 4 and 5 are achievable by design, not inherent to the domain.** Creative Commons settled on 6 core licenses (from 4 combinable elements: BY, NC, ND, SA) plus CC0, and actively retired underused variants: the standalone Developing Nations license and one Sampling license variant were retired in June 2007 after each accounted for only ~0.01% of licensed works. [cc-adoption-retirement]
+- Creative Commons is a Massachusetts-chartered 501(c)(3), explicitly contrasted in the literature against single-vendor open-source relicensing events (MongoDB, Elastic, HashiCorp, Redis Ltd, and others) where a company used aggregated contributor copyright to unilaterally change license terms against the community's interest. [cc-adoption-retirement]
+- **Pamela Samuelson, "Privacy as Intellectual Property?", 52 Stan. L. Rev. 1125 (2000)**, argues that propertizing personal data would HARM rather than help privacy, because the core legal feature of property — free alienability — invites trading the right away, especially under information and power asymmetries; she proposes trade-secret-law-style default licensing rules instead of full propertization. [samuelson-privacy-ip]
+- ***Jacobsen v. Katzer* (Fed. Cir., 2008)** extended copyright-infringement reasoning to open-source license breaches, establishing that a license-condition violation reverts to ordinary copyright infringement — the enforcement doctrine condition 3 depends on. [jacobsen-v-katzer]
+- **Bakos, Marotta-Wurgler & Trossen, "Does Anyone Read the Fine Print? Consumer Attention to Standard-Form Contracts," 43 J. Legal Stud. 1 (2014)**: clickstream data across 45,091-48,154 households/monthly visitors and 66-90 online software companies found **only 1 or 2 of every 1,000 retail software shoppers ever access the EULA**, and of those who do, most spend too little time to have read more than a small portion; because online comparison shopping is cheap, the authors conclude the bottleneck is reading/comprehension cost, not access cost — directly undercutting the "informed minority" hypothesis that a small fraction of term-conscious shoppers disciplines sellers via reputation. [bakos-marotta-wurgler-2014]
+- **Margaret Jane Radin's *Boilerplate*** frames a "World A" (Agreement, roughly-equal-power negotiation) against the actual "World B" (Boilerplate, non-negotiated mass-market fine print), documenting two harms: normative degradation (boilerplate deletes legal rights "without consent in the name of contract") and democratic degradation (mass-deployed rights-deletion schemes function as a private substitute for public law). Radin argues courts lack the institutional competence to fix this case-by-case and proposes reconceptualizing some boilerplate schemes under tort law, plus market-based and regulatory reforms. [radin-boilerplate]
+- **Rakoff, "Contracts of Adhesion: An Essay in Reconstruction," 96 Harv. L. Rev. 1173 (1983)**, defines adhesion contracts via seven characteristics, of which four are confirmed verbatim: (1) a printed form purporting to be a contract; (2) drafted by/for one party; (3) that party routinely participates in many such transactions; (4) presented as take-it-or-leave-it except for a few identified terms like price. **The remaining three characteristics are inferred from secondary paraphrase, not confirmed against primary text** — this gap is preserved, not resolved. Rakoff's thesis, per secondary characterization, is that adhesion-contract terms should be presumptively unenforceable absent evidence the term was actually understood and voluntarily accepted, tested against the background/default law that would otherwise govern. [rakoff-adhesion]
+- **Karl Llewellyn's "blanket assent" doctrine** (*The Common Law Tradition*, 1960, p. 370), verbatim: "instead of thinking about 'assent' to boiler-plate clauses, we can recognize that so far as concerns the specific, there is no assent at all... what has in fact been assented to, specifically, are the few dickered terms, and the broad type of the transaction, and but one thing more: that one thing more is a blanket assent (not a specific assent) to any not unreasonable or indecent terms the seller may have on his form." This is the doctrinal basis for why a standardized roster can resolve the adhesion-contract problem: if the "dickered term" is simply which numbered roster item applies, rather than open-ended fine print, the assent is meaningfully more real than assent to unbounded, unread boilerplate. [llewellyn-blanket-assent]
+- **Ben-Shahar & Schneider, "The Failure of Mandated Disclosure," 159 U. Pa. L. Rev. 647 (2011)**, argue mandated disclosure fails on its own terms via two components of a "quantity problem": the overload problem (any single disclosure can be too copious/complex to process) and the accumulation problem (individuals face so many disclosures across so many domains that no cognitive budget permits mastering more than a handful); their policy conclusion is that disclosure "cannot be saved" and lawmakers should stop using it as the default regulatory tool. [ben-shahar-schneider-disclosure]
+- **Senator Mark Warner's AI AGENT Act** (discussion draft June 29, 2026; formally introduced as **S.5051** on July 21, 2026) defines a "Custodial User Agent" (CUA) and imposes **non-waivable, fiduciary-style duties of loyalty** on it — limiting data monetization, maintaining real-time action logs, acting only within scope, and barring sub-delegation without explicit permission — for software authorized to act on a user's behalf toward "large online platforms" (defined as 50M+ monthly US users). [ai-agent-act]
+- **arXiv:2506.00073 ("The Automated but Risky Game")** benchmarks LLM agents negotiating against each other and finds that when a stronger agent (DeepSeek-R1) negotiates against weaker counterparts, **weak sellers lose 6.94%-14.13%** of value relative to balanced (same-capability) negotiations, and **weak buyers overpay by 1.10%-2.09%**. Negotiation outcomes correlate strongly with general model capability (**r=0.93 vs. MMLU** benchmark scores); the seller side's agent quality has outsized leverage — fixing the buyer and varying seller agents produces 14.9% price variance, versus only 2.6% the other way. The authors recommend human-in-the-loop platforms rather than full automation. [arxiv-agent-negotiation-2506]
+
+## SOURCES
+
+**cc-five-conditions**
+URL: local synthesis — /home/tnunamak/code/pdpp/local/research/_deep-0903/area6-contract-economics.md, section "Why rosters work: the five conditions"
+Accessed: 2026-09-03
+Quote: "1. The offeror holds a pre-existing, legally cognizable exclusive right that the counterparty needs. ... 3. Enforcement rides on an existing, well-developed legal regime — the license doesn't need to invent new law. ... Conditions 4 and 5 are achievable by design. Conditions 1 and 3 are the load-bearing failures."
+
+**cc-adoption-retirement**
+URL: https://creativecommons.org/2007/06/04/retiring-standalone-devnations-and-one-sampling-license/
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "The standalone Developing Nations license and one Sampling license variant were retired in June 2007; CC's own announcement cited that each accounted for only ~0.01% of licensed works."
+
+**samuelson-privacy-ip**
+URL: https://people.ischool.berkeley.edu/~pam/papers/privasip_draft.pdf
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "Samuelson's central critique of propertizing personal data is that the core legal feature of property — free alienability — would defeat rather than achieve privacy goals, because alienable rights get traded away, especially under information and power asymmetries. She proposes instead borrowing trade-secret-law-style default licensing rules."
+
+**jacobsen-v-katzer**
+URL: (Fed. Cir. 2008, cited in area6-contract-economics.md)
+Accessed: 2026-09-03
+Quote: "Jacobsen v. Katzer (2008) extended this reasoning to open-source licenses."
+
+**bakos-marotta-wurgler-2014**
+URL: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1443256; https://www.journals.uchicago.edu/doi/abs/10.1086/674424
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "clickstream data tracking 45,091-48,154 households'/monthly visitors' browsing behavior across 66-90 online software companies found that only 1 or 2 of every 1,000 retail software shoppers ever access the EULA."
+
+**radin-boilerplate**
+URL: https://muse.jhu.edu/article/578404/summary
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "'World A' (Agreement) — a world where all contract terms are the product of roughly-equal-power, deliberative negotiation — versus 'World B' (Boilerplate) ... boilerplate deletes legal rights 'without consent in the name of contract.'"
+
+**rakoff-adhesion**
+URL: https://scholarship.law.wm.edu/cgi/viewcontent.cgi?article=2158&context=wmlr
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "Defines adhesion contracts via seven characteristics (confirmed 4 of 7 verbatim: (1) a printed form purporting to be a contract; (2) drafted by/for one party; (3) that party routinely participates in many such transactions; (4) presented as take-it-or-leave-it except for a few identified terms like price." [Note: source document explicitly flags the remaining 3 characteristics as inferred from secondary paraphrase, not verbatim-confirmed.]
+
+**llewellyn-blanket-assent**
+URL: (Karl Llewellyn, *The Common Law Tradition: Deciding Appeals*, 1960, p. 370 — general search synthesis per source document)
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "instead of thinking about 'assent' to boiler-plate clauses, we can recognize that so far as concerns the specific, there is no assent at all... what has in fact been assented to, specifically, are the few dickered terms, and the broad type of the transaction, and but one thing more: that one thing more is a blanket assent (not a specific assent) to any not unreasonable or indecent terms the seller may have on his form, which do not alter or eviscerate the reasonable meaning of the dickered terms."
+
+**ben-shahar-schneider-disclosure**
+URL: https://www.theregreview.org/2015/06/15/ben-shahar-schneider-failed-disclosure/
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "the overload problem (any single disclosure can be too copious/complex to process) and the accumulation problem ... disclosure 'cannot be saved' and 'lawmakers should stop using it' as the default regulatory tool."
+
+**ai-agent-act**
+URL: https://www.warner.senate.gov/wp-content/uploads/2026/06/DRAFT.AI_AGENT_Act_sxs.v2.pdf; https://www.dwt.com/blogs/artificial-intelligence-law-advisor/2026/07/ai-agent-act-consumer-ai-regulation
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "Senator Mark Warner's 'AI AGENT Act' discussion draft (released June 29, 2026; formally introduced as S.5051 on July 21, 2026) ... defines a 'Custodial User Agent' (CUA) ... imposes non-waivable, fiduciary-style duties of loyalty (limit data monetization, maintain real-time action logs, act only within scope, no sub-delegation without explicit permission)."
+
+**arxiv-agent-negotiation-2506**
+URL: https://arxiv.org/html/2506.00073v4
+Accessed: 2026-09-03 (via area6-contract-economics.md)
+Quote: "when a stronger agent (DeepSeek-R1) negotiates against weaker counterparts, weak sellers lose 6.94%-14.13% in value relative to balanced (same-capability) negotiations, and weak buyers overpay by 1.10%-2.09%. Negotiation outcomes correlate strongly with general model capability (r=0.93 vs. MMLU benchmark scores)."
+
+## SYNTHESIS
+
+Creative Commons is the strongest available proof that a small, curated roster of standard-form terms can substitute for bespoke negotiation at massive scale (2.5 billion+ licensed works) without the pathologies Radin, Rakoff, and Ben-Shahar/Schneider document elsewhere in standard-form contracting. But the mechanism that makes it work is narrower than "a roster is a good idea" — it depends on five specific conditions, and two of them are load-bearing rather than incidental. Conditions 4 (small, stable, versioned set) and 5 (neutral non-commercial steward) are genuinely portable: they're organizational discipline, not legal prerequisites, and CC's own history of retiring 0.01%-usage license variants shows the discipline is achievable when someone commits to it. Conditions 1 and 3 are not portable, because they depend on a legal substrate personal data doesn't have. Copyright gives CC a pre-existing, unambiguous, waivable exclusive right to license against, and 200+ years of infringement doctrine to enforce a breach. A data subject has no analogous exclusive right in most jurisdictions, and Samuelson's argument is sharper than "the right doesn't exist yet" — she argues creating an alienable property right in personal data would make things worse, because alienability is precisely the mechanism that lets a right get traded away under power asymmetry, which is the opposite of what a privacy-protective roster would need.
+
+This means a personal-data-terms roster cannot simply borrow CC's authority structure; it needs its own theory of what is being granted and what remedy exists if a counterparty ignores it — most plausibly a contract-law frame (breach of an accepted unilateral offer) rather than a property-law frame, since contract law is the doctrine actually available today, however much weaker its "informed minority" assumption is empirically (Bakos et al.'s 1-2-per-1,000 EULA-access rate). Llewellyn's blanket-assent doctrine is the useful bridge here: a roster converts "assent to unbounded fine print" (weak, per Radin/Rakoff) into "assent to which numbered item applies" (a bounded, dickerable choice), which is a meaningfully stronger assent claim even without a copyright-style exclusive right underneath it. Finally, the agent layer changes who benefits from this structure, not whether it's needed: the empirical negotiation-benchmark finding (weak agents lose 7-14% of value, correlated r=0.93 with model capability) shows that whoever fields the more capable model captures the advantage regardless of which side of a transaction they're on — meaning a roster's fixed, pre-vetted terms are more valuable, not less, once negotiation is agent-mediated, because they remove the exact surface (open-ended bargaining) where capability asymmetry pays off. The AI AGENT Act's proposed non-waivable duty of loyalty on custodial agents is a regulatory attempt to constrain that same asymmetry from the other direction. Two explicit gaps carried over from the source research, unresolved: no rigorous economic (game-theoretic) model of exit/voice specifically calibrated to personal-data markets exists (Hoofnagle's treatment is essayistic, not formal), and CC's own license-type usage distribution (e.g., what fraction of the 2.5B works are CC-BY vs. more restrictive variants) is not verifiable from CC's own reporting.
