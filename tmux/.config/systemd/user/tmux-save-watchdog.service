@@ -1,0 +1,12 @@
+[Unit]
+Description=Alert if tmux recovery state has gone stale
+Documentation=file:%h/.config/tmux/scripts/tmux-save-watchdog
+# Deliberately NOT Requisite=tmux.service: this watchdog must be able to report
+# that nothing is saving even when the usual prerequisites are themselves the
+# problem. The script exits 0 quietly when no tmux server is running.
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/tmux/scripts/tmux-save-watchdog
+Nice=10
+IOSchedulingClass=idle

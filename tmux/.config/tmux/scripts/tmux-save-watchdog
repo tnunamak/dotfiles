@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Assert that tmux recovery state is actually being SAVED, not merely that a
+# saver is scheduled.
+#
+# Why this exists: between 2026-08-31 and 2026-09-10 nothing saved tmux state for
+# ten days, silently, and it only surfaced when a crash forced a restore from a
+# ten-day-old snapshot. Two independent savers were nominally in place:
+#
+#   1. tmux-continuum's status-line hook — inert, because continuum refuses to
+#      install its autosave interpolation while another tmux server exists (and
+#      isolated `tmux -L` sockets are routine here).
+#   2. tmux-resurrect-periodic-save.timer — committed 2026-08-31 (e129af6) and
+#      `enable`d, but without `--now`, so it did not start until the next user
+#      manager lifecycle, which was the 2026-09-10 reboot.
+#
+# Both failure modes are invisible to liveness checks: the hook string is present
+# in status-right, and the timer reports enabled. So this watchdog checks the
+# OUTCOME — the mtime of the newest state file — and nothing else.
+set -euo pipefail
+
+RESURRECT_DIR="${HOME}/.tmux/resurrect"
+LOG="${RESURRECT_DIR}/save-watchdog.log"
+STAMP="${RESURRECT_DIR}/save-watchdog.last-alert"
+
+# Alert when the newest save is older than this. The savers run every 5 minutes,
+# so 30 minutes is six missed cycles: late enough to avoid false alarms from a
+# slow save or a brief suspend, early enough to be actionable.
+MAX_AGE_SECONDS="${TMUX_SAVE_MAX_AGE:-1800}"
+# Do not re-alert more often than this, so a sustained outage does not spam.
+REALERT_SECONDS="${TMUX_SAVE_REALERT:-21600}"  # 6h
+
+# ntfy push is OPT-IN. The vivid-fish-alerts topic returns 403 without a token
+# (verified 2026-09-10), so pushing is disabled unless a token is supplied. The
+# desktop notification below always fires and needs no credential.
+#   To enable push: set TMUX_SAVE_NTFY_TOKEN (and optionally TMUX_SAVE_NTFY_URL)
+#   in the systemd user environment or ~/.config/environment.d/.
+NTFY_URL="${TMUX_SAVE_NTFY_URL:-https://ntfy.vivid.fish/vivid-fish-alerts}"
+NTFY_TOKEN="${TMUX_SAVE_NTFY_TOKEN:-}"
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
+
+mkdir -p "$RESURRECT_DIR"
+
+# No tmux server means there is legitimately nothing to save. Not a fault.
+if ! tmux -N has-session >/dev/null 2>&1; then
+  log 'ok: no default-socket tmux server, nothing to save'
+  exit 0
+fi
+
+newest="$(find "$RESURRECT_DIR" -maxdepth 1 -name 'tmux_resurrect_*.txt' -type f \
+           -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+
+if [[ -z "$newest" ]]; then
+  age='n/a'
+  detail='no tmux_resurrect_*.txt state file exists at all'
+  stale=1
+else
+  now="$(date +%s)"
+  mtime="$(stat -c %Y "$newest")"
+  age=$(( now - mtime ))
+  detail="newest save is $(( age / 60 ))m old: $(basename "$newest")"
+  stale=$(( age > MAX_AGE_SECONDS ? 1 : 0 ))
+fi
+
+if (( stale == 0 )); then
+  log "ok: $detail"
+  exit 0
+fi
+
+log "STALE: $detail"
+
+# Rate-limit alerts.
+if [[ -f "$STAMP" ]]; then
+  last="$(cat "$STAMP" 2>/dev/null || echo 0)"
+  if (( $(date +%s) - last < REALERT_SECONDS )); then
+    log 'alert suppressed (within re-alert window)'
+    exit 0
+  fi
+fi
+
+msg="tmux recovery state is stale: ${detail}. Check: systemctl --user status tmux-resurrect-periodic-save.timer"
+
+# Push first when a token is configured (survives the desktop being logged out).
+if [[ -n "$NTFY_TOKEN" ]]; then
+  if timeout 10 curl -fsS \
+       -H "Authorization: Bearer ${NTFY_TOKEN}" \
+       -H 'Title: tmux state not saving' \
+       -H 'Priority: high' \
+       -H 'Tags: warning,floppy_disk' \
+       -d "$msg" "$NTFY_URL" >/dev/null 2>&1; then
+    log 'alerted via ntfy'
+  else
+    log 'ntfy alert FAILED (check TMUX_SAVE_NTFY_TOKEN / topic ACL)'
+  fi
+else
+  log 'ntfy push skipped (TMUX_SAVE_NTFY_TOKEN not set)'
+fi
+
+# Desktop toast: always attempted, needs no credential.
+if command -v notify-send >/dev/null 2>&1; then
+  if notify-send -u critical 'tmux state not saving' "$msg" >/dev/null 2>&1; then
+    log 'alerted via notify-send'
+  else
+    log 'notify-send FAILED'
+  fi
+fi
+
+date +%s >"$STAMP"
+exit 0

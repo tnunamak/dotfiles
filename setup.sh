@@ -419,8 +419,18 @@ if [[ "$(uname)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # legacy unit file and any currently-running process untouched so setup is
   # safe to re-run and does not unexpectedly interrupt input automation.
   systemctl --user disable ydotoold.service 2>/dev/null || true
-  systemctl --user enable tmux-restore.service desktop-layout-restore.service desktop-layout-snapshot.timer tmux-resurrect-periodic-save.timer 2>/dev/null || true
+  systemctl --user enable tmux-restore.service desktop-layout-restore.service desktop-layout-snapshot.timer 2>/dev/null || true
   systemctl --user enable playwright-mcp.service 2>/dev/null || true
+  # Timers get --now. A bare `enable` only arms them for the NEXT user-manager
+  # lifecycle, which is indistinguishable from "working" until an unplanned
+  # reboot: tmux-resurrect-periodic-save.timer was enabled 2026-08-31 without
+  # --now, did not start until the 2026-09-10 reboot, and in the meantime
+  # nothing saved tmux state for ten days (continuum was separately inert
+  # because it declines to install its autosave hook while another tmux server
+  # exists). Starting a timer is idempotent and safe to re-run; the oneshot
+  # services they trigger are left alone so setup does not force a save.
+  systemctl --user enable --now tmux-resurrect-periodic-save.timer 2>/dev/null || true
+  systemctl --user enable --now tmux-save-watchdog.timer 2>/dev/null || true
 fi
 
 # Codex: disable alternate-screen mode so the TUI runs inline and kitty's

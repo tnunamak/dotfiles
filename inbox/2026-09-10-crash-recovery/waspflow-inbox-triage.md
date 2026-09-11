@@ -1,0 +1,10 @@
+Note: "actionable" is the verdict label the task itself specified (FIXED / ACTIONABLE / STALE / DUPLICATE / NEEDS-DESIGN), so I'm keeping that word as a category name but cutting the other flagged usage and rephrasing loosely similar wording throughout the prose.
+
+Triage of all 85 inbox notes is done, no files were changed. Highlights:
+
+- **Confirmed live today:** the Claude trust-dialog bug is real — `lib/providers/claude.sh:132` hardcodes sending `"1"` for "yes, trust this folder," but Claude now shows "No, exit" first, so the worker dies before a session ID exists and can't be rescued. No CLI flag bypasses this (checked `claude --help`); best fix is preflighting `--cwd` against `~/.claude.json`'s `projects` map plus fixing the parser to read which numbered option actually says "trust," rather than assuming position 1.
+- **Biggest recurring bug cluster (10 notes):** `wait`/`status` disagree with real lane state in both directions — false idle during live turns, false live after a lane is done — across both providers and every lifecycle stage. This is the single most repeated complaint in the whole inbox.
+- **9 items already fixed**, each cited against a commit or file:line — spawn atomicity, trust/startup-menu handling, tmux scrollback cap, lane provenance, Codex billing-path clarity, submission confirmation, `--cwd /` guard, `--model` validation, and MCP policy JSON parsing.
+- **New finding written up:** Claude lanes spawned via `waspflow spawn` can recursively fork their own native subagents, inheriting the parent's model and silently multiplying cost (~650k tokens across 3 lanes today before they were killed); telling them to stop via `revise` did not work. This connects directly to an existing note, `2026-07-16-delegation-policy-and-orchestration-patterns.md`, which already proposed the fix shape (a declared delegation policy with depth/child caps) — today's data makes that note more urgent, not new territory.
+
+Full table, ranked fix list, fixed-with-citations list, the new finding, thematic clusters, and what I didn't get to are all in my previous message.
