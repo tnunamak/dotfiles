@@ -181,75 +181,10 @@ if grep -qF 'session_group=$(tmux display-message -t "$session_name"' "$ASSISTAN
   fi
 fi
 
-# Patch 2d: capture the one Claude environment value needed for faithful
-# resume. Some Claude panes run with a per-session CLAUDE_CONFIG_DIR (for
-# example ~/.claude-odl), and resuming the right session id in the right cwd is
-# still wrong if the resumed process reads the default config root. Do not
-# serialize process environments broadly; read only CLAUDE_CONFIG_DIR from
-# /proc/<pid>/environ and only keep absolute paths under $HOME. Invalid or
-# absent values become null and resume fails closed on read if a sidecar later
-# contains an invalid value.
-if [[ -f "$ASSISTANT_SAVE" ]] &&
-   ! grep -qF 'AR-Patch2d' "$ASSISTANT_SAVE" &&
-   grep -qF 'resolve_pane_candidates() {' "$ASSISTANT_SAVE" &&
-   grep -qF 'env_json="$cached_env"' "$ASSISTANT_SAVE"; then
-  awk '
-    /^# Resolve all detected assistant candidates for one pane and emit at most one$/ && !fn_done {
-      print "claude_config_env_json() {"
-      print "\tlocal pid=\"$1\" value=\"\" owner_home=\"${HOME%/}\""
-      print "\t[ -n \"$pid\" ] || { echo \"null\"; return 0; }"
-      print "\t[ -r \"/proc/$pid/environ\" ] || { echo \"null\"; return 0; }"
-      print "\tvalue=$(tr \"\\0\" \"\\n\" <\"/proc/$pid/environ\" 2>/dev/null | sed -n \"s/^CLAUDE_CONFIG_DIR=//p\" | head -n1 || true)"
-      print "\t[ -n \"$value\" ] || { echo \"null\"; return 0; }"
-      print "\tcase \"$value\" in"
-      print "\t/*) ;;"
-      print "\t*) echo \"null\"; return 0 ;;"
-      print "\tesac"
-      print "\tcase \"$value\" in"
-      print "\t\"$owner_home\"|\"$owner_home\"/*) ;;"
-      print "\t*) echo \"null\"; return 0 ;;"
-      print "\tesac"
-      print "\tjq -cn --arg v \"$value\" '\''{CLAUDE_CONFIG_DIR: $v}'\''"
-      print "}"
-      print ""
-      fn_done=1
-    }
-    /^\t\t\t\t# Fallback: parse --model from CLI args if not in state file\.$/ && !main_done {
-      print "\t\t\t\t# AR-Patch2d: allowlist exactly CLAUDE_CONFIG_DIR for Claude. Never"
-      print "\t\t\t\t# serialize full process env or secret-bearing variables."
-      print "\t\t\t\tif [ \"$cand_tool\" = \"claude\" ]; then"
-      print "\t\t\t\t\t_env_from_proc=$(claude_config_env_json \"$cand_pid\")"
-      print "\t\t\t\t\tif [ \"$_env_from_proc\" != \"null\" ]; then"
-      print "\t\t\t\t\t\tenv_json=\"$_env_from_proc\""
-      print "\t\t\t\t\tfi"
-      print "\t\t\t\tfi"
-      main_done=1
-    }
-    /^\t\t# Fallback: parse --model from CLI args if not in state file$/ && !emit_done {
-      print "\t\t# AR-Patch2d: allowlist exactly CLAUDE_CONFIG_DIR for Claude. Never"
-      print "\t\t# serialize full process env or secret-bearing variables."
-      print "\t\tif [ \"$tool\" = \"claude\" ]; then"
-      print "\t\t\t_env_from_proc=$(claude_config_env_json \"$cpid\")"
-      print "\t\t\tif [ \"$_env_from_proc\" != \"null\" ]; then"
-      print "\t\t\t\tenv_json=\"$_env_from_proc\""
-      print "\t\t\tfi"
-      print "\t\tfi"
-      emit_done=1
-    }
-    { print }
-  ' "$ASSISTANT_SAVE" >"${ASSISTANT_SAVE}.artmp"
-  if grep -qF 'AR-Patch2d' "${ASSISTANT_SAVE}.artmp" &&
-     grep -qF 'CLAUDE_CONFIG_DIR' "${ASSISTANT_SAVE}.artmp" &&
-     bash -n "${ASSISTANT_SAVE}.artmp" 2>/dev/null; then
-    cat "${ASSISTANT_SAVE}.artmp" >"$ASSISTANT_SAVE"
-    rm -f "${ASSISTANT_SAVE}.artmp"
-    log "applied patch 2d: capture allowlisted Claude config dir"
-    applied=$((applied + 1))
-  else
-    log "warning: patch 2d NOT applied cleanly (marker/config dir missing or bash -n failed) — file left untouched"
-    rm -f "${ASSISTANT_SAVE}.artmp"
-  fi
-fi
+# Patch 2d (CLAUDE_CONFIG_DIR capture) retired 2026-09-11: upstream ships the
+# generic `@assistant-resurrect-capture-env` option; tmux.conf sets it to
+# CLAUDE_CONFIG_DIR. The plugin reads /proc/<pid>/environ for listed names and
+# replays them as a command prefix on restore, with credential redaction in logs.
 
 # Patch 3: skip assistant panes when tmux-resurrect captures pane contents.
 # Upstream `dump_pane_contents` (in tmux-resurrect/scripts/save.sh) captures the
@@ -342,8 +277,7 @@ fi
 # one leaked directory per save. (An earlier revision of this comment said
 # "~1GB extract"; that figure is stale and presumably dates from the
 # grouped-session clone storm, when saves really were that large.) The leak is
-# slow, not urgent: it is an efficiency fix, NOT a correctness one, unlike
-# Patch 2d which resume actually depends on.
+# slow, not urgent: it is an efficiency fix, NOT a correctness one.
 # We delete the call site (replacing
 # the `if [ "$count" -gt 0 ]; then strip_assistant_pane_contents; fi` block with a
 # no-op marker) and leave the function definition harmlessly unreferenced.
