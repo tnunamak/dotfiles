@@ -63,7 +63,29 @@ stopping visible loops after a forced reasoning close. Note `dd93447ef` reverts
 `f6040736c` — queued-cancellation servicing between decode batches was
 deliberately backed out; do not resurrect it without reading both.
 
+## Now on Forgejo — full history, not just patches
+
+Pushed 2026-09-11 to **https://git.vivid.fish/tnunamak/beellama.cpp** (private).
+Verified: Forgejo's `main` == local HEAD `d5b04438c`, with all 16 commits and
+their full history reachable. The `patches/` directory here is now a redundant
+second copy, kept because it costs 216 KB and survives independently of the
+Forgejo instance.
+
+Setup notes, since no repo on this machine used Forgejo before: `tnunamak` had
+**zero SSH keys registered**, which is why `git@git.vivid.fish` returned
+permission-denied. A key was added via the API, but SSH still failed, so the
+push went over HTTPS with a temporary admin-generated token
+(`peregrine-setup-0911`, scopes `write:user,write:repository`). That token has
+been **revoked** and the remote URL rewritten without it. To push again, either
+fix SSH (the registered key exists but the container's SSH path does not accept
+it — likely a passthrough/port issue worth a look) or mint a fresh token.
+
+Generating a token requires running as the git user:
+`docker exec -u git forgejo forgejo admin user generate-access-token ...` —
+as root it refuses with "Forgejo is not supposed to be run as root".
+
 ## Disposal
 
 The checkout at `~/applications/beellama` is 3.9 GB and safe to delete now that
-these patches exist. Nothing depends on it.
+the history is on Forgejo. Nothing depends on it — `llama-bee` serves the
+official build.
