@@ -34,6 +34,20 @@ Template:
 
 <!-- newest first; append above this comment is fine, or just add to the bottom -->
 
+### 2026-09-03 — data-connectors PR #77 CI repair (ds version not checked)
+- **Command(s):** `ds tldr`, `ds recent`, and `ds task "triage CI failures for PR #77 port" --quick`.
+- **Worked / didn't:** `tldr` gave usable triage guidance and `recent` correctly surfaced the port commit and related-test files. Task creation printed discovery and extraction progress, but did not return a task ID, target, completion receipt, or explicit wait/retry state before the command yielded; a follow-up `ds task status` rejected the documented-looking no-argument form with `accepts 1 arg(s), received 0`.
+- **vs. doing it by hand:** Orientation helped, but the missing task receipt cost effort; failed-job logs, the latest main runs, and focused source reads were the authoritative CI repair evidence.
+- **Would use again here?:** only-if task creation returns a durable ID/target or an unambiguous incomplete state.
+- **Maintainer-facing note:** The new progress lines are helpful, but task creation still needs to end with a task ID/path and a concrete continuation command; otherwise an agent cannot checkpoint or distinguish delayed indexing from an incomplete task.
+
+### 2026-09-03 — PDPP obsolete CI guard removal (ds version not checked)
+- **Command(s):** `ds tldr`, then `ds task "remove obsolete reference implementation reappearance guard" --quick`.
+- **Worked / didn't:** `tldr` gave useful bounded-task guidance. Task creation returned only `Task index preflight: waiting for another index update`; it did not return a task ID or usable task context before direct repository inspection was complete.
+- **vs. doing it by hand:** Cost effort for this one-file CI deletion; the owner runbook, workflow read, GitHub ruleset query, and targeted grep were sufficient.
+- **Would use again here?:** only-if task creation reports a task ID or a definite wait/retry outcome.
+- **Maintainer-facing note:** The indexing-preflight wait needs a completion signal, task ID, or explicit retry instruction; without one, an agent cannot tell whether the requested task was created or how to resume it.
+
 ### 2026-08-30 — PDPP cutover red-team repair (ds version not checked)
 - **Command(s):** `ds tldr`, `ds task "repair cutover red-team P0 durable guard and P1 owner gate in reorg candidate workspace" --slice ...`, `ds recent`, and `ds task status`.
 - **Worked / didn't:** `tldr` was useful. Task creation reported `Task index preflight: waiting for another index update`, then wrote an unignored `devspecs/` task tree in the clean worktree without returning a usable task ID. `task status` rejected the documented-looking no-argument form (`accepts 1 arg(s), received 0`), while `recent` showed unrelated prior work. I removed the generated tree and used direct source/oracle evidence.
@@ -656,3 +670,150 @@ printed only `Task index preflight: waiting for another index update` before the
 available. Direct source, baseline-diff, conformance, typecheck, and focused
 test evidence remained authoritative. Task creation should identify the active
 index update and provide either a bounded receipt or a resumable task ID.
+
+## 2026-09-03: PR #263 repair task continued indexing without a usable receipt
+
+In the isolated PDPP repair worktree, `ds tldr` was useful for choosing the
+bounded repair workflow. The multi-slice `ds task` then indexed 4,367 candidate
+files and stopped its visible output at “extracting and indexing artifacts” before
+the 30-second caller window ended. It never printed a task ID, and direct reviewer
+reproduction, source inspection, focused controls, and full harness suites had to
+remain authoritative. Task creation should emit a durable task ID before long
+indexing or clearly return a resumable state when the caller yields.
+
+## 2026-09-03: consent-challenge incident task created artifacts before returning a usable receipt
+
+For the isolated DataConnect production-incident repair, `ds tldr` was useful
+for selecting the workflow. `ds task` spent the caller window in automatic
+indexing and did not return a durable task ID or completion receipt, while it
+created an unignored `devspecs/tasks/...` directory in the worktree. Direct
+source inspection, PostgreSQL-backed tests, and the journey oracle remained
+the authoritative evidence. Long-running task creation should surface the task
+path/ID immediately and avoid leaving an unignored partial artifact when the
+caller cannot obtain a receipt.
+
+## 2026-09-03: concurrent index update blocked PR review task creation without a receipt
+
+In an isolated PDPP review worktree, `ds tldr` gave clear workflow guidance.
+The multi-slice `ds task` then printed only `Task index preflight: waiting for
+another index update` and remained blocked beyond the 30-second caller window.
+It returned no task ID or resumable receipt, so the review used direct diff,
+runtime-test, build, and GitHub API evidence. The preflight should identify the
+blocking update and return a resumable task ID before waiting.
+
+## 2026-09-06 — scenario port in data-connectors
+
+`ds recent` completed in about two seconds and correctly surfaced recent package and cross-repository changes. `ds task "Port scenario verification with PR 274 and validate package" --slice "Integrate source and dependencies" --slice "Validate and publish signed PR" remained at extraction/indexing after several minutes (1,198 candidate files); stopped that task process when moving to current main. Bounded source list was already supplied, so task indexing did not add useful context before the port proceeded. No task checkpoint was available before cancellation.
+
+## 2026-09-09 — dependency PR triage
+
+`ds tldr` and `ds recent` completed successfully in an isolated pdpp worktree. Recent topics were bounded and linked source paths, but reflected the starting checkout; fetching PR refs does not change that context until checkout. Direct PR metadata and workflow logs supplied the dependency-specific evidence.
+
+2026-09-09: Ran `ds tldr` and `ds recent` in data-connectors-waspflow-pins-refresh-0909 for a cross-repo pin refresh. Both succeeded; recent grouped repository activity into topics with file evidence. The task already supplied exact paths and failed-job details, so no task slices were needed.
+
+## 2026-09-09 — data-connect vendor build race
+
+`ds recent` returned a useful list of recent changes in about five seconds. `ds task 'Serialize vendored npm prepare builds and prove clean installs' --quick` discovered 3,523 files, then stayed at `extracting and indexing artifacts` for over six minutes without further progress output. Stopped that command while the code fix and clean-install proof continued. A quick task should reuse the recent index or offer a scoped/no-index path; full-repository indexing outweighed this one-setting fix.
+
+## 2026-09-09 — local collector malformed-line isolation
+
+`ds tldr` and `ds recent` completed and supplied clear commands and recent file references. `ds find 'local JSONL coverage gap cursor'` discovered 1,321 candidate files, then remained at `extracting and indexing artifacts` without further progress for about seven minutes. Stopped that specific process while fixture reproduction and implementation continued. The cancellation suggested narrowing to a project root even though the command already ran in the isolated repository root. A focused query needs a way to search existing evidence or bound indexing before a full scan completes.
+
+## 2026-09-09 — PR 92 sign-off review
+
+`ds tldr` and `ds recent` succeeded in the detached sign-off worktree; recent completed in about three seconds. It returned five repository topics with source paths, but none described the malformed-line change at HEAD. The supplied brief and `git diff origin/main` provided the relevant review boundary. No indexing failure occurred in these two commands.
+
+## 2026-09-09 — PR 92 round-two sign-off
+
+`ds tldr` succeeded. `ds find "codex malformed JSONL signoff"` discovered 1,323 candidate files, then remained at `extracting and indexing artifacts` for more than four minutes with no additional progress output. Stopped that specific process after the review and tests completed; no search results were available. The supplied brief and targeted source reads provided the review context. A bounded query should offer a path that does not wait for full-repository indexing.
+
+## 2026-09-09 — PR 92 round-three sign-off
+
+`ds tldr` and `ds recent` succeeded in the detached round-three sign-off worktree. Recent returned five topics with file references, but none covered the three local-collector commits at HEAD; its first topic was an older connector-demotion change. The explicit brief, prior report, and commit diff supplied the relevant review boundary. No indexing failure occurred.
+
+### 2026-09-09 — data-connectors PR 92 round-four signoff
+- **Commands:** `ds tldr`, `ds recent` in the detached signoff worktree.
+- **Observed:** Both exited 0. `recent` returned five older repository topics; none identified the four local-collector commits at the review head. The supplied brief and direct Git/source reads provided the relevant context.
+- **Value:** The CLI guidance was readable, but the recent-topic list did not help this exact-head review. No task artifacts were needed for the bounded report.
+- **Would use again:** For unfamiliar subsystem discovery; exact-head reviews need a way to focus recent activity on the current branch diff.
+
+### 2026-09-09 — PR 92 R5 sign-off orientation
+- Ran `ds tldr` and `ds recent` in the detached data-connectors R5 worktree. Both exited 0; recent took about 3 seconds.
+- `ds recent` returned five older repository topics and omitted the five local-collector commits at HEAD. For a narrowly scoped PR review, the task brief and `git show HEAD` were more useful. No source changes were needed for this observation.
+
+### 2026-09-09 — PR 92 R6 sign-off orientation
+- `ds tldr` and `ds recent` both exited 0; recent completed in about 3 seconds.
+- Recent returned five older topics, beginning with connector demotion; none covered the six local-collector commits at the requested detached head. The lane brief, previous reports, and direct Git diff supplied the review boundary. No indexing failure occurred.
+
+### 2026-09-09 — PR 74 R15 sign-off orientation
+- `ds tldr` and `ds recent` exited 0 in the detached exact-head worktree; recent took about 6 seconds.
+- Recent identified relevant silence-detector files, but led with the deleted dispatch-claim mechanism and omitted the latest conditional-outcome fix. The supplied brief and direct HEAD diff established the current mechanism.
+- Useful as a file map; an exact-head review still needs direct revision evidence to distinguish obsolete mechanisms from current behavior.
+
+### 2026-09-09 — Retention schema implementation task indexing
+- Ran ds tldr and ds recent successfully in a new data-connectors worktree.
+- ds task with two bounded slices discovered 1,323 candidate files, then printed extracting and indexing artifacts with a 10-minute deadline. It produced no further output and no task ID for more than 10 minutes; terminated that process with SIGTERM.
+- Continued implementation from the supplied brief and direct source reads. A bounded indexing deadline or incremental progress/task ID would make task setup usable here. No checkpoint was possible without a returned task ID.
+
+### 2026-09-09 — data-connectors PR #93 sign-off (ds 1.4.0)
+- **Command(s):** `ds tldr`, `ds recent`, `ds version`.
+- **Worked / didn't:** Commands completed; recent showed older port/repair topics, but not the retention commit at this detached HEAD.
+- **vs. doing it by hand:** Direct base-to-head diff and the supplied lane brief were more useful for this exact-commit review.
+- **Would use again here?:** only-if orientation is needed beyond an explicit SHA and brief.
+- **Maintainer-facing note:** Recent activity should expose the current detached HEAD or identify the history/index scope used; otherwise older topics can look like the relevant review context.
+
+### 2026-09-09 — data-connect PR #52 exact-head sign-off
+- `ds tldr` and `ds recent` exited 0; recent returned five topics from newer shared repository activity rather than the six commits at the detached review head. Direct Git range and the lane brief established scope.
+- `ds find "consent handoff clean exit"` discovered 3,532 candidates, then stayed at "extracting and indexing artifacts" without further output for about 90 seconds. Stopped the exact process with SIGTERM and continued the bounded review from source. A quick search mode without mandatory full indexing would help here.
+
+### 2026-09-09 — data-connect PR #67 exact-head sign-off
+- `ds tldr` and `ds recent` exited 0; recent took about 7 seconds and listed five older repository topics, none about the manual-upload test patch at the requested head.
+- The explicit lane brief and `git diff origin/main...HEAD` established the review scope directly. For detached-head review, showing the current commit among recent topics would improve relevance.
+
+### 2026-09-09 — data-connect PR #57 repair lane
+- `ds tldr` and `ds recent` passed; recent surfaced relevant consent and connector-brand history.
+- `ds task` with three bounded repair/verification slices discovered 3,555 files, then remained at "extracting and indexing artifacts" until its 10-minute deadline. It exited 1 without returning a task ID, so no checkpoint could be recorded.
+- The timeout advised a focused project root, but the command already ran in the target project worktree. Continued from the supplied brief, failing CI logs, and targeted tests. Incremental progress or creating the task before full indexing would make this workflow usable during repairs.
+
+### 2026-09-09 — data-connect PR #67 repair lane
+- `ds tldr` and `ds recent` completed; recent listed older topics, not the current manual-upload patch.
+- `ds task 'Own manual-upload validation tasks through test teardown for PR 67' --quick` discovered 3,517 files and stayed at "extracting and indexing artifacts" for roughly three minutes without a task ID. Stopped that exact process and continued from the explicit brief and targeted source reads.
+- A quick task path that creates the task before full indexing would allow checkpoints during bounded repairs. No task ID was returned, so no checkpoint was possible.
+
+### 2026-09-09 — data-connect paired re-vendor for connectors #92
+- `ds tldr` completed. `ds find 'vendored polyfill connectors'` discovered 3,534 candidates, then stayed at "extracting and indexing artifacts" for nearly six minutes without search results. Stopped that exact process with SIGTERM and continued using the lane brief, vendor README, and targeted source searches.
+- A bounded search that returns results before whole-repo indexing would help preparation lanes with an explicit target.
+
+### 2026-09-09 — data-connect PR #67 round-2 sign-off
+- `ds tldr` and `ds recent` completed. Recent topics did not include the current manual-upload fix.
+- `ds find 'manual upload validation task teardown'` waited for another index update without returning results. Stopped this exact process after roughly 30 seconds and used the supplied report and targeted source reads. Concurrent worktree reviews would benefit from a read-only search over the existing index while another update runs.
+
+### 2026-09-09 — connectors #92 landing-plan lane
+- `ds tldr` completed. `ds find 'cross-repo pins'` discovered 1,321 candidate files, then stayed at extraction/indexing for about three minutes without results. Stopped that exact process and used the brief, workflow source and GitHub metadata.
+- A search that returns existing indexed results before full indexing would help bounded coordination tasks.
+
+### 2026-09-09 — data-connect PR #57 sign-off
+- `ds tldr` and `ds recent` completed; recent returned in about five seconds and included consent field narrowing and connector-brand work relevant to the review. It also listed unrelated main-branch collector topics, so I used the supplied exact-head brief and git diff to constrain the review. No tool errors observed.
+
+### 2026-09-09 — data-connectors PR #92 round-8 sign-off
+- `ds tldr` and `ds recent` completed; recent took about five seconds and included the original local-collector isolation change.
+- The list omitted the current symlink fix and pin merge, so the exact-head brief and git diff remained necessary to constrain the review. No tool errors observed.
+
+### 2026-09-09 — data-connectors PR #92 round-9 sign-off
+- `ds tldr` and `ds recent` completed; recent returned in about four seconds and identified the original local-collector isolation work.
+- The current pin-only change and symlink blocker were absent from the list. The exact-head brief and diff provided the review scope. No tool errors observed.
+
+### 2026-09-09 — data-connectors PR #92 round-10 sign-off
+- `ds tldr` and `ds recent` completed; recent returned in about three seconds and identified malformed-line isolation and the Claude symlink fix. It did not show the new Codex symlink commit or current pin, so the exact-head brief and git diff remained necessary. No tool errors observed.
+
+### 2026-09-09 — data-connect PR #57 round-2 sign-off
+- `ds tldr` and `ds recent` completed; recent returned in about five seconds and included consent challenge storage plus connector branding. It did not surface the six newest repair commits, so the exact-head brief and git range remained necessary. No tool errors observed.
+# devspecs feedback
+
+## 2026-09-03 — DB bloat repair
+
+`ds task "fix PostgreSQL storage bloat" --slice ...` waited at “Task index preflight: waiting for another index update” for more than 30 seconds and never produced a task slice. The command gave no owner, timeout, or recovery action, so I continued with the repository brief and targeted tests. A bounded wait plus a suggested retry/status command would make this easier to use during incident work.
+
+## 2026-09-09 — Concurrent blob cleanup repair
+
+`ds recent` completed in about six seconds and identified the existing reconciliation-bloat change and its files. `ds task "preserve shared PostgreSQL blobs during concurrent connector deletion" --quick` discovered 3,537 files, then stayed at “extracting and indexing artifacts” for over four minutes without producing a task. I stopped that invocation and continued from the lane brief and PostgreSQL regression tests. A quick task still needs a bounded path that can use known file paths without a full index.
