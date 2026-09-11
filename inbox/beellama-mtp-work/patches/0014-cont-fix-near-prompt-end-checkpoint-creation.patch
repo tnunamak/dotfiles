@@ -1,0 +1,32 @@
+From 04bcc3719f3cc71c7e158bae7ba3a4afc247b6bc Mon Sep 17 00:00:00 2001
+From: Alde Rojas <hello@alde.dev>
+Date: Thu, 9 Jul 2026 22:44:31 -0500
+Subject: [PATCH 14/16] cont : fix near prompt end checkpoint creation
+
+(cherry picked from commit 33ac581cd42c40072347d6093280b8804f9aaaca)
+---
+ tools/server/server-context.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 3b21c2709..478bc5072 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -5645,8 +5645,12 @@ private:
+                     // do not checkpoint after mtmd chunks
+                     do_checkpoint = do_checkpoint && !has_mtmd;
+ 
+-                    // no need to create checkpoints that are too close together
+-                    do_checkpoint = do_checkpoint && (slot.prompt.checkpoints.empty() || n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
++                    // No need to create checkpoints that are too close together, except
++                    // at the latest user boundary or near the prompt end.
++                    do_checkpoint = do_checkpoint && (
++                            slot.prompt.checkpoints.empty() ||
++                            is_on_user || near_prompt_end ||
++                            n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
+                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
+ 
+                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not
+-- 
+2.53.0
+

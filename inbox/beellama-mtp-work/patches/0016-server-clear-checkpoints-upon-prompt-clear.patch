@@ -1,0 +1,132 @@
+From d5b04438c2f55aff28b32e6eb18b551df7b533d0 Mon Sep 17 00:00:00 2001
+From: Georgi Gerganov <ggerganov@gmail.com>
+Date: Tue, 14 Jul 2026 10:11:23 +0300
+Subject: [PATCH 16/16] server : clear checkpoints upon prompt clear
+
+(cherry picked from commit 80bef38703a80fd1c1c438f1e96f54d99d5127a7)
+---
+ tests/test-server-prompt-checkpoint.cpp | 24 ++++++++++++++++++++++++
+ tools/server/server-context.cpp         | 10 +++++-----
+ tools/server/server-task.h              |  8 ++++++++
+ 3 files changed, 37 insertions(+), 5 deletions(-)
+
+diff --git a/tests/test-server-prompt-checkpoint.cpp b/tests/test-server-prompt-checkpoint.cpp
+index d079d5869..7a6ad1a09 100644
+--- a/tests/test-server-prompt-checkpoint.cpp
++++ b/tests/test-server-prompt-checkpoint.cpp
+@@ -67,12 +67,35 @@ static void test_hybrid_recurrent_checkpoints_keep_useful_spread() {
+             /* checkpoint_min_step = */ 64).empty());
+ }
+ 
++static void test_logical_prompt_clear_destroys_checkpoint_snapshots() {
++    server_prompt prompt;
++
++    common_prompt_checkpoint checkpoint;
++    checkpoint.n_tokens = 3;
++    checkpoint.data_tgt.resize(128);
++    checkpoint.data_dft.resize(256);
++    checkpoint.ring_data.resize(512);
++    prompt.checkpoints.push_back(std::move(checkpoint));
++
++    assert(prompt.size() == 128 + 256 + 512);
++
++    // Every logical clear and token replacement in server_context uses this
++    // seam, so target, draft, and DFlash ring checkpoint snapshots have one
++    // owner and one destruction path.
++    prompt.clear();
++
++    assert(prompt.n_tokens() == 0);
++    assert(prompt.checkpoints.empty());
++    assert(prompt.size() == 0);
++}
++
+ int main() {
+     server_prompt_checkpoint ckpt {
+         /*.pos_min  = */ 1,
+         /*.pos_max  = */ 2,
+         /*.n_tokens = */ 3,
+         /*.data     = */ std::vector<uint8_t>(128),
++        /*.ring_data = */ {},
+     };
+     ckpt.ring_data.resize(256);
+ 
+@@ -88,6 +111,7 @@ int main() {
+ 
+     test_min_step_controls_prompt_splitting();
+     test_hybrid_recurrent_checkpoints_keep_useful_spread();
++    test_logical_prompt_clear_destroys_checkpoint_snapshots();
+ 
+     return 0;
+ }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 5edf57652..76e6101e1 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -769,7 +769,7 @@ struct server_slot : server_adaptive_dm_state {
+             common_context_seq_rm(ctx_dft, id, -1, -1);
+         }
+ 
+-        prompt.tokens.clear();
++        prompt.clear();
+     }
+ 
+     std::vector<common_adapter_lora_info> lora;
+@@ -3150,7 +3150,7 @@ private:
+                 // if lora has changed, check to see if the cache should be cleared
+                 if (lora_should_clear_cache(slot.lora, task_loras)) {
+                     SLT_TRC(slot, "clearing cache for lora change. %zu loras -> %zu loras\n", slot.lora.size(), task.params.lora.size());
+-                    slot.prompt.tokens.clear();
++                    slot.prompt.clear();
+                 } else {
+                     SLT_TRC(slot, "keeping cache for alora. %zu target loras\n", task_loras.size());
+                 }
+@@ -4204,12 +4204,12 @@ private:
+                     size_t token_count = 0;
+                     size_t nread = llama_state_seq_load_file(ctx_tgt, filepath.c_str(), slot->id, tokens.data(), tokens.size(), &token_count);
+                     if (nread == 0) {
+-                        slot->prompt.tokens.clear(); // KV may already been invalidated?
++                        slot->prompt.clear(); // KV may already been invalidated?
+                         send_error(task, "Unable to restore slot, no available space in KV cache or invalid slot save file", ERROR_TYPE_INVALID_REQUEST);
+                         break;
+                     }
+                     tokens.resize(token_count);
+-                    slot->prompt.tokens.clear();
++                    slot->prompt.clear();
+                     slot->prompt.tokens.insert(tokens);
+ 
+                     const int64_t t_end = ggml_time_us();
+@@ -4381,7 +4381,7 @@ private:
+ 
+                     new_tokens.resize(slot.prompt.tokens.size() - n_discard);
+ 
+-                    slot.prompt.tokens.clear();
++                    slot.prompt.clear();
+                     slot.prompt.tokens.insert(new_tokens);
+                 }
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 3fa87b5dc..5aba6a27d 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -629,10 +629,18 @@ struct server_prompt_checkpoint {
+ struct server_prompt {
+     server_tokens tokens;
+ 
++    // TODO: move to server_prompt_cache
+     server_prompt_data data;
+ 
+     std::list<common_prompt_checkpoint> checkpoints;
+ 
++    void clear() {
++        tokens.clear();
++        checkpoints.clear();
++
++        GGML_ASSERT(data.size() == 0);
++    }
++
+     size_t size() const {
+         size_t res = 0;
+ 
+-- 
+2.53.0
+

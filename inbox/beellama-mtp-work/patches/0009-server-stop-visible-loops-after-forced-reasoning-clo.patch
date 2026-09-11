@@ -1,0 +1,187 @@
+From 0060235328b7a19d35b54426184ff6819fcfb6eb Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Tue, 14 Jul 2026 05:06:34 -0500
+Subject: [PATCH 09/16] server: stop visible loops after forced reasoning close
+
+Feed post-force-close visible tokens into the existing conservative loop guard. A periodic or low-entropy visible continuation now takes the normal final-response and slot-release path, while ordinary visible output remains unchanged. Covered by production HTTP, grammar/reasoning, loop-guard, and MTP replay tests.
+---
+ tests/test-server-loop-guard.cpp              | 24 +++++++++
+ tools/server/server-context.cpp               | 30 ++++++++++-
+ .../tests/unit/test_reasoning_loop_guard.py   | 52 +++++++++++++++++--
+ 3 files changed, 100 insertions(+), 6 deletions(-)
+
+diff --git a/tests/test-server-loop-guard.cpp b/tests/test-server-loop-guard.cpp
+index 33700d5af..480231830 100644
+--- a/tests/test-server-loop-guard.cpp
++++ b/tests/test-server-loop-guard.cpp
+@@ -195,12 +195,36 @@ static void test_task_result_state_streams_forced_open_reasoning() {
+     assert(diffs[0].content_delta.empty());
+ }
+ 
++static void test_visible_region_oracles() {
++    {
++        server_loop_guard guard(test_params());
++        for (int line = 0; line < 220; ++line) {
++            const std::vector<llama_token> code_line = {
++                100, 101, 200 + line, 102, 300 + (line % 97), 103, 104, 400 + (line % 131), 105
++            };
++            accept_many(guard, code_line, SERVER_LOOP_REGION_VISIBLE);
++        }
++        assert_not_triggered(guard.check(SERVER_LOOP_REGION_VISIBLE));
++    }
++
++    {
++        server_loop_guard guard(test_params());
++        std::mt19937 rng(5678);
++        std::uniform_int_distribution<int> dist(0, 5);
++        for (int i = 0; i < 1200; ++i) {
++            guard.accept(200 + dist(rng), SERVER_LOOP_REGION_VISIBLE);
++        }
++        assert_triggered(guard.check(SERVER_LOOP_REGION_VISIBLE), "low_entropy");
++    }
++}
++
+ int main() {
+     test_task_result_state_suppresses_prefilled_thinking_close_tag();
+     test_task_result_state_suppresses_generated_thinking_block_in_content_mode();
+     test_task_result_state_suppresses_prefilled_open_thinking_content();
+     test_task_result_state_suppresses_leading_thinking_block_without_prefill();
+     test_task_result_state_streams_forced_open_reasoning();
++    test_visible_region_oracles();
+ 
+     {
+         server_loop_guard guard(test_params());
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 9da380347..a1d63f8f9 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3291,7 +3291,35 @@ private:
+             slot.reasoning_output_tokens++;
+         } else {
+             slot.visible_output_tokens++;
+-            return true;
++
++            // Ordinary visible output remains unguarded.  Once this request has
++            // force-closed hidden reasoning, though, a repeated visible tail has
++            // no further hidden-state intervention available and must terminate
++            // through the normal final-response path.
++            if (slot.loop_guard_interventions == 0) {
++                return true;
++            }
++
++            slot.loop_guard.accept(info.token, SERVER_LOOP_REGION_VISIBLE);
++
++            const bool token_is_eog = llama_vocab_is_eog(vocab, info.token);
++            if (!slot.loop_guard.should_check(SERVER_LOOP_REGION_VISIBLE, token_is_eog, false)) {
++                return true;
++            }
++
++            const auto check = slot.loop_guard.check(SERVER_LOOP_REGION_VISIBLE);
++            if (!check.triggered) {
++                return true;
++            }
++
++            slot.loop_guard_triggered = true;
++            slot.loop_guard_reason = server_loop_guard_reason_to_string(check);
++            slot.loop_guard_action = "stop";
++            slot.stop = STOP_TYPE_LIMIT;
++            slot.stop_detail = "reasoning_loop_guard";
++            slot.has_next_token = false;
++            SLT_WRN(slot, "reasoning loop guard stopping visible continuation: %s\n", slot.loop_guard_reason.c_str());
++            return false;
+         }
+ 
+         const bool forcing_reasoning_end = info.reasoning_state_before == REASONING_BUDGET_FORCING ||
+diff --git a/tools/server/tests/unit/test_reasoning_loop_guard.py b/tools/server/tests/unit/test_reasoning_loop_guard.py
+index deb9d823c..a2179ed62 100644
+--- a/tools/server/tests/unit/test_reasoning_loop_guard.py
++++ b/tools/server/tests/unit/test_reasoning_loop_guard.py
+@@ -2,6 +2,7 @@ from utils import *
+ 
+ 
+ server = ServerPreset.tinyllama2()
++server.server_slots = True
+ 
+ 
+ def _single_token_bias(content: str, bias: float = 100.0) -> dict:
+@@ -14,6 +15,13 @@ def _single_token_bias(content: str, bias: float = 100.0) -> dict:
+     return {str(res.body["tokens"][-1]): bias}
+ 
+ 
++def _assert_all_slots_released():
++    global server
++    res = server.make_request("GET", "/slots")
++    assert res.status_code == 200
++    assert all(not slot["is_processing"] for slot in res.body)
++
++
+ def test_reasoning_loop_guard_request_settings():
+     global server
+     server.start()
+@@ -107,13 +115,13 @@ def test_reasoning_loop_guard_stop_triggers_on_hidden_reasoning_loop():
+     assert res.body["loop_guard"]["action"] == "stop"
+ 
+ 
+-def test_reasoning_loop_guard_force_close_intervenes_then_continues():
++def test_reasoning_loop_guard_force_close_stops_visible_periodic_continuation():
+     global server
+     server.start()
+ 
+     res = server.make_request("POST", "/completion", data={
+         "prompt": "Repeat a short hidden thought:",
+-        "n_predict": 12,
++        "n_predict": 64,
+         "temperature": 0.0,
+         "logit_bias": _single_token_bias(" loop"),
+         "generation_prompt": "<think>",
+@@ -129,10 +137,44 @@ def test_reasoning_loop_guard_force_close_intervenes_then_continues():
+     })
+ 
+     assert res.status_code == 200
+-    assert res.body["tokens_predicted"] == 12
++    assert res.body["tokens_predicted"] < 64
+     assert res.body["stop_type"] == "limit"
+-    assert res.body["stop_detail"] == "token_limit"
++    assert res.body["stop_detail"] == "reasoning_loop_guard"
++    assert res.body["reasoning_tokens"] >= 4
++    assert res.body["visible_completion_tokens"] >= 4
++    assert res.body["loop_guard"]["triggered"] is True
++    assert res.body["loop_guard"]["action"] == "stop"
++    assert "periodic_tail" in res.body["loop_guard"]["reason"]
++    _assert_all_slots_released()
++
++
++def test_reasoning_loop_guard_force_close_preserves_short_visible_continuation():
++    global server
++    server.start()
++
++    res = server.make_request("POST", "/completion", data={
++        "prompt": "Repeat a short hidden thought, then continue briefly:",
++        "n_predict": 14,
++        "temperature": 0.0,
++        "logit_bias": _single_token_bias(" loop"),
++        "generation_prompt": "<think>",
++        "reasoning_budget_start_tag": "<think>",
++        "reasoning_budget_end_tag": "</think>",
++        "reasoning_loop_guard": "force-close",
++        "reasoning_loop_min_tokens": 4,
++        "reasoning_loop_window": 6,
++        "reasoning_loop_max_period": 2,
++        "reasoning_loop_min_coverage": 3,
++        "reasoning_loop_check_interval": 1,
++        "reasoning_loop_interventions": 1,
++    })
++
++    assert res.status_code == 200
++    assert res.body["tokens_predicted"] == 14
+     assert res.body["reasoning_tokens"] >= 4
+-    assert res.body["visible_completion_tokens"] > 0
++    assert 0 < res.body["visible_completion_tokens"] < 4
+     assert res.body["loop_guard"]["triggered"] is True
+     assert res.body["loop_guard"]["action"] == "force-close"
++    assert res.body["stop_type"] == "limit"
++    assert res.body["stop_detail"] == "token_limit"
++    _assert_all_slots_released()
+-- 
+2.53.0
+

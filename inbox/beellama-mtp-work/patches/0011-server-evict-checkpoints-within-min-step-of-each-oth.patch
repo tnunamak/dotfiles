@@ -1,0 +1,40 @@
+From 4f2f13921cd553500c6eaf89023d646683dbd46d Mon Sep 17 00:00:00 2001
+From: Alde Rojas <hello@alde.dev>
+Date: Tue, 7 Jul 2026 18:38:15 -0500
+Subject: [PATCH 11/16] server : evict checkpoints within min-step of each
+ other
+
+(cherry picked from commit 273797c709dfcbe96b6cbab9ef0ada02c3db6f02)
+---
+ tools/server/server-context.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a0f031b01..14123cb7d 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3893,6 +3893,21 @@ private:
+ 
+     // n_tokens_cur: the number of tokens added to the batch for the current slot
+     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
++        // evict checkpoints within min-step of a previous checkpoint
++        int64_t last = -1;
++        for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end(); ) {
++            if (last >= 0 && it->n_tokens <= last + params_base.checkpoint_min_step) {
++                SLT_WRN(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
++                        it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
++
++                it = slot.prompt.checkpoints.erase(it);
++                continue;
++            }
++
++            last = it->n_tokens;
++            ++it;
++        }
++
+         while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
+             // make room for the new checkpoint, if needed
+             const auto & cur = slot.prompt.checkpoints.front();
+-- 
+2.53.0
+

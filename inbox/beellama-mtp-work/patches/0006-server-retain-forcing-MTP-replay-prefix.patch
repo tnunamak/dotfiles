@@ -1,0 +1,178 @@
+From 4dab1535b90abec0298b9d50d82e8082386e743d Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Mon, 13 Jul 2026 08:54:12 -0500
+Subject: [PATCH 06/16] server: retain forcing MTP replay prefix
+
+---
+ ...p-loop-guard-force-close-fix-2026-07-13.md | 19 ++++++++++++++-
+ tests/test-mtp-loop-guard-rollback.cpp        | 23 ++++++++++++++++++-
+ tools/server/server-context.cpp               |  9 +++-----
+ tools/server/server-mtp-replay.cpp            | 15 ++++++++++++
+ tools/server/server-mtp-replay.h              |  9 ++++++++
+ 5 files changed, 67 insertions(+), 8 deletions(-)
+
+diff --git a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+index 203e59b59..96283dccb 100644
+--- a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
++++ b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+@@ -70,6 +70,21 @@ the actual production transaction. The concrete MTP implementation used by
+ `common_speculative_commit_mtp_replay()` also delegates its final-row handoff
+ to the tested production hidden-state commit seam.
+ 
++## Review3 scheduler-to-batch correction
++
++Review3 found that a pending replay was admitted with `n_draft_max == 0`, then
++the generic draft-limit code immediately resized its retained prefix to zero
++before `update_batch()`. The draft-limit decision now belongs to
++`server_mtp_replay::apply_draft_limit()`: a pending context-repair replay
++retains its token and log-prob payload exactly once, while every idle path
++continues to use the former truncation behavior. The server calls this method
++immediately before its existing `update_batch()` path.
++
++The regression drives retained FULL and long-RS prefix payloads through that
++production scheduler-to-batch limit seam at zero draft limit, then verifies the
++post-batch position transition and the release outcome. It also proves that
++ordinary rollback and DFlash still truncate at the same zero limit.
++
+ ## Offline evidence
+ 
+ CPU-only Debug build directory:
+@@ -97,7 +112,9 @@ ordinary rollback, DFlash exclusion, a zero-draft-limit forcing replay,
+ position validation, exactly-once replay accounting/output, stop release, and
+ forced-sequence completion. It also rejects negative/out-of-range rows, zero
+ dimensions/rows, malformed pending and verification vector sizes, and a null
+-draft-input destination. It does not read production source text.
++draft-input destination. The scheduler-to-batch payload test retains FULL and
++long-RS replay tokens/log-probs at zero draft limit and preserves ordinary and
++DFlash truncation. It does not read production source text.
+ 
+ The shell also printed a stale `ctest` wrapper interpreter warning before CTest
+ ran; the command exited successfully and CTest itself reported all four tests
+diff --git a/tests/test-mtp-loop-guard-rollback.cpp b/tests/test-mtp-loop-guard-rollback.cpp
+index c3afec69d..7c5c66fea 100644
+--- a/tests/test-mtp-loop-guard-rollback.cpp
++++ b/tests/test-mtp-loop-guard-rollback.cpp
+@@ -30,8 +30,14 @@ static void test_checkpoint_replay_reaches_forced_decode(
+     assert(replay.is_pending());
+ 
+     // The committed prefix is scheduled once even after the forcing gate has
+-    // reduced ordinary MTP drafting to zero.
++    // reduced ordinary MTP drafting to zero. This is the same payload and
++    // limit application used by the server before update_batch().
+     assert(replay.should_schedule(0));
++    llama_tokens replay_prefix = { 201, 202 };
++    std::vector<float> replay_log_probs = { -0.1f, -0.2f };
++    assert(!replay.apply_draft_limit(replay_prefix, replay_log_probs, 0));
++    assert(replay_prefix == llama_tokens({ 201, 202 }));
++    assert(replay_log_probs == std::vector<float>({ -0.1f, -0.2f }));
+     assert(!replay.context_replayed(/* missing replay token = */ 12));
+     assert(replay.is_pending());
+     assert(replay.context_replayed(/* checkpoint + sampled + prefix = */ 13));
+@@ -96,6 +102,11 @@ static void test_ordinary_rollback_dflash_and_stop() {
+     assert(!ordinary_rollback.arm(ordinary));
+     assert(!ordinary_rollback.should_schedule(0));
+     assert(ordinary_rollback.should_schedule(1));
++    llama_tokens ordinary_draft = { 1, 2 };
++    std::vector<float> ordinary_log_probs = { -0.1f, -0.2f };
++    assert(ordinary_rollback.apply_draft_limit(ordinary_draft, ordinary_log_probs, 0));
++    assert(ordinary_draft.empty());
++    assert(ordinary_log_probs.empty());
+ 
+     server_mtp_replay short_rs_rollback;
+     assert(!short_rs_rollback.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_RS, 2, 2)));
+@@ -104,9 +115,19 @@ static void test_ordinary_rollback_dflash_and_stop() {
+     auto dflash_checkpoint = committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0);
+     dflash_checkpoint.is_dflash = true;
+     assert(!dflash.arm(dflash_checkpoint));
++    llama_tokens dflash_draft = { 1, 2 };
++    std::vector<float> dflash_log_probs = { -0.1f, -0.2f };
++    assert(dflash.apply_draft_limit(dflash_draft, dflash_log_probs, 0));
++    assert(dflash_draft.empty());
++    assert(dflash_log_probs.empty());
+ 
+     server_mtp_replay stop_replay;
+     assert(stop_replay.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0)));
++    llama_tokens stop_prefix = { 201, 202 };
++    std::vector<float> stop_log_probs = { -0.1f, -0.2f };
++    assert(!stop_replay.apply_draft_limit(stop_prefix, stop_log_probs, 0));
++    assert(stop_prefix == llama_tokens({ 201, 202 }));
++    assert(stop_log_probs == std::vector<float>({ -0.1f, -0.2f }));
+     assert(stop_replay.context_replayed(13));
+     assert(stop_replay.record_output());
+     assert(stop_replay.finish(true) == SERVER_MTP_REPLAY_FINISH_RELEASE);
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a534803e9..480f7aeef 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -4810,12 +4810,9 @@ private:
+                 }
+                 slot.spec_pad_i_batch.clear();
+ 
+-                if (slot.spec_draft.size() > (size_t) n_draft_max) {
+-                    SLT_WRN(slot, "draft size %d exceeds max %d, truncating\n", (int) slot.spec_draft.size(), n_draft_max);
+-                    slot.spec_draft.resize(n_draft_max);
+-                    if (slot.draft_log_probs.size() > (size_t) n_draft_max) {
+-                        slot.draft_log_probs.resize(n_draft_max);
+-                    }
++                const size_t n_draft_before_limit = slot.spec_draft.size();
++                if (slot.mtp_replay.apply_draft_limit(slot.spec_draft, slot.draft_log_probs, n_draft_max)) {
++                    SLT_WRN(slot, "draft size %d exceeds max %d, truncating\n", (int) n_draft_before_limit, n_draft_max);
+                 }
+ 
+                 // MTP batch building is deferred to the post-loop phase below
+diff --git a/tools/server/server-mtp-replay.cpp b/tools/server/server-mtp-replay.cpp
+index a1417b809..ba0c494cd 100644
+--- a/tools/server/server-mtp-replay.cpp
++++ b/tools/server/server-mtp-replay.cpp
+@@ -29,6 +29,21 @@ bool server_mtp_replay::should_schedule(int32_t n_draft_max) const {
+     return n_draft_max > 0 || phase_ == PENDING_CONTEXT_REPLAY;
+ }
+ 
++bool server_mtp_replay::apply_draft_limit(
++        llama_tokens       & draft,
++        std::vector<float> & draft_log_probs,
++        int32_t              n_draft_max) const {
++    if (phase_ == PENDING_CONTEXT_REPLAY || draft.size() <= (size_t) n_draft_max) {
++        return false;
++    }
++
++    draft.resize(n_draft_max);
++    if (draft_log_probs.size() > (size_t) n_draft_max) {
++        draft_log_probs.resize(n_draft_max);
++    }
++    return true;
++}
++
+ bool server_mtp_replay::context_replayed(int64_t prompt_tokens) {
+     if (phase_ != PENDING_CONTEXT_REPLAY ||
+             prompt_tokens != checkpoint_tokens_ + 1 + replay_tokens_) {
+diff --git a/tools/server/server-mtp-replay.h b/tools/server/server-mtp-replay.h
+index 0b861d4e3..6ba5e1cdf 100644
+--- a/tools/server/server-mtp-replay.h
++++ b/tools/server/server-mtp-replay.h
+@@ -3,6 +3,7 @@
+ #include "common.h"
+ 
+ #include <cstdint>
++#include <vector>
+ 
+ // The value-side of an MTP checkpoint rollback whose sampler callback already
+ // committed a loop-guard transition. Context restore remains in server_context;
+@@ -34,6 +35,14 @@ public:
+     // Replays are scheduled even when forcing made the normal draft limit zero.
+     bool should_schedule(int32_t n_draft_max) const;
+ 
++    // The pending replay prefix is context-repair work, not a newly drafted
++    // proposal, so it bypasses the normal draft limit once. All other paths
++    // retain the existing token/log-prob truncation behavior.
++    bool apply_draft_limit(
++            llama_tokens       & draft,
++            std::vector<float> & draft_log_probs,
++            int32_t              n_draft_max) const;
++
+     // update_batch() must have appended the prior sampled token and the replay
+     // prefix before replay output can be emitted.
+     bool context_replayed(int64_t prompt_tokens);
+-- 
+2.53.0
+

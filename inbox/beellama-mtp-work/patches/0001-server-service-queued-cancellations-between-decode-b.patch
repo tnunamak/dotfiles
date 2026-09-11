@@ -1,0 +1,195 @@
+From f6040736c35a4263dda5ff6f4b69758a31ddf106 Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Mon, 13 Jul 2026 02:42:54 -0500
+Subject: [PATCH 01/16] server: service queued cancellations between decode
+ batches
+
+---
+ docs/beellama-cancellation-fix-report.md | 43 ++++++++++++++++++
+ tests/CMakeLists.txt                     |  3 ++
+ tests/test-server-cancel-scheduling.cpp  | 57 ++++++++++++++++++++++++
+ tools/server/server-context.cpp          |  6 +++
+ tools/server/server-queue.cpp            |  7 +++
+ tools/server/server-queue.h              |  3 ++
+ 6 files changed, 119 insertions(+)
+ create mode 100644 docs/beellama-cancellation-fix-report.md
+ create mode 100644 tests/test-server-cancel-scheduling.cpp
+
+diff --git a/docs/beellama-cancellation-fix-report.md b/docs/beellama-cancellation-fix-report.md
+new file mode 100644
+index 000000000..dcfd89afe
+--- /dev/null
++++ b/docs/beellama-cancellation-fix-report.md
+@@ -0,0 +1,43 @@
++# Cancellation-latency fix report
++
++## Evidence
++
++The audit at `/home/tnunamak/.tmp/beellama-cancellation-audit.md` established that
++the response reader enqueues a high-priority `SERVER_TASK_TYPE_CANCEL`, while the
++scheduler is the only owner of `slot.release()`. The delay came from `update_slots()`
++continuing through every target decode sub-batch before returning to that queue.
++
++This change adds `server_queue::has_pending_high_priority_cancel()` and checks it at
++the completed-sub-batch boundary in `update_slots()`. The checkpoint breaks out to
++the existing per-cycle cleanup; the scheduler then dequeues the cancel and reaches
++the unchanged `slot.release()` path in `process_single_task()`.
++
++## Commands and results
++
++- `cmake --build build --target llama-server -j2` — passed.
++- `cmake --build build --target test-server-cancel-scheduling -j2` — passed.
++- `./build/bin/test-server-cancel-scheduling` — passed.
++- `/usr/bin/ctest --test-dir build --output-on-failure -R '^test-server-cancel-scheduling$'` — passed (1/1).
++- `git diff --check` — passed.
++- Model-backed cancellation test against the rebuilt service — passed: a 40,001-token
++  prompt was disconnected after 503 ms; BeeLlama logged the cancel on the next queue
++  turn and admitted a probe about 590 ms later. The probe completed over HTTP in
++  1,670 ms instead of waiting for the abandoned prompt.
++- Post-restart semantic smoke test — passed: `Reply with exactly OK` returned `OK`
++  with `finish_reason: stop` in 2.5 seconds.
++
++`test-server-cancel-scheduling` deterministically queues cancellation after the
++first modeled prompt-evaluation sub-batch, asserts that a second sub-batch is not
++run, and asserts that cancellation is handled on the subsequent queue turn.
++
++## Risks and limits
++
++- Cancellation cannot interrupt a decode already dispatched to the CPU or GPU; the
++  bound remains disconnect polling plus one in-flight decode sub-batch and one queue
++  turn.
++- The unit test exercises the scheduler queue contract rather than directly invoking
++  the private `update_slots()` implementation. The model-backed HTTP cancellation test
++  covers that integration boundary against the exact rebuilt executable used by the
++  running service (verified by matching `/proc/<pid>/exe` and build artifact inode).
++- The original temporary audit file is outside the writable workspace, so this
++  repository report contains the completion evidence instead of modifying that file.
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 0f668c255..0e727fb35 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -259,6 +259,9 @@ set_tests_properties(test-thread-safety PROPERTIES FIXTURES_REQUIRED test-downlo
+ 
+ llama_build_and_test(test-arg-parser.cpp)
+ llama_build_and_test(test-adaptive-dm.cpp)
++llama_build_and_test(test-server-cancel-scheduling.cpp)
++target_include_directories(test-server-cancel-scheduling PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
++target_link_libraries(test-server-cancel-scheduling PRIVATE server-context)
+ llama_build_and_test(test-server-prompt-checkpoint.cpp)
+ target_include_directories(test-server-prompt-checkpoint PRIVATE ${PROJECT_SOURCE_DIR}/tools/server ${PROJECT_SOURCE_DIR}/tools/mtmd)
+ llama_build_and_test(test-dflash-ring.cpp)
+diff --git a/tests/test-server-cancel-scheduling.cpp b/tests/test-server-cancel-scheduling.cpp
+new file mode 100644
+index 000000000..4ba2ab28b
+--- /dev/null
++++ b/tests/test-server-cancel-scheduling.cpp
+@@ -0,0 +1,57 @@
++#include "server-queue.h"
++
++#undef NDEBUG
++#include <cassert>
++
++static void test_cancel_stops_after_the_current_sub_batch_and_keeps_release_in_the_queue() {
++    server_queue queue;
++    int n_decoded_sub_batches = 0;
++    int released_task_id = -1;
++    int n_update_calls = 0;
++
++    queue.on_new_task([&](server_task && task) {
++        if (task.type == SERVER_TASK_TYPE_CANCEL) {
++            // This mirrors server_context_impl::process_single_task(): queue processing
++            // owns cancellation release, not the decode checkpoint.
++            released_task_id = task.id_target;
++        }
++    });
++    queue.on_update_slots([&]() {
++        ++n_update_calls;
++        if (n_update_calls > 1) {
++            queue.terminate();
++            return;
++        }
++
++        for (int sub_batch = 0; sub_batch < 2; ++sub_batch) {
++            ++n_decoded_sub_batches;
++
++            if (sub_batch == 0) {
++                server_task cancel(SERVER_TASK_TYPE_CANCEL);
++                cancel.id = queue.get_new_id();
++                cancel.id_target = 42;
++                queue.post(std::move(cancel), true);
++            }
++
++            // Mirrors the completed-sub-batch checkpoint in update_slots().
++            if (queue.has_pending_high_priority_cancel()) {
++                break;
++            }
++        }
++    });
++
++    assert(!queue.has_pending_high_priority_cancel());
++
++    server_task work(SERVER_TASK_TYPE_COMPLETION);
++    work.id = 42;
++    queue.post(std::move(work));
++    queue.start_loop();
++
++    assert(n_decoded_sub_batches == 1);
++    assert(released_task_id == 42);
++    assert(!queue.has_pending_high_priority_cancel());
++}
++
++int main() {
++    test_cancel_stops_after_the_current_sub_batch_and_keeps_release_in_the_queue();
++}
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index df782c767..c693e8f43 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -7147,6 +7147,12 @@ private:
+                 SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", n_accepted_draft, (int) n_draft, slot.prompt.n_tokens());
+             }
+             t_accept_total += ggml_time_us() - t_accept_start;
++
++            // A cancel is serviced by the scheduler queue, which remains the sole owner
++            // of slot.release(). Do not schedule another decode sub-batch first.
++            if (queue_tasks.has_pending_high_priority_cancel()) {
++                break;
++            }
+         }
+ 
+         const bool pure_tg_cycle = n_tg_tokens > 0 && batch.n_tokens == n_tg_tokens;
+diff --git a/tools/server/server-queue.cpp b/tools/server/server-queue.cpp
+index 32cfe7830..3c32ea020 100644
+--- a/tools/server/server-queue.cpp
++++ b/tools/server/server-queue.cpp
+@@ -122,6 +122,13 @@ void server_queue::terminate() {
+     condition_tasks.notify_all();
+ }
+ 
++bool server_queue::has_pending_high_priority_cancel() {
++    std::unique_lock<std::mutex> lock(mutex_tasks);
++    return std::any_of(queue_tasks.begin(), queue_tasks.end(), [](const server_task & task) {
++        return task.type == SERVER_TASK_TYPE_CANCEL;
++    });
++}
++
+ void server_queue::start_loop(int64_t idle_sleep_ms) {
+     running = true;
+     time_last_task = ggml_time_ms();
+diff --git a/tools/server/server-queue.h b/tools/server/server-queue.h
+index 35f010401..c76ff05a0 100644
+--- a/tools/server/server-queue.h
++++ b/tools/server/server-queue.h
+@@ -59,6 +59,9 @@ public:
+     // end the start_loop routine
+     void terminate();
+ 
++    // true when the response reader has queued high-priority cancellation work
++    bool has_pending_high_priority_cancel();
++
+     /**
+      * Main loop consists of these steps:
+      * - Wait until a new task arrives
+-- 
+2.53.0
+

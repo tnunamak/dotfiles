@@ -1,0 +1,628 @@
+From a0e6fc7ae00c81dfbe80cbfa7e1e4553d851563d Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Mon, 13 Jul 2026 08:38:46 -0500
+Subject: [PATCH 05/16] server: exercise MTP replay transaction
+
+---
+ common/speculative.cpp                        |  14 +-
+ common/speculative.h                          |   5 +
+ ...p-loop-guard-force-close-fix-2026-07-13.md |  33 ++++-
+ tests/CMakeLists.txt                          |   2 +
+ tests/test-mtp-loop-guard-rollback.cpp        | 129 +++++++++++++-----
+ tools/server/CMakeLists.txt                   |   2 +
+ tools/server/server-context.cpp               |  41 ++++--
+ tools/server/server-mtp-replay.cpp            |  86 ++++++++++++
+ tools/server/server-mtp-replay.h              |  61 +++++++++
+ 9 files changed, 317 insertions(+), 56 deletions(-)
+ create mode 100644 tools/server/server-mtp-replay.cpp
+ create mode 100644 tools/server/server-mtp-replay.h
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index db58314cb..c7e678dcb 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -794,9 +794,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+             return false;
+         }
+ 
+-        return common_mtp_select_pending_hidden_row(
+-                pending_h[seq_id], verify_h[seq_id], verify_h_rows[seq_id], n_embd,
+-                verify_h_rows[seq_id] - 1);
++        return common_mtp_commit_replayed_pending_hidden(
++                pending_h[seq_id], verify_h[seq_id], verify_h_rows[seq_id], n_embd);
+     }
+ 
+     bool process(const llama_batch & batch_in) override {
+@@ -4211,6 +4210,15 @@ bool common_mtp_select_pending_hidden_row(
+     return true;
+ }
+ 
++bool common_mtp_commit_replayed_pending_hidden(
++        std::vector<float>       & pending_h,
++        const std::vector<float> & verify_h,
++        int32_t                    verify_h_rows,
++        int32_t                    n_embd) {
++    return common_mtp_select_pending_hidden_row(
++            pending_h, verify_h, verify_h_rows, n_embd, verify_h_rows - 1);
++}
++
+ bool common_mtp_copy_pending_hidden(
+         const std::vector<float> & pending_h,
+         float                    * dst,
+diff --git a/common/speculative.h b/common/speculative.h
+index 6fa080d3d..083d31fa9 100644
+--- a/common/speculative.h
++++ b/common/speculative.h
+@@ -122,6 +122,11 @@ bool common_mtp_select_pending_hidden_row(
+         int32_t                    verify_h_rows,
+         int32_t                    n_embd,
+         int32_t                    row);
++bool common_mtp_commit_replayed_pending_hidden(
++        std::vector<float>       & pending_h,
++        const std::vector<float> & verify_h,
++        int32_t                    verify_h_rows,
++        int32_t                    n_embd);
+ bool common_mtp_copy_pending_hidden(
+         const std::vector<float> & pending_h,
+         float                    * dst,
+diff --git a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+index 66b3f4dbb..203e59b59 100644
+--- a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
++++ b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+@@ -6,7 +6,8 @@ Fix the MTP checkpoint rollback path where the loop-guard callback has already
+ accepted the triggering token and transitioned either to force-close or stop.
+ The fix is limited to the MTP replay boundary in
+ `tools/server/server-context.cpp` and MTP hidden-state handling in
+-`common/speculative.cpp`, with one offline regression executable.
++`common/speculative.cpp`, with the server-owned replay transaction in
++`tools/server/server-mtp-replay.cpp` and one offline regression executable.
+ 
+ ## Transaction invariant
+ 
+@@ -51,6 +52,24 @@ replaced with a behavioral oracle over the narrow production MTP hidden-state
+ transfer seam used by normal acceptance, committed replay, and draft input
+ assembly.
+ 
++## Evidence hardening follow-up
++
++The server now owns a `server_mtp_replay` transaction that is armed only for a
++FULL checkpoint, or an RS checkpoint whose rollback exceeds the RS window,
++when non-DFlash MTP has already committed a loop-guard control transition. The
++same transaction is called by the server to:
++
++- schedule that one context replay when forcing makes `n_draft_max` zero;
++- verify that `update_batch()` advanced the restored prompt by the sampled
++  token plus the replay prefix;
++- account for accepted draft tokens and exactly-once replay output; and
++- choose either the next ordinary/forced sample or slot release after a stop.
++
++This replaces local FULL/RS fixture booleans with a model-free execution of
++the actual production transaction. The concrete MTP implementation used by
++`common_speculative_commit_mtp_replay()` also delegates its final-row handoff
++to the tested production hidden-state commit seam.
++
+ ## Offline evidence
+ 
+ CPU-only Debug build directory:
+@@ -72,11 +91,13 @@ ctest --test-dir /home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build \
+ ```
+ 
+ Result: all four tests passed. `test-mtp-loop-guard-rollback` is a behavioral
+-oracle over the production MTP hidden-state transfer seam: it verifies the
+-ordinary pre-final row, the committed final replay row for both FULL and
+-long-RS replay fixtures, exactly one transfer into the first forced-token draft
+-input, forced-sequence completion, and malformed-row rejection. It does not
+-read production source text.
++oracle over the production server MTP replay transaction and hidden-state
++transfer seam. It executes distinguishable FULL and long-RS restore paths,
++ordinary rollback, DFlash exclusion, a zero-draft-limit forcing replay,
++position validation, exactly-once replay accounting/output, stop release, and
++forced-sequence completion. It also rejects negative/out-of-range rows, zero
++dimensions/rows, malformed pending and verification vector sizes, and a null
++draft-input destination. It does not read production source text.
+ 
+ The shell also printed a stale `ctest` wrapper interpreter warning before CTest
+ ran; the command exited successfully and CTest itself reported all four tests
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 58c6ed450..ccc0a5365 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -267,6 +267,8 @@ llama_build_and_test(test-cpu-fattn-support.cpp)
+ llama_build_and_test(test-dflash-plumbing.cpp ARGS ${PROJECT_SOURCE_DIR})
+ target_include_directories(test-dflash-plumbing PRIVATE ${PROJECT_SOURCE_DIR}/src)
+ llama_build_and_test(test-mtp-loop-guard-rollback.cpp)
++target_include_directories(test-mtp-loop-guard-rollback PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
++target_link_libraries(test-mtp-loop-guard-rollback PRIVATE server-context)
+ llama_build_and_test(test-mtmd-plumbing.cpp ARGS ${PROJECT_SOURCE_DIR})
+ llama_build_and_test(test-perplexity-plumbing.cpp ARGS ${PROJECT_SOURCE_DIR})
+ 
+diff --git a/tests/test-mtp-loop-guard-rollback.cpp b/tests/test-mtp-loop-guard-rollback.cpp
+index 8366f3a65..c3afec69d 100644
+--- a/tests/test-mtp-loop-guard-rollback.cpp
++++ b/tests/test-mtp-loop-guard-rollback.cpp
+@@ -1,5 +1,6 @@
+ #include "reasoning-budget.h"
+ #include "speculative.h"
++#include "server-mtp-replay.h"
+ 
+ #include <cassert>
+ #include <vector>
+@@ -8,73 +9,137 @@ static void assert_row_equals(const std::vector<float> & actual, const std::vect
+     assert(actual == expected);
+ }
+ 
+-enum class checkpoint_kind {
+-    full,
+-    long_rs,
+-};
++static server_mtp_replay_checkpoint committed_checkpoint(
++        common_context_seq_rm_type seq_rm_type, int32_t n_rollback, int32_t n_rs_seq) {
++    return {
++        /* .seq_rm_type = */ seq_rm_type,
++        /* .n_rollback = */ n_rollback,
++        /* .n_rs_seq = */ n_rs_seq,
++        /* .is_mtp = */ true,
++        /* .is_dflash = */ false,
++        /* .loop_guard_control_changed = */ true,
++        /* .checkpoint_tokens = */ 10,
++        /* .replay_tokens = */ 2,
++    };
++}
+ 
+-struct checkpoint_case {
+-    checkpoint_kind kind;
+-    int32_t n_rollback;
+-    int32_t n_rs_seq;
+-};
++static void test_checkpoint_replay_reaches_forced_decode(
++        common_context_seq_rm_type seq_rm_type, int32_t n_rollback, int32_t n_rs_seq) {
++    server_mtp_replay replay;
++    assert(replay.arm(committed_checkpoint(seq_rm_type, n_rollback, n_rs_seq)));
++    assert(replay.is_pending());
++
++    // The committed prefix is scheduled once even after the forcing gate has
++    // reduced ordinary MTP drafting to zero.
++    assert(replay.should_schedule(0));
++    assert(!replay.context_replayed(/* missing replay token = */ 12));
++    assert(replay.is_pending());
++    assert(replay.context_replayed(/* checkpoint + sampled + prefix = */ 13));
++    assert(replay.is_emitting());
++    assert(replay.accepted_draft_tokens() == 1);
+ 
+-static void test_committed_mtp_replay_uses_final_hidden_row_once(const checkpoint_case & checkpoint) {
+     constexpr int32_t n_embd = 4;
+     constexpr int32_t n_rows = 3;
+-
+     const std::vector<float> verify_h = {
+-         1.0f,  2.0f,  3.0f,  4.0f, // current sampled token
+-        11.0f, 12.0f, 13.0f, 14.0f, // accepted draft token
+-        21.0f, 22.0f, 23.0f, 24.0f, // callback-triggering token
++         1.0f,  2.0f,  3.0f,  4.0f, // sampled token before the draft
++        11.0f, 12.0f, 13.0f, 14.0f, // ordinary accepted draft row
++        21.0f, 22.0f, 23.0f, 24.0f, // final callback-triggering replay row
+     };
+     const std::vector<float> ordinary_accept_row(
+             verify_h.begin() + n_embd, verify_h.begin() + 2 * n_embd);
+     const std::vector<float> final_replay_row(verify_h.end() - n_embd, verify_h.end());
+     std::vector<float> pending_h(n_embd, -1.0f);
+ 
+-    // Ordinary MTP acceptance keeps the row before the final sampled token.
++    // Normal MTP acceptance selects the row before the final sampled token.
+     assert(common_mtp_select_pending_hidden_row(pending_h, verify_h, n_rows, n_embd, n_rows - 2));
+     assert_row_equals(pending_h, ordinary_accept_row);
+ 
+-    // FULL and long-RS checkpoint rollback both replay the complete committed
+-    // prefix. The next forced token must start from the final replay row.
+-    const bool restores_checkpoint = checkpoint.kind == checkpoint_kind::full ||
+-            checkpoint.n_rollback > checkpoint.n_rs_seq;
+-    assert(restores_checkpoint);
+-    assert(common_mtp_select_pending_hidden_row(pending_h, verify_h, n_rows, n_embd, n_rows - 1));
++    // The concrete MTP commit path invoked by common_speculative_commit_mtp_replay()
++    // advances pending_h back to the final replay row.
++    assert(common_mtp_commit_replayed_pending_hidden(pending_h, verify_h, n_rows, n_embd));
+     assert_row_equals(pending_h, final_replay_row);
+ 
+-    // A force-close callback supplies this token after the replay.  The narrow
+-    // production transfer seam is called once for its draft-model input.
+     auto * sampler = common_reasoning_budget_init(
+             nullptr, { 100 }, { 101 }, { 102, 101 }, 8, REASONING_BUDGET_COUNTING);
+     llama_sampler_accept(sampler, 50);
+     assert(common_reasoning_budget_force_end(sampler));
++    assert(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING);
+     const llama_token first_forced = common_reasoning_budget_next_forced_token(sampler);
+     assert(first_forced == 102);
+ 
++    // process() uses this same production copy seam for the first forced-token
++    // draft input. There is one transfer and it receives the final replay row.
+     std::vector<float> draft_input(2 * n_embd, -9.0f);
+-    int pending_h_transfers = 0;
+     assert(common_mtp_copy_pending_hidden(pending_h, draft_input.data() + n_embd, n_embd));
+-    ++pending_h_transfers;
+-    assert(pending_h_transfers == 1);
+     assert(std::vector<float>(draft_input.begin(), draft_input.begin() + n_embd) ==
+            std::vector<float>(n_embd, -9.0f));
+     assert(std::vector<float>(draft_input.begin() + n_embd, draft_input.end()) == final_replay_row);
+ 
++    assert(replay.record_output());
++    assert(replay.finish(false) == SERVER_MTP_REPLAY_FINISH_INVALID);
++    assert(replay.record_output());
++    assert(!replay.record_output());
++    assert(replay.finish(false) == SERVER_MTP_REPLAY_FINISH_SAMPLE_NEXT);
++    assert(!replay.should_schedule(0));
++
+     llama_sampler_accept(sampler, first_forced);
+-    assert(common_reasoning_budget_next_forced_token(sampler) == 101);
+-    llama_sampler_accept(sampler, 101);
++    assert(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING);
++    llama_sampler_accept(sampler, common_reasoning_budget_next_forced_token(sampler));
+     assert(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_DONE);
+     llama_sampler_free(sampler);
++}
++
++static void test_ordinary_rollback_dflash_and_stop() {
++    server_mtp_replay ordinary_rollback;
++    auto ordinary = committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0);
++    ordinary.loop_guard_control_changed = false;
++    assert(!ordinary_rollback.arm(ordinary));
++    assert(!ordinary_rollback.should_schedule(0));
++    assert(ordinary_rollback.should_schedule(1));
++
++    server_mtp_replay short_rs_rollback;
++    assert(!short_rs_rollback.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_RS, 2, 2)));
++
++    server_mtp_replay dflash;
++    auto dflash_checkpoint = committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0);
++    dflash_checkpoint.is_dflash = true;
++    assert(!dflash.arm(dflash_checkpoint));
++
++    server_mtp_replay stop_replay;
++    assert(stop_replay.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0)));
++    assert(stop_replay.context_replayed(13));
++    assert(stop_replay.record_output());
++    assert(stop_replay.finish(true) == SERVER_MTP_REPLAY_FINISH_RELEASE);
++    assert(!stop_replay.should_schedule(0));
++    assert(!stop_replay.record_output());
++}
++
++static void test_hidden_row_boundaries() {
++    constexpr int32_t n_embd = 2;
++    const std::vector<float> verify_h = { 1.0f, 2.0f, 3.0f, 4.0f };
++    std::vector<float> pending_h(n_embd, -1.0f);
++    std::vector<float> malformed_verify = verify_h;
++    malformed_verify.pop_back();
++    std::vector<float> malformed_pending(1, -1.0f);
++    float dst[n_embd] = {};
+ 
+-    // Reject malformed row metadata instead of copying an arbitrary hidden row.
+-    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, n_rows, n_embd, n_rows));
++    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, n_embd, -1));
++    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, n_embd, 2));
++    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 0, n_embd, 0));
++    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, 0, 0));
++    assert(!common_mtp_select_pending_hidden_row(pending_h, malformed_verify, 2, n_embd, 0));
++    assert(!common_mtp_select_pending_hidden_row(malformed_pending, verify_h, 2, n_embd, 0));
++    assert(!common_mtp_commit_replayed_pending_hidden(pending_h, malformed_verify, 2, n_embd));
++    assert(!common_mtp_commit_replayed_pending_hidden(pending_h, verify_h, 0, n_embd));
++    assert(!common_mtp_copy_pending_hidden(pending_h, nullptr, n_embd));
++    assert(!common_mtp_copy_pending_hidden(malformed_pending, dst, n_embd));
++    assert(!common_mtp_copy_pending_hidden(pending_h, dst, 0));
+ }
+ 
+ int main() {
+-    test_committed_mtp_replay_uses_final_hidden_row_once({ checkpoint_kind::full, 1, 0 });
+-    test_committed_mtp_replay_uses_final_hidden_row_once({ checkpoint_kind::long_rs, 3, 2 });
++    test_checkpoint_replay_reaches_forced_decode(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0);
++    test_checkpoint_replay_reaches_forced_decode(COMMON_CONTEXT_SEQ_RM_TYPE_RS, 3, 2);
++    test_ordinary_rollback_dflash_and_stop();
++    test_hidden_row_boundaries();
+     return 0;
+ }
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index f9b54e644..bca5ed717 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -17,6 +17,8 @@ add_library(${TARGET} STATIC
+     server-context.h
+     server-loop-guard.cpp
+     server-loop-guard.h
++    server-mtp-replay.cpp
++    server-mtp-replay.h
+     server-tools.cpp
+     server-tools.h
+ )
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 1f7d3ae61..a534803e9 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -7,6 +7,7 @@
+ #include "server-queue.h"
+ #include "server-adaptive-dm.h"
+ #include "server-loop-guard.h"
++#include "server-mtp-replay.h"
+ 
+ #include "build-info.h"
+ #include "common.h"
+@@ -675,7 +676,7 @@ struct server_slot : server_adaptive_dm_state {
+     std::vector<int32_t> spec_i_batch;
+     std::vector<int32_t> spec_pad_i_batch;
+     common_prompt_checkpoint spec_ckpt;
+-    bool mtp_committed_accept_replay = false;
++    server_mtp_replay mtp_replay;
+ 
+     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
+     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
+@@ -846,7 +847,7 @@ struct server_slot : server_adaptive_dm_state {
+             spec_i_batch.clear();
+             spec_pad_i_batch.clear();
+             spec_ckpt.clear();
+-            mtp_committed_accept_replay = false;
++            mtp_replay.clear();
+         }
+         drafted.clear();
+         draft_tree = common_speculative_tree();
+@@ -4649,12 +4650,7 @@ private:
+                 n_draft_max = 0;
+             }
+ 
+-            const bool mtp_replay_committed_accept =
+-                params_base.speculative.has_type(COMMON_SPECULATIVE_TYPE_DRAFT_MTP) &&
+-                params_base.speculative.type() != COMMON_SPECULATIVE_TYPE_DFLASH &&
+-                slot.mtp_committed_accept_replay;
+-
+-            if ((n_draft_max > 0 || mtp_replay_committed_accept) && !dflash_sampler_blocks_speculative) {
++            if (slot.mtp_replay.should_schedule(n_draft_max) && !dflash_sampler_blocks_speculative) {
+                 const int64_t t_draft_slot_start = ggml_time_us();
+ 
+                 auto params_spec = slot.task->params.speculative;
+@@ -4760,7 +4756,7 @@ private:
+                     // MTP: collect draft params only; draft/checkpoint/batch handled in post-loop phases
+                     // (matches upstream's collect-then-draft-then-checkpoint-then-batch pattern)
+                     common_speculative_get_draft_params(slot.get_spec(), slot.id).drafting = false;
+-                    if (slot.mtp_committed_accept_replay) {
++                    if (slot.mtp_replay.is_pending()) {
+                         // A loop-guard callback accepted this prefix before a checkpoint rollback.
+                         // Replay it into the target context once without sampling it again.
+                         GGML_ASSERT(!slot.spec_draft.empty());
+@@ -5017,10 +5013,13 @@ private:
+         for (auto * slot_ptr : mtp_batching) {
+             auto & slot = *slot_ptr;
+ 
+-            if (!slot.mtp_committed_accept_replay) {
++            if (!slot.mtp_replay.is_pending()) {
+                 slot.n_draft_total += slot.spec_draft.size();
+             }
+             slot.update_batch(batch);
++            if (slot.mtp_replay.is_pending()) {
++                GGML_ASSERT(slot.mtp_replay.context_replayed(slot.prompt.n_tokens()));
++            }
+         }
+ 
+         // process in chunks of params.n_batch
+@@ -6496,19 +6495,19 @@ private:
+                     GGML_ASSERT(n_draft > 0);
+                     GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
+ 
+-                    if (slot.mtp_committed_accept_replay) {
++                    if (slot.mtp_replay.is_emitting()) {
+                         // The checkpoint branch restored the target/draft contexts, but the
+                         // sampler and loop-guard transition were already committed.  Re-evaluate
+                         // that accepted prefix without accepting it a second time, then sample the
+                         // first forced/ordinary token from the final replay row.
+                         const auto ids = std::move(slot.spec_draft);
+-                        const uint16_t n_accepted_draft = (uint16_t) (ids.size() - 1);
++                        const uint16_t n_accepted_draft = slot.mtp_replay.accepted_draft_tokens();
++                        GGML_ASSERT(n_accepted_draft == ids.size() - 1);
+                         const int i_last = slot.spec_i_batch.back();
+ 
+                         slot.spec_i_batch.clear();
+                         slot.spec_pad_i_batch.clear();
+                         slot.draft_log_probs.clear();
+-                        slot.mtp_committed_accept_replay = false;
+                         slot.spec_ckpt.clear();
+ 
+                         common_speculative_accept(slot.get_spec(), slot.id, n_accepted_draft);
+@@ -6533,6 +6532,7 @@ private:
+                             result.text_to_send = common_token_to_piece(slot.ctx_tgt, id, accept_special_token(slot, id));
+                             result.prob         = 1.0f;
+ 
++                            GGML_ASSERT(slot.mtp_replay.record_output());
+                             slot.n_decoded += 1;
+                             slot.t_token_generation = std::max<int64_t>(1, t_current - slot.t_start_generation) / 1e3;
+ 
+@@ -6542,13 +6542,15 @@ private:
+                             }
+                         }
+ 
+-                        if (stopped) {
++                        const auto replay_finish = slot.mtp_replay.finish(stopped);
++                        if (replay_finish == SERVER_MTP_REPLAY_FINISH_RELEASE) {
+                             slot.print_timings();
+                             send_final_response(slot);
+                             metrics.on_prediction(slot);
+                             slot.release();
+                             continue;
+                         }
++                        GGML_ASSERT(replay_finish == SERVER_MTP_REPLAY_FINISH_SAMPLE_NEXT);
+ 
+                         const llama_token id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, i_last);
+                         const auto info = common_sampler_accept_with_info(slot.smpl.get(), id, true);
+@@ -6635,7 +6637,16 @@ private:
+                                 // contexts back, then replay the accepted prefix with that
+                                 // sampler/control state intact; otherwise the next MTP verify can
+                                 // undo a force-close or stop transition.
+-                                slot.mtp_committed_accept_replay = true;
++                                GGML_ASSERT(slot.mtp_replay.arm({
++                                        /* .seq_rm_type = */ ctx_tgt_seq_rm_type,
++                                        /* .n_rollback = */ n_rollback,
++                                        /* .n_rs_seq = */ llama_n_rs_seq(ctx_tgt),
++                                        /* .is_mtp = */ use_mtp_spec_accept,
++                                        /* .is_dflash = */ params_base.speculative.type() == COMMON_SPECULATIVE_TYPE_DFLASH,
++                                        /* .loop_guard_control_changed = */ true,
++                                        /* .checkpoint_tokens = */ ckpt.n_tokens,
++                                        /* .replay_tokens = */ (uint16_t) slot.spec_draft.size(),
++                                }));
+                             } else {
+                                 slot.smpl = std::move(smpl_save);
+                                 slot.loop_guard = loop_guard_save;
+diff --git a/tools/server/server-mtp-replay.cpp b/tools/server/server-mtp-replay.cpp
+new file mode 100644
+index 000000000..a1417b809
+--- /dev/null
++++ b/tools/server/server-mtp-replay.cpp
+@@ -0,0 +1,86 @@
++#include "server-mtp-replay.h"
++
++namespace {
++
++bool server_mtp_replay_uses_checkpoint(const server_mtp_replay_checkpoint & checkpoint) {
++    return checkpoint.seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
++            (checkpoint.seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS &&
++             checkpoint.n_rollback > checkpoint.n_rs_seq);
++}
++
++} // namespace
++
++bool server_mtp_replay::arm(const server_mtp_replay_checkpoint & checkpoint) {
++    if (phase_ != IDLE || !checkpoint.is_mtp || checkpoint.is_dflash ||
++            !checkpoint.loop_guard_control_changed || checkpoint.n_rollback <= 0 ||
++            checkpoint.checkpoint_tokens < 0 || checkpoint.replay_tokens == 0 ||
++            !server_mtp_replay_uses_checkpoint(checkpoint)) {
++        return false;
++    }
++
++    checkpoint_tokens_ = checkpoint.checkpoint_tokens;
++    replay_tokens_ = checkpoint.replay_tokens;
++    emitted_tokens_ = 0;
++    phase_ = PENDING_CONTEXT_REPLAY;
++    return true;
++}
++
++bool server_mtp_replay::should_schedule(int32_t n_draft_max) const {
++    return n_draft_max > 0 || phase_ == PENDING_CONTEXT_REPLAY;
++}
++
++bool server_mtp_replay::context_replayed(int64_t prompt_tokens) {
++    if (phase_ != PENDING_CONTEXT_REPLAY ||
++            prompt_tokens != checkpoint_tokens_ + 1 + replay_tokens_) {
++        return false;
++    }
++
++    phase_ = EMITTING_REPLAY;
++    return true;
++}
++
++uint16_t server_mtp_replay::accepted_draft_tokens() const {
++    return replay_tokens_ > 0 ? replay_tokens_ - 1 : 0;
++}
++
++bool server_mtp_replay::record_output() {
++    if (phase_ != EMITTING_REPLAY || emitted_tokens_ >= replay_tokens_) {
++        return false;
++    }
++
++    ++emitted_tokens_;
++    return true;
++}
++
++server_mtp_replay_finish server_mtp_replay::finish(bool stop) {
++    if (phase_ != EMITTING_REPLAY) {
++        return SERVER_MTP_REPLAY_FINISH_INVALID;
++    }
++
++    if (stop) {
++        phase_ = RELEASED;
++        return SERVER_MTP_REPLAY_FINISH_RELEASE;
++    }
++
++    if (emitted_tokens_ != replay_tokens_) {
++        return SERVER_MTP_REPLAY_FINISH_INVALID;
++    }
++
++    clear();
++    return SERVER_MTP_REPLAY_FINISH_SAMPLE_NEXT;
++}
++
++bool server_mtp_replay::is_pending() const {
++    return phase_ == PENDING_CONTEXT_REPLAY;
++}
++
++bool server_mtp_replay::is_emitting() const {
++    return phase_ == EMITTING_REPLAY;
++}
++
++void server_mtp_replay::clear() {
++    phase_ = IDLE;
++    checkpoint_tokens_ = 0;
++    replay_tokens_ = 0;
++    emitted_tokens_ = 0;
++}
+diff --git a/tools/server/server-mtp-replay.h b/tools/server/server-mtp-replay.h
+new file mode 100644
+index 000000000..0b861d4e3
+--- /dev/null
++++ b/tools/server/server-mtp-replay.h
+@@ -0,0 +1,61 @@
++#pragma once
++
++#include "common.h"
++
++#include <cstdint>
++
++// The value-side of an MTP checkpoint rollback whose sampler callback already
++// committed a loop-guard transition. Context restore remains in server_context;
++// this state machine keeps its replay, position, output, and release effects
++// coupled to that restore.
++struct server_mtp_replay_checkpoint {
++    common_context_seq_rm_type seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
++    int64_t n_rollback = 0;
++    int64_t n_rs_seq = 0;
++    bool is_mtp = false;
++    bool is_dflash = false;
++    bool loop_guard_control_changed = false;
++    int64_t checkpoint_tokens = 0;
++    uint16_t replay_tokens = 0;
++};
++
++enum server_mtp_replay_finish {
++    SERVER_MTP_REPLAY_FINISH_INVALID,
++    SERVER_MTP_REPLAY_FINISH_SAMPLE_NEXT,
++    SERVER_MTP_REPLAY_FINISH_RELEASE,
++};
++
++class server_mtp_replay {
++public:
++    // Arms a single replay only for a checkpoint-restored, non-DFlash MTP
++    // rollback whose callback changed loop-guard control state.
++    bool arm(const server_mtp_replay_checkpoint & checkpoint);
++
++    // Replays are scheduled even when forcing made the normal draft limit zero.
++    bool should_schedule(int32_t n_draft_max) const;
++
++    // update_batch() must have appended the prior sampled token and the replay
++    // prefix before replay output can be emitted.
++    bool context_replayed(int64_t prompt_tokens);
++
++    uint16_t accepted_draft_tokens() const;
++    bool record_output();
++    server_mtp_replay_finish finish(bool stop);
++
++    bool is_pending() const;
++    bool is_emitting() const;
++
++    void clear();
++
++private:
++    enum phase {
++        IDLE,
++        PENDING_CONTEXT_REPLAY,
++        EMITTING_REPLAY,
++        RELEASED,
++    } phase_ = IDLE;
++
++    int64_t checkpoint_tokens_ = 0;
++    uint16_t replay_tokens_ = 0;
++    uint16_t emitted_tokens_ = 0;
++};
+-- 
+2.53.0
+

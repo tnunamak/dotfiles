@@ -1,0 +1,432 @@
+From 3a7eb4b2a1d1dbcd381ca3da6e807ea5e950400e Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Mon, 13 Jul 2026 08:06:14 -0500
+Subject: [PATCH 03/16] server: preserve loop guard through MTP rollback
+
+---
+ ...p-loop-guard-force-close-fix-2026-07-13.md |  67 +++++++++
+ tests/CMakeLists.txt                          |   1 +
+ tests/test-mtp-loop-guard-rollback.cpp        | 131 +++++++++++++++++
+ tools/server/server-context.cpp               | 133 ++++++++++++++++--
+ 4 files changed, 318 insertions(+), 14 deletions(-)
+ create mode 100644 docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+ create mode 100644 tests/test-mtp-loop-guard-rollback.cpp
+
+diff --git a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+new file mode 100644
+index 000000000..b45387273
+--- /dev/null
++++ b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+@@ -0,0 +1,67 @@
++# MTP loop-guard force-close rollback fix (2026-07-13)
++
++## Scope
++
++Fix the MTP checkpoint rollback path where the loop-guard callback has already
++accepted the triggering token and transitioned either to force-close or stop.
++The fix is limited to `tools/server/server-context.cpp` and adds one offline
++regression executable.
++
++## Transaction invariant
++
++The accepted prefix, sampler state, loop-guard state, output counters, and
++target/draft context must advance together. An ordinary partial MTP acceptance
++still restores every snapshot and retries. A callback-induced loop-guard
++transition instead restores only the contexts, marks the accepted prefix for a
++single replay, and retains the committed sampler/control state.
++
++The next scheduler pass re-evaluates that prefix into the restored contexts
++without accepting it a second time, emits it once, then samples the next token
++from the final replay row. While force-close is active, the existing
++non-DFlash `common_sampler_blocks_speculative()` gate keeps subsequent tokens
++on ordinary decode until the reasoning budget reaches `DONE`.
++
++## Preserved behavior
++
++- Ordinary MTP mismatch/partial-accept checkpoint rollback still restores the
++  sampler, loop guard, stop state, counters, and retries.
++- DFlash does not schedule or enter the MTP committed-prefix replay path.
++- The replay avoids double-counting the draft attempt and does not re-accept
++  the callback-triggering token.
++
++## Offline evidence
++
++CPU-only Debug build directory:
++
++`/home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build`
++
++Commands run:
++
++```sh
++cmake -S . -B /home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build \
++  -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_CURL=OFF \
++  -DLLAMA_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
++cmake --build /home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build \
++  --target test-mtp-loop-guard-rollback test-reasoning-budget \
++  test-server-loop-guard test-dflash-plumbing -j 4
++ctest --test-dir /home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build \
++  --output-on-failure \
++  -R 'test-(mtp-loop-guard-rollback|reasoning-budget|server-loop-guard|dflash-plumbing)'
++```
++
++Result: all four tests passed. `test-mtp-loop-guard-rollback` deterministically
++covers callback-false force-close under both FULL and long-RS checkpoint modes,
++force persistence through `DONE`, blocked speculation while forcing, resumed
++visible progress, stop-mode termination, ordinary rollback retry, and the
++non-DFlash MTP-only source wiring.
++
++The shell also printed a stale `ctest` wrapper interpreter warning before CTest
++ran; the command exited successfully and CTest itself reported all four tests
++passing.
++
++## Confidence and limits
++
++High confidence in the transaction/lifecycle fix and its deterministic
++coverage. No model, network, live server, tmux session, gateway, or installed
++binary was used. Therefore this does not claim a hardware/model throughput or
++end-to-end HTTP-server validation.
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 0f668c255..0f45e2f96 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -266,6 +266,7 @@ llama_build_and_test(test-cpu-out-prod.cpp)
+ llama_build_and_test(test-cpu-fattn-support.cpp)
+ llama_build_and_test(test-dflash-plumbing.cpp ARGS ${PROJECT_SOURCE_DIR})
+ target_include_directories(test-dflash-plumbing PRIVATE ${PROJECT_SOURCE_DIR}/src)
++llama_build_and_test(test-mtp-loop-guard-rollback.cpp ARGS ${PROJECT_SOURCE_DIR})
+ llama_build_and_test(test-mtmd-plumbing.cpp ARGS ${PROJECT_SOURCE_DIR})
+ llama_build_and_test(test-perplexity-plumbing.cpp ARGS ${PROJECT_SOURCE_DIR})
+ 
+diff --git a/tests/test-mtp-loop-guard-rollback.cpp b/tests/test-mtp-loop-guard-rollback.cpp
+new file mode 100644
+index 000000000..1819fcdde
+--- /dev/null
++++ b/tests/test-mtp-loop-guard-rollback.cpp
+@@ -0,0 +1,131 @@
++#include "reasoning-budget.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <fstream>
++#include <sstream>
++#include <string>
++#include <vector>
++
++static std::string read_file(const std::string & path) {
++    std::ifstream file(path);
++    if (!file.good()) {
++        std::fprintf(stderr, "failed to open %s\n", path.c_str());
++        std::exit(1);
++    }
++
++    std::ostringstream ss;
++    ss << file.rdbuf();
++    return ss.str();
++}
++
++static void expect(bool ok, const char * message) {
++    if (!ok) {
++        std::fprintf(stderr, "%s\n", message);
++        std::exit(1);
++    }
++}
++
++enum rollback_action {
++    ROLLBACK_RETRY,
++    ROLLBACK_REPLAY_COMMITTED_ACCEPT,
++};
++
++static rollback_action mtp_rollback_action(bool loop_guard_control_changed) {
++    return loop_guard_control_changed ? ROLLBACK_REPLAY_COMMITTED_ACCEPT : ROLLBACK_RETRY;
++}
++
++static rollback_action mtp_checkpoint_rollback_action(
++        bool full_checkpoint, bool bounded_checkpoint, int n_rollback, int n_rs_seq,
++        bool loop_guard_control_changed) {
++    const bool uses_checkpoint = full_checkpoint || (bounded_checkpoint && n_rollback > n_rs_seq);
++    return uses_checkpoint ? mtp_rollback_action(loop_guard_control_changed) : ROLLBACK_RETRY;
++}
++
++static bool speculation_allowed(common_reasoning_budget_state state) {
++    return state != REASONING_BUDGET_FORCING;
++}
++
++static void test_force_close_replay_reaches_done_and_visible_progress() {
++    const std::vector<llama_token> forced = { 102, 101 };
++    auto * sampler = common_reasoning_budget_init(
++        nullptr, { 100 }, { 101 }, forced, 8, REASONING_BUDGET_COUNTING);
++
++    // The triggering MTP row was accepted before its callback returned false.
++    const llama_token triggering = 50;
++    const bool callback_accept_more = false;
++    llama_sampler_accept(sampler, triggering);
++    expect(common_reasoning_budget_force_end(sampler), "force-close must start the forced sequence");
++    expect(!callback_accept_more, "loop-guard callback must stop the MTP accept loop after the triggering row");
++    expect(mtp_rollback_action(true) == ROLLBACK_REPLAY_COMMITTED_ACCEPT,
++           "callback-induced force-close must replay the committed accepted prefix");
++    expect(mtp_checkpoint_rollback_action(true, false, 4, 0, true) == ROLLBACK_REPLAY_COMMITTED_ACCEPT,
++           "FULL checkpoint rollback must replay a committed loop-guard transition");
++    expect(mtp_checkpoint_rollback_action(false, true, 4, 2, true) == ROLLBACK_REPLAY_COMMITTED_ACCEPT,
++           "long RS checkpoint rollback must replay a committed loop-guard transition");
++    expect(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING,
++           "checkpoint rollback must not undo force-close");
++    expect(!speculation_allowed(common_reasoning_budget_get_state(sampler)),
++           "MTP speculation must stay blocked while the forced sequence is active");
++
++    std::vector<llama_token> output = { triggering };
++    expect(common_reasoning_budget_next_forced_token(sampler) == forced[0],
++           "forcing must block another speculative verify before its first ordinary token");
++    llama_sampler_accept(sampler, forced[0]);
++    output.push_back(forced[0]);
++    expect(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING,
++           "the first forced token must not finish a two-token forced sequence");
++
++    expect(common_reasoning_budget_next_forced_token(sampler) == forced[1],
++           "ordinary decoding must advance to the final forced token exactly once");
++    llama_sampler_accept(sampler, forced[1]);
++    output.push_back(forced[1]);
++    expect(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_DONE,
++           "the final forced token must commit DONE");
++    expect(speculation_allowed(common_reasoning_budget_get_state(sampler)),
++           "ordinary generation may resume only after the forced sequence reaches DONE");
++
++    output.push_back(200); // ordinary visible generation after DONE
++    expect(output == std::vector<llama_token>({ triggering, 102, 101, 200 }),
++           "force-close replay must preserve token progress and resume visible output");
++
++    llama_sampler_free(sampler);
++}
++
++static void test_stop_replay_terminates_and_ordinary_rollback_stays_a_retry() {
++    const llama_token triggering = 50;
++    const bool stop = true;
++
++    expect(mtp_rollback_action(stop) == ROLLBACK_REPLAY_COMMITTED_ACCEPT,
++           "loop-guard stop must commit its accepted triggering token before termination");
++    const std::vector<llama_token> output = { triggering };
++    expect(output.size() == 1 && stop,
++           "stop mode must emit only the committed triggering token and terminate");
++
++    expect(mtp_rollback_action(false) == ROLLBACK_RETRY,
++           "ordinary MTP partial acceptance must retain the existing rollback-and-retry path");
++}
++
++static void test_server_wires_replay_only_to_non_dflash_mtp(const std::string & server_context) {
++    expect(server_context.find("bool mtp_committed_accept_replay = false;") != std::string::npos,
++           "MTP must record a committed callback accept separately from an ordinary rollback");
++    expect(server_context.find("params_base.speculative.type() != COMMON_SPECULATIVE_TYPE_DFLASH &&\n                slot.mtp_committed_accept_replay") != std::string::npos,
++           "committed replay scheduling must be restricted to non-DFlash MTP");
++    expect(server_context.find("if (loop_guard_control_changed) {") != std::string::npos &&
++           server_context.find("slot.mtp_committed_accept_replay = true;") != std::string::npos,
++           "MTP checkpoint rollback must preserve callback-induced loop-guard control transitions");
++    expect(server_context.find("const int i_last = slot.spec_i_batch.back();") != std::string::npos &&
++           server_context.find("common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, i_last)") != std::string::npos,
++           "committed prefix replay must sample the next forced token after the restored context catches up");
++    expect(server_context.find("} else {\n                                slot.smpl = std::move(smpl_save);") != std::string::npos,
++           "ordinary MTP rollback must continue restoring the sampler snapshot");
++}
++
++int main(int argc, char ** argv) {
++    expect(argc == 2, "expected repo root argument");
++
++    test_force_close_replay_reaches_done_and_visible_progress();
++    test_stop_replay_terminates_and_ordinary_rollback_stays_a_retry();
++    test_server_wires_replay_only_to_non_dflash_mtp(read_file(std::string(argv[1]) + "/tools/server/server-context.cpp"));
++    return 0;
++}
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index df782c767..f248533a8 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -675,6 +675,7 @@ struct server_slot : server_adaptive_dm_state {
+     std::vector<int32_t> spec_i_batch;
+     std::vector<int32_t> spec_pad_i_batch;
+     common_prompt_checkpoint spec_ckpt;
++    bool mtp_committed_accept_replay = false;
+ 
+     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
+     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
+@@ -845,6 +846,7 @@ struct server_slot : server_adaptive_dm_state {
+             spec_i_batch.clear();
+             spec_pad_i_batch.clear();
+             spec_ckpt.clear();
++            mtp_committed_accept_replay = false;
+         }
+         drafted.clear();
+         draft_tree = common_speculative_tree();
+@@ -4647,7 +4649,12 @@ private:
+                 n_draft_max = 0;
+             }
+ 
+-            if (n_draft_max > 0 && !dflash_sampler_blocks_speculative) {
++            const bool mtp_replay_committed_accept =
++                params_base.speculative.has_type(COMMON_SPECULATIVE_TYPE_DRAFT_MTP) &&
++                params_base.speculative.type() != COMMON_SPECULATIVE_TYPE_DFLASH &&
++                slot.mtp_committed_accept_replay;
++
++            if ((n_draft_max > 0 || mtp_replay_committed_accept) && !dflash_sampler_blocks_speculative) {
+                 const int64_t t_draft_slot_start = ggml_time_us();
+ 
+                 auto params_spec = slot.task->params.speculative;
+@@ -4753,7 +4760,12 @@ private:
+                     // MTP: collect draft params only; draft/checkpoint/batch handled in post-loop phases
+                     // (matches upstream's collect-then-draft-then-checkpoint-then-batch pattern)
+                     common_speculative_get_draft_params(slot.get_spec(), slot.id).drafting = false;
+-                    if (!slot.spec_draft.empty()) {
++                    if (slot.mtp_committed_accept_replay) {
++                        // A loop-guard callback accepted this prefix before a checkpoint rollback.
++                        // Replay it into the target context once without sampling it again.
++                        GGML_ASSERT(!slot.spec_draft.empty());
++                        mtp_batching.push_back(&slot);
++                    } else if (!slot.spec_draft.empty()) {
+                         // Post-checkpoint-restore: reuse previous (partial) draft.
+                         // Do NOT re-draft (assertion in common_speculative_draft requires
+                         // dp.result->empty() when drafting=true). Just batch-build the
+@@ -5005,7 +5017,9 @@ private:
+         for (auto * slot_ptr : mtp_batching) {
+             auto & slot = *slot_ptr;
+ 
+-            slot.n_draft_total += slot.spec_draft.size();
++            if (!slot.mtp_committed_accept_replay) {
++                slot.n_draft_total += slot.spec_draft.size();
++            }
+             slot.update_batch(batch);
+         }
+ 
+@@ -6482,6 +6496,82 @@ private:
+                     GGML_ASSERT(n_draft > 0);
+                     GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
+ 
++                    if (slot.mtp_committed_accept_replay) {
++                        // The checkpoint branch restored the target/draft contexts, but the
++                        // sampler and loop-guard transition were already committed.  Re-evaluate
++                        // that accepted prefix without accepting it a second time, then sample the
++                        // first forced/ordinary token from the final replay row.
++                        const auto ids = std::move(slot.spec_draft);
++                        const uint16_t n_accepted_draft = (uint16_t) (ids.size() - 1);
++                        const int i_last = slot.spec_i_batch.back();
++
++                        slot.spec_i_batch.clear();
++                        slot.spec_pad_i_batch.clear();
++                        slot.draft_log_probs.clear();
++                        slot.mtp_committed_accept_replay = false;
++                        slot.spec_ckpt.clear();
++
++                        common_speculative_accept(slot.get_spec(), slot.id, n_accepted_draft);
++                        slot.n_draft_accepted += n_accepted_draft;
++                        if (slot.dm_adaptive) {
++                            slot.observe_profit_acceptance((int) n_draft, (int) n_accepted_draft);
++                            slot.profit_pending = true;
++                            if (slot.profit_pending_requested_n_max <= 0) {
++                                slot.profit_pending_requested_n_max = (int32_t) n_draft;
++                            }
++                            slot.profit_pending_n_draft = (int32_t) n_draft;
++                            slot.profit_pending_n_accepted = (int32_t) n_accepted_draft;
++                            slot.profit_pending_tree = false;
++                        }
++
++                        const int64_t t_current = ggml_time_us();
++                        bool stopped = false;
++                        for (const llama_token id : ids) {
++                            completion_token_output result;
++                            result.tok          = id;
++                            result.text_to_send = common_token_to_piece(slot.ctx_tgt, id, accept_special_token(slot, id));
++                            result.prob         = 1.0f;
++
++                            slot.n_decoded += 1;
++                            slot.t_token_generation = std::max<int64_t>(1, t_current - slot.t_start_generation) / 1e3;
++
++                            if (!process_token(result, slot)) {
++                                stopped = true;
++                                break;
++                            }
++                        }
++
++                        if (stopped) {
++                            slot.print_timings();
++                            send_final_response(slot);
++                            metrics.on_prediction(slot);
++                            slot.release();
++                            continue;
++                        }
++
++                        const llama_token id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, i_last);
++                        const auto info = common_sampler_accept_with_info(slot.smpl.get(), id, true);
++                        const auto on_accept = make_loop_guard_accept_callback(slot);
++                        const bool keep_generating = !on_accept || on_accept(info);
++
++                        completion_token_output result;
++                        result.tok          = id;
++                        result.text_to_send = common_token_to_piece(slot.ctx_tgt, id, accept_special_token(slot, id));
++                        result.prob         = 1.0f;
++
++                        slot.n_decoded += 1;
++                        slot.t_token_generation = std::max<int64_t>(1, ggml_time_us() - slot.t_start_generation) / 1e3;
++
++                        if (!keep_generating || !process_token(result, slot)) {
++                            slot.print_timings();
++                            send_final_response(slot);
++                            metrics.on_prediction(slot);
++                            slot.release();
++                        }
++
++                        continue;
++                    }
++
+                     common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+                     const server_loop_guard loop_guard_save = slot.loop_guard;
+                     const int32_t loop_guard_interventions_save = slot.loop_guard_interventions;
+@@ -6507,6 +6597,12 @@ private:
+                         ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
+                        (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_rollback > llama_n_rs_seq(ctx_tgt));
+ 
++                    const bool loop_guard_control_changed =
++                        slot.loop_guard_interventions != loop_guard_interventions_save ||
++                        slot.stop != stop_save ||
++                        slot.stop_detail != stop_detail_save ||
++                        slot.has_next_token != has_next_token_save;
++
+                     // check for partial draft acceptance
+                     if (n_rollback > 0) {
+                         if (use_ckpt_tgt) {
+@@ -6532,17 +6628,26 @@ private:
+                             }
+ 
+                             slot.prompt.tokens.keep_first(ckpt.n_tokens);
+-                            slot.smpl = std::move(smpl_save);
+-                            slot.loop_guard = loop_guard_save;
+-                            slot.loop_guard_interventions = loop_guard_interventions_save;
+-                            slot.loop_guard_triggered = loop_guard_triggered_save;
+-                            slot.loop_guard_action = loop_guard_action_save;
+-                            slot.loop_guard_reason = loop_guard_reason_save;
+-                            slot.reasoning_output_tokens = reasoning_output_tokens_save;
+-                            slot.visible_output_tokens = visible_output_tokens_save;
+-                            slot.stop = stop_save;
+-                            slot.stop_detail = stop_detail_save;
+-                            slot.has_next_token = has_next_token_save;
++                            if (loop_guard_control_changed) {
++                                // common_sampler_sample_and_accept_n() has already accepted this
++                                // token and the loop guard has changed its lifecycle.  Roll the
++                                // contexts back, then replay the accepted prefix with that
++                                // sampler/control state intact; otherwise the next MTP verify can
++                                // undo a force-close or stop transition.
++                                slot.mtp_committed_accept_replay = true;
++                            } else {
++                                slot.smpl = std::move(smpl_save);
++                                slot.loop_guard = loop_guard_save;
++                                slot.loop_guard_interventions = loop_guard_interventions_save;
++                                slot.loop_guard_triggered = loop_guard_triggered_save;
++                                slot.loop_guard_action = loop_guard_action_save;
++                                slot.loop_guard_reason = loop_guard_reason_save;
++                                slot.reasoning_output_tokens = reasoning_output_tokens_save;
++                                slot.visible_output_tokens = visible_output_tokens_save;
++                                slot.stop = stop_save;
++                                slot.stop_detail = stop_detail_save;
++                                slot.has_next_token = has_next_token_save;
++                            }
+ 
+                             continue;
+                         }
+-- 
+2.53.0
+

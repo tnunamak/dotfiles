@@ -1,0 +1,26 @@
+From ca635449bf9906f78de8601ce1ddd064b7e04184 Mon Sep 17 00:00:00 2001
+From: Alde Rojas <hello@alde.dev>
+Date: Thu, 9 Jul 2026 22:43:00 -0500
+Subject: [PATCH 13/16] cont : change logging to trace
+
+(cherry picked from commit 69b8c202c7e21c3908318f5a0de0afb581446a03)
+---
+ tools/server/server-context.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 49efd483a..3b21c2709 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3900,7 +3900,7 @@ private:
+         int64_t last = -1;
+         for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end(); ) {
+             if (it->id_task != id_task && last >= 0 && it->n_tokens <= last + params_base.checkpoint_min_step) {
+-                SLT_WRN(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
++                SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                         it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
+ 
+                 it = slot.prompt.checkpoints.erase(it);
+-- 
+2.53.0
+

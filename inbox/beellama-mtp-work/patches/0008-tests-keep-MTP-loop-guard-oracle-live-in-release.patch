@@ -1,0 +1,307 @@
+From bf85489b8803436888e49c74a9132676a4951987 Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Mon, 13 Jul 2026 09:15:57 -0500
+Subject: [PATCH 08/16] tests: keep MTP loop guard oracle live in release
+
+---
+ ...p-loop-guard-force-close-fix-2026-07-13.md |  53 +++++--
+ tests/test-mtp-loop-guard-rollback.cpp        | 137 ++++++++++--------
+ 2 files changed, 115 insertions(+), 75 deletions(-)
+
+diff --git a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+index 060cc3031..144e34631 100644
+--- a/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
++++ b/docs/ops/mtp-loop-guard-force-close-fix-2026-07-13.md
+@@ -103,6 +103,22 @@ the final prefix token. Only a non-terminal final token returns `SAMPLE_NEXT`.
+ The server consumes that action directly, so neither a committed stop nor an
+ emergent terminal replay result permits a new sample before release.
+ 
++## Review5 Release-oracle correction
++
++Review5 found that the regression used standard `assert(...)` for every
++behavioral call. Release builds define `NDEBUG`, so that executable evaluated
++none of the replay, hidden-row, forcing, or output-loop expressions and could
++pass with no production symbols linked into the test path.
++
++`test-mtp-loop-guard-rollback` now uses a test-local, always-on `TEST_CHECK`.
++It evaluates the expression in every build and aborts with the file, line, and
++expression on failure. This changes no other test target or production build
++flags. The Release executable now retains MTP replay methods plus the MTP
++hidden-row production calls; disassembly shows calls to the latter. As a
++mutation check, changing the expected first forced token from `102` to `103`
++made the Release executable abort at that check (exit status 134); the expected
++value was then restored before the final runs.
++
+ ## Offline evidence
+ 
+ CPU-only Debug build directory:
+@@ -121,21 +137,32 @@ cmake --build /home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build \
+ ctest --test-dir /home/tnunamak/.tmp/beellama-mtp-loopguard-fix-build \
+   --output-on-failure \
+   -R 'test-(mtp-loop-guard-rollback|reasoning-budget|server-loop-guard|dflash-plumbing)'
++
++cmake -S . -B /home/tnunamak/.tmp/beellama-mtp-loopguard-release-build \
++  -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_CURL=OFF \
++  -DLLAMA_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
++cmake --build /home/tnunamak/.tmp/beellama-mtp-loopguard-release-build \
++  --target test-mtp-loop-guard-rollback test-reasoning-budget \
++  test-server-loop-guard test-dflash-plumbing -j 4
++ctest --test-dir /home/tnunamak/.tmp/beellama-mtp-loopguard-release-build \
++  --output-on-failure \
++  -R 'test-(mtp-loop-guard-rollback|reasoning-budget|server-loop-guard|dflash-plumbing)'
+ ```
+ 
+-Result: all four tests passed. `test-mtp-loop-guard-rollback` is a behavioral
+-oracle over the production server MTP replay transaction and hidden-state
+-transfer seam. It executes distinguishable FULL and long-RS restore paths,
+-ordinary rollback, DFlash exclusion, a zero-draft-limit forcing replay,
+-position validation, exactly-once replay accounting/output, stop release, and
+-forced-sequence completion. It also rejects negative/out-of-range rows, zero
+-dimensions/rows, malformed pending and verification vector sizes, and a null
+-draft-input destination. The scheduler-to-batch payload test retains FULL and
+-long-RS replay tokens/log-probs at zero draft limit and preserves ordinary and
+-DFlash truncation. Its two-token committed-stop case drives the production
+-output-loop action: the first terminal token requires `EMIT_NEXT`, the second
+-is emitted and then yields `RELEASE`, and any additional output is rejected.
+-It does not read production source text.
++Result: all four tests passed in both Debug and Release builds.
++`test-mtp-loop-guard-rollback` is a behavioral oracle over the production
++server MTP replay transaction and hidden-state transfer seam. It executes
++distinguishable FULL and long-RS restore paths, ordinary rollback, DFlash
++exclusion, a zero-draft-limit forcing replay, position validation, exactly-once
++replay accounting/output, stop release, and forced-sequence completion. It also
++rejects negative/out-of-range rows, zero dimensions/rows, malformed pending and
++verification vector sizes, and a null draft-input destination. The
++scheduler-to-batch payload test retains FULL and long-RS replay tokens/log-probs
++at zero draft limit and preserves ordinary and DFlash truncation. Its two-token
++committed-stop case drives the production output-loop action: the first
++terminal token requires `EMIT_NEXT`, the second is emitted and then yields
++`RELEASE`, and any additional output is rejected. It does not read production
++source text; its checks remain active under `NDEBUG`.
+ 
+ The shell also printed a stale `ctest` wrapper interpreter warning before CTest
+ ran; the command exited successfully and CTest itself reported all four tests
+diff --git a/tests/test-mtp-loop-guard-rollback.cpp b/tests/test-mtp-loop-guard-rollback.cpp
+index 424f04b36..c841086a2 100644
+--- a/tests/test-mtp-loop-guard-rollback.cpp
++++ b/tests/test-mtp-loop-guard-rollback.cpp
+@@ -2,11 +2,24 @@
+ #include "speculative.h"
+ #include "server-mtp-replay.h"
+ 
+-#include <cassert>
++#include <cstdio>
++#include <cstdlib>
+ #include <vector>
+ 
+-static void assert_row_equals(const std::vector<float> & actual, const std::vector<float> & expected) {
+-    assert(actual == expected);
++static void test_check_failed(const char * expression, const char * file, int line) {
++    std::fprintf(stderr, "%s:%d: test check failed: %s\n", file, line, expression);
++    std::abort();
++}
++
++#define TEST_CHECK(expression) \
++    do { \
++        if (!(expression)) { \
++            test_check_failed(#expression, __FILE__, __LINE__); \
++        } \
++    } while (false)
++
++static void check_row_equals(const std::vector<float> & actual, const std::vector<float> & expected) {
++    TEST_CHECK(actual == expected);
+ }
+ 
+ static server_mtp_replay_checkpoint committed_checkpoint(
+@@ -26,23 +39,23 @@ static server_mtp_replay_checkpoint committed_checkpoint(
+ static void test_checkpoint_replay_reaches_forced_decode(
+         common_context_seq_rm_type seq_rm_type, int32_t n_rollback, int32_t n_rs_seq) {
+     server_mtp_replay replay;
+-    assert(replay.arm(committed_checkpoint(seq_rm_type, n_rollback, n_rs_seq)));
+-    assert(replay.is_pending());
++    TEST_CHECK(replay.arm(committed_checkpoint(seq_rm_type, n_rollback, n_rs_seq)));
++    TEST_CHECK(replay.is_pending());
+ 
+     // The committed prefix is scheduled once even after the forcing gate has
+     // reduced ordinary MTP drafting to zero. This is the same payload and
+     // limit application used by the server before update_batch().
+-    assert(replay.should_schedule(0));
++    TEST_CHECK(replay.should_schedule(0));
+     llama_tokens replay_prefix = { 201, 202 };
+     std::vector<float> replay_log_probs = { -0.1f, -0.2f };
+-    assert(!replay.apply_draft_limit(replay_prefix, replay_log_probs, 0));
+-    assert(replay_prefix == llama_tokens({ 201, 202 }));
+-    assert(replay_log_probs == std::vector<float>({ -0.1f, -0.2f }));
+-    assert(!replay.context_replayed(/* missing replay token = */ 12));
+-    assert(replay.is_pending());
+-    assert(replay.context_replayed(/* checkpoint + sampled + prefix = */ 13));
+-    assert(replay.is_emitting());
+-    assert(replay.accepted_draft_tokens() == 1);
++    TEST_CHECK(!replay.apply_draft_limit(replay_prefix, replay_log_probs, 0));
++    TEST_CHECK(replay_prefix == llama_tokens({ 201, 202 }));
++    TEST_CHECK(replay_log_probs == std::vector<float>({ -0.1f, -0.2f }));
++    TEST_CHECK(!replay.context_replayed(/* missing replay token = */ 12));
++    TEST_CHECK(replay.is_pending());
++    TEST_CHECK(replay.context_replayed(/* checkpoint + sampled + prefix = */ 13));
++    TEST_CHECK(replay.is_emitting());
++    TEST_CHECK(replay.accepted_draft_tokens() == 1);
+ 
+     constexpr int32_t n_embd = 4;
+     constexpr int32_t n_rows = 3;
+@@ -57,39 +70,39 @@ static void test_checkpoint_replay_reaches_forced_decode(
+     std::vector<float> pending_h(n_embd, -1.0f);
+ 
+     // Normal MTP acceptance selects the row before the final sampled token.
+-    assert(common_mtp_select_pending_hidden_row(pending_h, verify_h, n_rows, n_embd, n_rows - 2));
+-    assert_row_equals(pending_h, ordinary_accept_row);
++    TEST_CHECK(common_mtp_select_pending_hidden_row(pending_h, verify_h, n_rows, n_embd, n_rows - 2));
++    check_row_equals(pending_h, ordinary_accept_row);
+ 
+     // The concrete MTP commit path invoked by common_speculative_commit_mtp_replay()
+     // advances pending_h back to the final replay row.
+-    assert(common_mtp_commit_replayed_pending_hidden(pending_h, verify_h, n_rows, n_embd));
+-    assert_row_equals(pending_h, final_replay_row);
++    TEST_CHECK(common_mtp_commit_replayed_pending_hidden(pending_h, verify_h, n_rows, n_embd));
++    check_row_equals(pending_h, final_replay_row);
+ 
+     auto * sampler = common_reasoning_budget_init(
+             nullptr, { 100 }, { 101 }, { 102, 101 }, 8, REASONING_BUDGET_COUNTING);
+     llama_sampler_accept(sampler, 50);
+-    assert(common_reasoning_budget_force_end(sampler));
+-    assert(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING);
++    TEST_CHECK(common_reasoning_budget_force_end(sampler));
++    TEST_CHECK(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING);
+     const llama_token first_forced = common_reasoning_budget_next_forced_token(sampler);
+-    assert(first_forced == 102);
++    TEST_CHECK(first_forced == 102);
+ 
+     // process() uses this same production copy seam for the first forced-token
+     // draft input. There is one transfer and it receives the final replay row.
+     std::vector<float> draft_input(2 * n_embd, -9.0f);
+-    assert(common_mtp_copy_pending_hidden(pending_h, draft_input.data() + n_embd, n_embd));
+-    assert(std::vector<float>(draft_input.begin(), draft_input.begin() + n_embd) ==
++    TEST_CHECK(common_mtp_copy_pending_hidden(pending_h, draft_input.data() + n_embd, n_embd));
++    TEST_CHECK(std::vector<float>(draft_input.begin(), draft_input.begin() + n_embd) ==
+            std::vector<float>(n_embd, -9.0f));
+-    assert(std::vector<float>(draft_input.begin() + n_embd, draft_input.end()) == final_replay_row);
++    TEST_CHECK(std::vector<float>(draft_input.begin() + n_embd, draft_input.end()) == final_replay_row);
+ 
+-    assert(replay.record_output(true) == SERVER_MTP_REPLAY_OUTPUT_EMIT_NEXT);
+-    assert(replay.record_output(true) == SERVER_MTP_REPLAY_OUTPUT_SAMPLE_NEXT);
+-    assert(replay.record_output(true) == SERVER_MTP_REPLAY_OUTPUT_INVALID);
+-    assert(!replay.should_schedule(0));
++    TEST_CHECK(replay.record_output(true) == SERVER_MTP_REPLAY_OUTPUT_EMIT_NEXT);
++    TEST_CHECK(replay.record_output(true) == SERVER_MTP_REPLAY_OUTPUT_SAMPLE_NEXT);
++    TEST_CHECK(replay.record_output(true) == SERVER_MTP_REPLAY_OUTPUT_INVALID);
++    TEST_CHECK(!replay.should_schedule(0));
+ 
+     llama_sampler_accept(sampler, first_forced);
+-    assert(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING);
++    TEST_CHECK(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_FORCING);
+     llama_sampler_accept(sampler, common_reasoning_budget_next_forced_token(sampler));
+-    assert(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_DONE);
++    TEST_CHECK(common_reasoning_budget_get_state(sampler) == REASONING_BUDGET_DONE);
+     llama_sampler_free(sampler);
+ }
+ 
+@@ -97,47 +110,47 @@ static void test_ordinary_rollback_dflash_and_stop() {
+     server_mtp_replay ordinary_rollback;
+     auto ordinary = committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0);
+     ordinary.loop_guard_control_changed = false;
+-    assert(!ordinary_rollback.arm(ordinary));
+-    assert(!ordinary_rollback.should_schedule(0));
+-    assert(ordinary_rollback.should_schedule(1));
++    TEST_CHECK(!ordinary_rollback.arm(ordinary));
++    TEST_CHECK(!ordinary_rollback.should_schedule(0));
++    TEST_CHECK(ordinary_rollback.should_schedule(1));
+     llama_tokens ordinary_draft = { 1, 2 };
+     std::vector<float> ordinary_log_probs = { -0.1f, -0.2f };
+-    assert(ordinary_rollback.apply_draft_limit(ordinary_draft, ordinary_log_probs, 0));
+-    assert(ordinary_draft.empty());
+-    assert(ordinary_log_probs.empty());
++    TEST_CHECK(ordinary_rollback.apply_draft_limit(ordinary_draft, ordinary_log_probs, 0));
++    TEST_CHECK(ordinary_draft.empty());
++    TEST_CHECK(ordinary_log_probs.empty());
+ 
+     server_mtp_replay short_rs_rollback;
+-    assert(!short_rs_rollback.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_RS, 2, 2)));
++    TEST_CHECK(!short_rs_rollback.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_RS, 2, 2)));
+ 
+     server_mtp_replay dflash;
+     auto dflash_checkpoint = committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0);
+     dflash_checkpoint.is_dflash = true;
+-    assert(!dflash.arm(dflash_checkpoint));
++    TEST_CHECK(!dflash.arm(dflash_checkpoint));
+     llama_tokens dflash_draft = { 1, 2 };
+     std::vector<float> dflash_log_probs = { -0.1f, -0.2f };
+-    assert(dflash.apply_draft_limit(dflash_draft, dflash_log_probs, 0));
+-    assert(dflash_draft.empty());
+-    assert(dflash_log_probs.empty());
++    TEST_CHECK(dflash.apply_draft_limit(dflash_draft, dflash_log_probs, 0));
++    TEST_CHECK(dflash_draft.empty());
++    TEST_CHECK(dflash_log_probs.empty());
+ 
+     server_mtp_replay stop_replay;
+-    assert(stop_replay.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0)));
++    TEST_CHECK(stop_replay.arm(committed_checkpoint(COMMON_CONTEXT_SEQ_RM_TYPE_FULL, 1, 0)));
+     llama_tokens stop_prefix = { 201, 202 };
+     std::vector<float> stop_log_probs = { -0.1f, -0.2f };
+-    assert(!stop_replay.apply_draft_limit(stop_prefix, stop_log_probs, 0));
+-    assert(stop_prefix == llama_tokens({ 201, 202 }));
+-    assert(stop_log_probs == std::vector<float>({ -0.1f, -0.2f }));
+-    assert(stop_replay.context_replayed(13));
++    TEST_CHECK(!stop_replay.apply_draft_limit(stop_prefix, stop_log_probs, 0));
++    TEST_CHECK(stop_prefix == llama_tokens({ 201, 202 }));
++    TEST_CHECK(stop_log_probs == std::vector<float>({ -0.1f, -0.2f }));
++    TEST_CHECK(stop_replay.context_replayed(13));
+     // A committed stop makes the first output terminal. The production output
+     // loop action must still drain the second committed prefix token before
+     // it releases the slot.
+     std::vector<llama_token> emitted;
+     emitted.push_back(stop_prefix[0]);
+-    assert(stop_replay.record_output(false) == SERVER_MTP_REPLAY_OUTPUT_EMIT_NEXT);
++    TEST_CHECK(stop_replay.record_output(false) == SERVER_MTP_REPLAY_OUTPUT_EMIT_NEXT);
+     emitted.push_back(stop_prefix[1]);
+-    assert(stop_replay.record_output(false) == SERVER_MTP_REPLAY_OUTPUT_RELEASE);
+-    assert(emitted == stop_prefix);
+-    assert(stop_replay.record_output(false) == SERVER_MTP_REPLAY_OUTPUT_INVALID);
+-    assert(!stop_replay.should_schedule(0));
++    TEST_CHECK(stop_replay.record_output(false) == SERVER_MTP_REPLAY_OUTPUT_RELEASE);
++    TEST_CHECK(emitted == stop_prefix);
++    TEST_CHECK(stop_replay.record_output(false) == SERVER_MTP_REPLAY_OUTPUT_INVALID);
++    TEST_CHECK(!stop_replay.should_schedule(0));
+ }
+ 
+ static void test_hidden_row_boundaries() {
+@@ -149,17 +162,17 @@ static void test_hidden_row_boundaries() {
+     std::vector<float> malformed_pending(1, -1.0f);
+     float dst[n_embd] = {};
+ 
+-    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, n_embd, -1));
+-    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, n_embd, 2));
+-    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 0, n_embd, 0));
+-    assert(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, 0, 0));
+-    assert(!common_mtp_select_pending_hidden_row(pending_h, malformed_verify, 2, n_embd, 0));
+-    assert(!common_mtp_select_pending_hidden_row(malformed_pending, verify_h, 2, n_embd, 0));
+-    assert(!common_mtp_commit_replayed_pending_hidden(pending_h, malformed_verify, 2, n_embd));
+-    assert(!common_mtp_commit_replayed_pending_hidden(pending_h, verify_h, 0, n_embd));
+-    assert(!common_mtp_copy_pending_hidden(pending_h, nullptr, n_embd));
+-    assert(!common_mtp_copy_pending_hidden(malformed_pending, dst, n_embd));
+-    assert(!common_mtp_copy_pending_hidden(pending_h, dst, 0));
++    TEST_CHECK(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, n_embd, -1));
++    TEST_CHECK(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, n_embd, 2));
++    TEST_CHECK(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 0, n_embd, 0));
++    TEST_CHECK(!common_mtp_select_pending_hidden_row(pending_h, verify_h, 2, 0, 0));
++    TEST_CHECK(!common_mtp_select_pending_hidden_row(pending_h, malformed_verify, 2, n_embd, 0));
++    TEST_CHECK(!common_mtp_select_pending_hidden_row(malformed_pending, verify_h, 2, n_embd, 0));
++    TEST_CHECK(!common_mtp_commit_replayed_pending_hidden(pending_h, malformed_verify, 2, n_embd));
++    TEST_CHECK(!common_mtp_commit_replayed_pending_hidden(pending_h, verify_h, 0, n_embd));
++    TEST_CHECK(!common_mtp_copy_pending_hidden(pending_h, nullptr, n_embd));
++    TEST_CHECK(!common_mtp_copy_pending_hidden(malformed_pending, dst, n_embd));
++    TEST_CHECK(!common_mtp_copy_pending_hidden(pending_h, dst, 0));
+ }
+ 
+ int main() {
+-- 
+2.53.0
+

@@ -1,0 +1,30 @@
+From 32af134fe8565369dafd42092cc68be2c1054d3a Mon Sep 17 00:00:00 2001
+From: Alde Rojas <hello@alde.dev>
+Date: Tue, 7 Jul 2026 17:05:33 -0500
+Subject: [PATCH 10/16] server : respect min-step when splitting prompt batches
+
+(cherry picked from commit 083ecf53477602beba8a22645828f6d9eb680318)
+---
+ tools/server/server-context.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a1d63f8f9..a0f031b01 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -5528,9 +5528,9 @@ private:
+ 
+                         slot.n_prompt_tokens_processed++;
+ 
+-                        // stop the prompt batch exactly before the latest user input, so a checkpoint
+-                        // can be created after the previous messages
+-                        if (n_before_user_known &&
++                        // Stop before the latest user input only when this request can create
++                        // a checkpoint. A no-checkpoint request should not fragment its prefill.
++                        if (do_checkpoint && n_before_user_known &&
+                             slot.prompt.n_tokens() == n_before_user) {
+                             break;
+                         }
+-- 
+2.53.0
+

@@ -1,0 +1,212 @@
+From 309a6f27ecac79a03b11098a1b53ef041b2e7944 Mon Sep 17 00:00:00 2001
+From: Tim Nunamaker <tnunamak@gmail.com>
+Date: Wed, 15 Jul 2026 07:29:25 -0500
+Subject: [PATCH 15/16] tests: cover prompt checkpoint retention policy
+
+---
+ tests/CMakeLists.txt                    |  1 +
+ tests/test-server-prompt-checkpoint.cpp | 67 +++++++++++++++++++++++++
+ tools/server/server-context.cpp         | 31 +++++-------
+ tools/server/server-task.h              | 34 +++++++++++++
+ 4 files changed, 114 insertions(+), 19 deletions(-)
+
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index ccc0a5365..f1c41c337 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -261,6 +261,7 @@ llama_build_and_test(test-arg-parser.cpp)
+ llama_build_and_test(test-adaptive-dm.cpp)
+ llama_build_and_test(test-server-prompt-checkpoint.cpp)
+ target_include_directories(test-server-prompt-checkpoint PRIVATE ${PROJECT_SOURCE_DIR}/tools/server ${PROJECT_SOURCE_DIR}/tools/mtmd)
++target_link_libraries(test-server-prompt-checkpoint PRIVATE mtmd)
+ llama_build_and_test(test-dflash-ring.cpp)
+ llama_build_and_test(test-cpu-out-prod.cpp)
+ llama_build_and_test(test-cpu-fattn-support.cpp)
+diff --git a/tests/test-server-prompt-checkpoint.cpp b/tests/test-server-prompt-checkpoint.cpp
+index 2382ea07d..d079d5869 100644
+--- a/tests/test-server-prompt-checkpoint.cpp
++++ b/tests/test-server-prompt-checkpoint.cpp
+@@ -3,6 +3,70 @@
+ #undef NDEBUG
+ #include <cassert>
+ 
++static common_prompt_checkpoint checkpoint(int64_t n_tokens, int id_task) {
++    common_prompt_checkpoint checkpoint;
++    checkpoint.n_tokens = n_tokens;
++    checkpoint.id_task = id_task;
++    checkpoint.pos_min = n_tokens;
++    checkpoint.pos_max = n_tokens;
++    return checkpoint;
++}
++
++static void test_min_step_controls_prompt_splitting() {
++    server_prompt prompt;
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 100, /* id_task = */ 1));
++
++    assert(!prompt.should_split_prompt_batch_at_user_start(
++            /* can_checkpoint = */ false,
++            /* is_user_start = */ true,
++            /* is_last_user_start = */ true,
++            /* n_tokens = */ 101,
++            /* checkpoint_min_step = */ 32));
++    assert(!prompt.should_split_prompt_batch_at_user_start(
++            /* can_checkpoint = */ true,
++            /* is_user_start = */ true,
++            /* is_last_user_start = */ false,
++            /* n_tokens = */ 132,
++            /* checkpoint_min_step = */ 32));
++    assert(prompt.should_split_prompt_batch_at_user_start(
++            /* can_checkpoint = */ true,
++            /* is_user_start = */ true,
++            /* is_last_user_start = */ false,
++            /* n_tokens = */ 133,
++            /* checkpoint_min_step = */ 32));
++    assert(prompt.should_split_prompt_batch_at_user_start(
++            /* can_checkpoint = */ true,
++            /* is_user_start = */ true,
++            /* is_last_user_start = */ true,
++            /* n_tokens = */ 101,
++            /* checkpoint_min_step = */ 32));
++}
++
++static void test_hybrid_recurrent_checkpoints_keep_useful_spread() {
++    server_prompt prompt;
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 64,  /* id_task = */ 1));
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 80,  /* id_task = */ 2));
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 320, /* id_task = */ 1));
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 336, /* id_task = */ 2));
++
++    const auto removed = prompt.take_stale_checkpoints_within_min_step(
++            /* id_task = */ 3,
++            /* checkpoint_min_step = */ 64);
++
++    assert(removed.size() == 2);
++    assert(removed.front().n_tokens == 80);
++    assert(removed.back().n_tokens == 336);
++    assert(prompt.checkpoints.size() == 2);
++    assert(prompt.checkpoints.front().n_tokens == 64);
++    assert(prompt.checkpoints.back().n_tokens == 320);
++
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 336, /* id_task = */ 4));
++    prompt.checkpoints.push_back(checkpoint(/* n_tokens = */ 352, /* id_task = */ 4));
++    assert(prompt.take_stale_checkpoints_within_min_step(
++            /* id_task = */ 4,
++            /* checkpoint_min_step = */ 64).empty());
++}
++
+ int main() {
+     server_prompt_checkpoint ckpt {
+         /*.pos_min  = */ 1,
+@@ -22,5 +86,8 @@ int main() {
+     assert(ckpt.ring_data.empty());
+     assert(ckpt.ring_data.capacity() == 0);
+ 
++    test_min_step_controls_prompt_splitting();
++    test_hybrid_recurrent_checkpoints_keep_useful_spread();
++
+     return 0;
+ }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 478bc5072..5edf57652 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3895,20 +3895,11 @@ private:
+     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
+         const int id_task = slot.task->id;
+ 
+-        // evict checkpoints within min-step of a previous checkpoint, unless they were
+-        // created by the current task
+-        int64_t last = -1;
+-        for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end(); ) {
+-            if (it->id_task != id_task && last >= 0 && it->n_tokens <= last + params_base.checkpoint_min_step) {
+-                SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+-                        it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
+-
+-                it = slot.prompt.checkpoints.erase(it);
+-                continue;
+-            }
+-
+-            last = it->n_tokens;
+-            ++it;
++        // Do not let prior tasks consume the checkpoint cap with near-duplicates.
++        for (const auto & cur : slot.prompt.take_stale_checkpoints_within_min_step(
++                id_task, params_base.checkpoint_min_step)) {
++            SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
++                    cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+         }
+ 
+         while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
+@@ -5551,10 +5542,12 @@ private:
+ 
+                         slot.n_prompt_tokens_processed++;
+ 
+-                        // Stop before the latest user input only when this request can create
+-                        // a checkpoint. A no-checkpoint request should not fragment its prefill.
+-                        if (do_checkpoint && n_before_user_known &&
+-                            slot.prompt.n_tokens() == n_before_user) {
++                        // Stop at a user boundary only when it creates a useful checkpoint.
++                        const bool is_user_start = n_before_user_known &&
++                            slot.prompt.n_tokens() == n_before_user;
++                        if (slot.prompt.should_split_prompt_batch_at_user_start(
++                                do_checkpoint, is_user_start, is_user_start,
++                                slot.prompt.n_tokens(), params_base.checkpoint_min_step)) {
+                             break;
+                         }
+ 
+@@ -5649,7 +5642,7 @@ private:
+                     // at the latest user boundary or near the prompt end.
+                     do_checkpoint = do_checkpoint && (
+                             slot.prompt.checkpoints.empty() ||
+-                            is_on_user || near_prompt_end ||
++                            (n_before_user_known && n_tokens_start == n_before_user) || near_prompt_end ||
+                             n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
+                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 8021d2c09..3fa87b5dc 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -649,6 +649,40 @@ struct server_prompt {
+         return tokens.size();
+     }
+ 
++    bool should_split_prompt_batch_at_user_start(
++            bool can_checkpoint,
++            bool is_user_start,
++            bool is_last_user_start,
++            int64_t n_tokens,
++            int32_t checkpoint_min_step) const {
++        if (!can_checkpoint || !is_user_start) {
++            return false;
++        }
++
++        return is_last_user_start || checkpoints.empty() ||
++            n_tokens > checkpoints.back().n_tokens + checkpoint_min_step;
++    }
++
++    std::list<common_prompt_checkpoint> take_stale_checkpoints_within_min_step(
++            int id_task,
++            int32_t checkpoint_min_step) {
++        std::list<common_prompt_checkpoint> removed;
++        int64_t last = -1;
++
++        for (auto it = checkpoints.begin(); it != checkpoints.end();) {
++            if (it->id_task != id_task && last >= 0 &&
++                    it->n_tokens <= last + checkpoint_min_step) {
++                removed.splice(removed.end(), checkpoints, it++);
++                continue;
++            }
++
++            last = it->n_tokens;
++            ++it;
++        }
++
++        return removed;
++    }
++
+     server_prompt clone() const {
+         return server_prompt {
+             tokens.clone(),
+-- 
+2.53.0
+
