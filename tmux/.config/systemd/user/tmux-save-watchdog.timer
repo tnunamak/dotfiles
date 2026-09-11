@@ -1,0 +1,14 @@
+[Unit]
+Description=Check tmux recovery-state freshness every 15 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+AccuracySec=1min
+# Persistent so a missed check runs after resume/boot rather than waiting a full
+# interval — the point of this unit is to notice outages, not to be polite.
+Persistent=true
+Unit=tmux-save-watchdog.service
+
+[Install]
+WantedBy=timers.target
